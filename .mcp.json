@@ -2,7 +2,10 @@
   "mcpServers": {
     "loci": {
       "type": "http",
-      "url": "https://mcp.auroralabs.com/mcp/v1"
+      "url": "https://mcp.auroralabs.com/mcp/v1",
+      "headers": {
+        "Authorization": "Bearer ${LOCI_API_TOKEN}"
+      }
     }
   }
 }
