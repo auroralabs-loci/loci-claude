@@ -1,0 +1,39 @@
+# Runtime state and logs
+loci/state/
+state/
+.loci-build/
+.setup-complete
+.setup-lock/
+.welcome-shown
+*.log
+*.pid
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# Python build artifacts (loci_cli wheel)
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+.claude
+
+# Eval output
+eval-results/

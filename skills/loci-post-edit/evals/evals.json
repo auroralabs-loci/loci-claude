@@ -1,0 +1,17 @@
+{
+  "skill_name": "loci-post-edit",
+  "evals": [
+    {
+      "id": "pe-3",
+      "prompt": "Run post-edit on my changes. Session context: Target: x86_64, Compiler: gcc, LOCI target: x86_64.",
+      "expected_output": "Detects that x86_64 is not a supported LOCI architecture. Emits the unsupported architecture message listing the four supported targets (aarch64/Cortex-A53, armv7e-m/Cortex-M4, armv6-m/Cortex-M0+, tc399/TriCore TC399) and stops without running any analysis.",
+      "files": []
+    },
+    {
+      "id": "pe-5",
+      "prompt": "Analyze my post-edit changes. Pre: build/codec.o.prev, Post: build/codec.o. Session: Target: arm64, Compiler: g++, LOCI target: aarch64. Note: the LOCI MCP server is not connected right now.",
+      "expected_output": "Runs diff-elfs and extract-cfg successfully. When the MCP call fails or is unavailable, falls back to CFG-only analysis and notes '(timing unavailable — MCP not connected)' in the report. Still provides control-flow analysis for all modified/added functions.",
+      "files": []
+    }
+  ]
+}

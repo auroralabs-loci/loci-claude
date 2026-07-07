@@ -1,0 +1,4 @@
+# Pinned test dependencies for the plugin's own test suite.
+# Analysis runtime deps live in the loci CLI (installed as a uv tool), not here.
+pytest==9.0.3
+pytest-timeout==2.4.0
