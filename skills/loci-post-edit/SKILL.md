@@ -75,6 +75,13 @@ edit. Omit `--meta-prev`; `loci build compile` will re-detect flags and record
 them. Report absolute timing only in Step 5 — no % diff is available without
 a preflight baseline.
 
+If the envelope is `ok:false` with `error.code == "compiler_not_found"`, follow
+the recovery in the runtime contract: try the alternate driver name via
+`command -v` and, if that misses, ask the user for the compiler path (do not hunt
+vendor dirs yourself), then re-run this same `loci build compile` with
+`--compiler-path` once. Any other error, or a still-failing retry: surface
+`error.message` verbatim and stop.
+
 **Validate the .o** — a standalone `-c` compile can exit 0 yet produce an
 empty object file when the source is wrapped in `#if` / `#ifdef` guards
 whose defines (`-D`) were not on the command line. After compiling, run:

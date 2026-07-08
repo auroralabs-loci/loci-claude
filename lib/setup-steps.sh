@@ -23,7 +23,7 @@ _LOCI_SETUP_STEPS_SOURCED=1
 
 # Pinned loci CLI (prod), from the PyPI wheel. Dev installs float — see
 # ensure_loci. This is the ONLY copy of these constants in the plugin.
-LOCI_CLI_VERSION="0.1.94"
+LOCI_CLI_VERSION="0.1.95"
 LOCI_CLI_PACKAGE="loci-tools"
 
 loci_is_windows() {
@@ -62,42 +62,7 @@ find_jq() {
     return 1
 }
 
-install_jq() {
-    printf 'LOCI: installing jq...\n'
-    if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
-        HOMEBREW_NO_AUTO_UPDATE=1 brew install jq >/dev/null 2>&1
-    elif loci_is_windows && command -v pacman >/dev/null 2>&1; then
-        pacman -S --noconfirm jq >/dev/null 2>&1
-    elif command -v apt-get >/dev/null 2>&1; then
-        sudo -n apt-get install -y jq >/dev/null 2>&1   # -n = non-interactive
-    elif command -v dnf >/dev/null 2>&1; then
-        sudo -n dnf install -y jq >/dev/null 2>&1
-    fi
-    find_jq
-}
-
-ensure_uv() {
-    command -v uv >/dev/null 2>&1 && return 0
-    loci_log INFO setup-steps "installing uv"
-    if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
-        HOMEBREW_NO_AUTO_UPDATE=1 brew install uv >/dev/null 2>&1
-    elif loci_is_windows; then
-        if command -v winget >/dev/null 2>&1; then
-            winget install --accept-package-agreements --accept-source-agreements astral-sh.uv \
-                >/dev/null 2>&1
-        elif command -v scoop >/dev/null 2>&1; then
-            scoop install uv >/dev/null 2>&1
-        else
-            powershell -ExecutionPolicy ByPass -c \
-                "irm https://astral.sh/uv/install.ps1 | iex" >/dev/null 2>&1
-        fi
-        export PATH="${LOCALAPPDATA:-$HOME/AppData/Local}/uv/bin:$HOME/.cargo/bin:$PATH"
-    else
-        curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null | sh >/dev/null 2>&1
-        export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-    fi
-    command -v uv >/dev/null 2>&1
-}
+have_uv() { command -v uv >/dev/null 2>&1; }
 
 # Executable bits on the shell entry points; guards checkouts that lose +x.
 fix_exec_bits() {
@@ -169,9 +134,9 @@ ensure_loci() {
     [ -n "${_LOCI_BOOTSTRAP:-}" ] && { _loci_write_status skipped; return 0; }
     _loci_resolve_install_spec
     _loci_cli_ready && { _loci_write_status ready; return 0; }
-    if ! command -v uv >/dev/null 2>&1 && ! ensure_uv; then
+    if ! have_uv; then
         _loci_write_status failed
-        loci_log WARN setup-steps "cannot install loci CLI: uv unavailable"
+        loci_log WARN setup-steps "cannot install loci CLI: uv not installed (prerequisite — the skill must give the user the install command)"
         return 0
     fi
     local _install_log="${STATE_DIR}/loci-cli-install.log"

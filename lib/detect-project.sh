@@ -69,8 +69,13 @@ detect_compiler() {
   command -v armcl >/dev/null 2>&1 && echo "armcl" && return
   command -v iccarm >/dev/null 2>&1 && echo "iccarm" && return
   command -v armcc >/dev/null 2>&1 && echo "armcc" && return
+  command -v arm-none-eabi-g++ >/dev/null 2>&1 && echo "arm-none-eabi-g++" && return
   command -v arm-none-eabi-gcc >/dev/null 2>&1 && echo "arm-none-eabi-gcc" && return
+  command -v aarch64-linux-gnu-g++ >/dev/null 2>&1 && echo "aarch64-linux-gnu-g++" && return
   command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 && echo "aarch64-linux-gnu-gcc" && return
+  command -v aarch64-unknown-linux-gnu-g++ >/dev/null 2>&1 && echo "aarch64-unknown-linux-gnu-g++" && return
+  command -v aarch64-unknown-linux-gnu-gcc >/dev/null 2>&1 && echo "aarch64-unknown-linux-gnu-gcc" && return
+  command -v tricore-elf-g++ >/dev/null 2>&1 && echo "tricore-elf-g++" && return
   command -v tricore-elf-gcc >/dev/null 2>&1 && echo "tricore-elf-gcc" && return
   # Windows: check well-known install directories
   if $IS_WINDOWS; then
@@ -152,8 +157,8 @@ _scan_linked_bins() {
   )
 }
 
-# Find ELF/object files: the shared linked-binary walk plus .o files in common
-# build directories.
+# Find ELF/object files: the shared linked-binary walk plus .o/.so files in
+# common build directories.
 find_elf_files() {
   local found=() f
   _scan_linked_bins
@@ -161,13 +166,21 @@ find_elf_files() {
     [ -n "$f" ] && found+=("$f")
   done <<< "$_LINKED_BINS"
 
-  # .o files only in common build dirs — too many otherwise.
-  for d in build out Debug Release output bin obj artifacts .loci-build; do
-    if [ -d "$CWD/$d" ]; then
-      while IFS= read -r f; do
-        [ -n "$f" ] && found+=("$f")
-      done < <(find "$CWD/$d" -maxdepth 3 -name "*.o" -type f 2>/dev/null | head -10)
-    fi
+  # .o/.so files only in build-like dirs — too many otherwise (a tree-wide *.so
+  # glob would pull in prebuilt SDK/system libraries). Match root-level dirs
+  # carrying a build token ([Bb]uild/[Dd]ebug/[Rr]elease) plus a few fixed names,
+  # so cmake-build-debug, build-arm, Release-cortexm all qualify; unmatched globs
+  # stay literal and fail the -d test. Separate finds so a flood of .o objects
+  # can't starve .so libs under the shared head cap.
+  for d in "$CWD"/*[Bb]uild* "$CWD"/*[Dd]ebug* "$CWD"/*[Rr]elease* \
+           "$CWD"/out "$CWD"/output "$CWD"/bin "$CWD"/obj "$CWD"/artifacts; do
+    [ -d "$d" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] && found+=("$f")
+    done < <(find "$d" -maxdepth 3 -name "*.o" -type f 2>/dev/null | head -10)
+    while IFS= read -r f; do
+      [ -n "$f" ] && found+=("$f")
+    done < <(find "$d" -maxdepth 3 \( -name "*.so" -o -name "*.so.*" \) -type f 2>/dev/null | head -10)
   done
 
   if [ ${#found[@]} -eq 0 ]; then
@@ -377,6 +390,8 @@ detect_cross_compilers() {
   local compilers=()
   command -v aarch64-linux-gnu-g++ >/dev/null 2>&1 && compilers+=("aarch64")
   command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 && compilers+=("aarch64")
+  command -v aarch64-unknown-linux-gnu-g++ >/dev/null 2>&1 && compilers+=("aarch64")
+  command -v aarch64-unknown-linux-gnu-gcc >/dev/null 2>&1 && compilers+=("aarch64")
   command -v arm-none-eabi-g++ >/dev/null 2>&1 && compilers+=("cortexm")
   command -v arm-none-eabi-gcc >/dev/null 2>&1 && compilers+=("cortexm")
   command -v tricore-elf-g++ >/dev/null 2>&1 && compilers+=("tricore")
@@ -475,8 +490,10 @@ _freshest_elf() {
     case "$elf" in
       *.o) continue ;;
     esac
-    # macOS uses `stat -f %m`, GNU coreutils use `stat -c %Y`.
-    mt=$(stat -f %m "$elf" 2>/dev/null || stat -c %Y "$elf" 2>/dev/null)
+    # GNU coreutils use `stat -c %Y`; macOS/BSD use `stat -f %m`. Try GNU first:
+    # on Linux `stat -f` means --file-system and succeeds with the wrong output,
+    # so probing it first would mask the correct mtime.
+    mt=$(stat -c %Y "$elf" 2>/dev/null || stat -f %m "$elf" 2>/dev/null)
     [ -z "$mt" ] && continue
     if [ "$mt" -gt "$best_mt" ]; then
       best_mt=$mt

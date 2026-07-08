@@ -33,14 +33,16 @@ echo -e "${BLUE}  SW Execution-Aware Analysis${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
 
-# 1. Dependencies (jq, uv).
-echo -n "Checking dependencies... "
-JQ=$(find_jq) || JQ=$(install_jq) || {
-  echo -e "${RED}Failed to install jq. Please install it manually.${NC}"
+# 1. Prerequisites (jq, uv)
+echo -n "Checking prerequisites... "
+if ! JQ=$(find_jq); then
+  echo -e "${RED}missing: jq${NC}"
+  echo "PREREQ_MISSING: jq is required but not installed."
   exit 1
-}
-if ! command -v uv >/dev/null 2>&1 && ! ensure_uv; then
-  echo -e "${RED}Failed to install uv. Please install it manually.${NC}"
+fi
+if ! have_uv; then
+  echo -e "${RED}missing: uv${NC}"
+  echo "PREREQ_MISSING: uv is required to install the loci CLI but is not installed."
   exit 1
 fi
 echo -e "${GREEN}OK${NC}"

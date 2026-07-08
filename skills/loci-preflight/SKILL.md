@@ -153,12 +153,20 @@ compilation units and linking is needed. You MUST still run
 `.meta.json` pair is what the pre-edit hook snapshots, and what post-edit
 compares against. Skipping it breaks the entire pre/post chain.
 
+**`compiler_not_found`: retry, then ask the user**
+
+If the envelope is `ok:false` with `error.code == "compiler_not_found"`, do NOT
+stop yet — follow the recovery in the runtime contract ("If it fails with
+`compiler_not_found`"): try the alternate driver name via `command -v` and, if
+that misses, ask the user for the compiler path (do not hunt vendor dirs
+yourself), then re-run `loci build compile` with `--compiler-path` once.
+
 **Hard stop: `loci build compile` fails**
 
-If `loci build compile` returns an error envelope (`ok:false`), emit its
-`error.message` verbatim and stop. Do NOT paraphrase, do NOT proceed to
-analysis. The message already carries the source, flag-source trace, and
-remediation options.
+If `loci build compile` returns any other error envelope (`ok:false`), or the
+`compiler_not_found` retry above still fails, emit its `error.message` verbatim
+and stop. Do NOT paraphrase, do NOT proceed to analysis. The message already
+carries the source, flag-source trace, and remediation options.
 
 ```
 ## Preflight: STOPPED

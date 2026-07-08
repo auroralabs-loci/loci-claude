@@ -90,11 +90,11 @@ _resolve_authoritative_plugin_dir() {
 }
 
 loci_log INFO session-init "start: jq detection"
-JQ=$(find_jq) || JQ=$(install_jq) || {
-    loci_log ERROR session-init "jq not found"
-    printf 'LOCI: jq not found — install with: apt-get install jq  or  brew install jq\n' >&2
+if ! JQ=$(find_jq); then
+    loci_log ERROR session-init "jq not found — emitting jq-free deps-missing context"
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"LOCI is installed but its prerequisite tool `jq` is missing, so LOCI analysis cannot run. Determine the install command for the user'"'"'s OS and package manager, tell them to run it (e.g. `! <install command>`), then have them start a new Claude Code session."},"systemMessage":"⚠ LOCI: prerequisite `jq` is not installed. Ask Claude for the install command for your system."}'
     exit 0
-}
+fi
 loci_log INFO session-init "end: jq detection (path=$JQ)"
 
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
@@ -160,7 +160,11 @@ fi
 _LOCI_STATUS_LINE=$(printf 'loci: installing in background — usable shortly. Install-on-miss: if a LOCI skill or analysis is requested (or a C/C++/Rust edit needs it) while `loci` is still absent, run `bash %s/hooks/ensure-loci-cli.sh` (waits for the in-flight install or performs it, self-locking), then retry the loci call.' \
     "$AUTH_PLUGIN_DIR")
 _INSTALL_FAIL_MSG=""
-if ! $_DETECTION_READY; then
+if ! $_DETECTION_READY && ! have_uv; then
+    _LOCI_STATUS_LINE=$(printf 'loci: NOT installed — its prerequisite `uv` is missing and the plugin does not install it. If the user requests a LOCI skill/analysis, determine the uv install command for their OS/package manager, tell them to run it (e.g. `! <install command>`), then run /loci:setup (or `bash %s/hooks/ensure-loci-cli.sh`) to install the loci CLI. Execution-aware analysis is unavailable until then.' \
+        "$AUTH_PLUGIN_DIR")
+    _INSTALL_FAIL_MSG=$(printf '⚠ LOCI: the loci CLI is not installed — prerequisite `uv` is missing.\nAsk Claude for the uv install command for your system, then run /loci:setup.')
+elif ! $_DETECTION_READY; then
     _install_status="" _install_log="${STATE_DIR}/loci-cli-install.log"
     if [ -f "${STATE_DIR}/loci-cli-status.json" ]; then
         _install_status=$("$JQ" -r '.status // ""' "${STATE_DIR}/loci-cli-status.json" 2>/dev/null)

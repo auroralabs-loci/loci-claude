@@ -1,9 +1,5 @@
 ---
-description: >
-  Install LOCI's own dependencies (jq, uv, the loci CLI) and verify the
-  environment — detect the C/C++/Rust compiler (checked, never installed) and,
-  only if missing, write per-project detection state. Safe to re-run — the
-  install steps are idempotent and repair whatever is missing.
+description: Install the loci CLI and verify the environment.
 when_to_use: >
   When the user asks to set up, install, reinstall, or repair LOCI ("set up
   loci", "install loci", "loci is not installed", "fix my loci install"), or
@@ -15,7 +11,7 @@ when_to_use: >
 
 Run the plugin's setup script, report what it did, and verify the result.
 Only pause for genuinely manual steps (e.g. an SSH key for the private CLI
-repo) — if a dependency is missing, the script installs it.
+repo, or a missing prerequisite the user must install).
 
 **Report for the user, not for us.** Surface only two things: what the user
 must *do*, and the final verdict (setup worked / here's what's broken). Never
@@ -42,19 +38,66 @@ user to restart Claude Code so the plugin loads.
   same `loci doctor`, so both routes share one check surface — the only
   difference is whether the install ran first.
 
-## Step 2: Install
+## Step 2: Prerequisites, then install
 
-Announce it in one concise line before running — e.g. "Installing LOCI's
-dependencies". Avoid conversational narration like "Running the setup script
-now."
+**Check the prerequisites BEFORE running the script — don't let it fail first.**
+`jq` and `uv` are required host tools. Probe both:
+
+```bash
+command -v jq >/dev/null 2>&1 && echo "jq: ok" || echo "jq: MISSING"
+command -v uv >/dev/null 2>&1 && echo "uv: ok" || echo "uv: MISSING"
+```
+
+If either is MISSING, **stop and give the user the exact install command for
+their platform** — do not run the setup script yet, and do not install jq/uv
+yourself. These are host tools that need root and an interactive password
+prompt, so they can NEVER be installed from inside Claude (no TTY for `sudo`);
+the user runs the command in their own terminal, then re-runs `/loci:setup`.
+
+First determine the platform and package manager yourself — then give the single
+correct command. Do NOT default to Debian/Ubuntu and do NOT ask the user what
+their distro is; work it out and hand them the right command directly. The
+session context (`Platform`, `OS Version`) tells you the OS. On macOS/Windows
+that settles it (`brew` / `winget`). On Linux it does not — verify with
+`command -v` which package manager is present (`apt-get`, `dnf`, `pacman`, …)
+instead of assuming apt.
+
+**Only ever offer the command for the user's actual system.** Give exactly one
+command for the detected platform — never list alternatives for other OSes, and
+never mention Nix/`nix profile` unless you have confirmed the host is NixOS
+(`command -v nix` present and no apt/dnf/pacman).
+
+Reference (pick the one matching the detected platform — give only that one):
+
+- **jq** — `sudo apt-get install -y jq` (Debian/Ubuntu), `sudo dnf install -y jq`
+  (Fedora/RHEL), `sudo pacman -S jq` (Arch), `brew install jq` (macOS),
+  `winget install jqlang.jq` (Windows).
+- **uv** — NOT in Debian/Ubuntu apt. Use `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  (Linux/macOS), or `pipx install uv`; `sudo pacman -S uv` (Arch),
+  `brew install uv` (macOS), `winget install astral-sh.uv` (Windows).
+
+Only if you have confirmed the host is NixOS: `nix profile install nixpkgs#jq`
+/ `nix profile install nixpkgs#uv` (no sudo).
+
+Keep the message to just the missing tool and its command. Do NOT narrate what
+*you* can or can't do ("jq isn't installed and I shouldn't install it for
+you…"), do NOT explain that the plugin doesn't install prerequisites, and do NOT
+otherwise editorialize about why — the user only needs the tool name and the
+command to run. Shape it like: "`jq` isn't installed — run `! sudo apt-get
+install -y jq`, then re-run `/loci:setup`." Only proceed to the install below
+once both resolve.
+
+Once both are present, announce it in one concise line — e.g. "Setting up LOCI" —
+then run from the project root:
 
 ```bash
 bash "<plugin-dir>/setup/setup.sh"
 ```
 
-Run it from the project root. It installs jq and uv if missing and installs the
-loci CLI as a uv tool (via the same self-locking installer the hooks use), then
-fixes exec bits. Project detection is NOT re-run unconditionally — the
+(If a prerequisite still slips through, the script exits early printing
+`PREREQ_MISSING: <tool> …` — handle it exactly as above.) It installs the loci
+CLI as a uv tool (via the same self-locking installer the hooks use), then fixes
+exec bits. Project detection is NOT re-run unconditionally — the
 SessionStart hook owns that; setup writes per-project state only as a fallback
 when none exists yet for this cwd (e.g. a plugin installed mid-session). It
 prints a line-per-step report — read it, but relay only what the user needs:
@@ -62,14 +105,15 @@ whether the install succeeded and any dependency that failed. The plumbing lines
 (exec bits, hooks.json validation, hook registration — including a "skipped"
 registration, which is normal in plugin mode) are internal: do NOT surface them
 and do NOT theorize about what they mean for auto-triggers. This step installs
-LOCI's dependencies; environment/toolchain verification is Step 3 (`loci doctor`).
+the loci CLI; environment/toolchain verification is Step 3 (`loci doctor`).
 
 If the loci CLI step fails:
 
 1. Read `~/.loci/state/loci-cli-install.log` for the cause.
-2. Most common: `uv` cannot reach PyPI to fetch the `loci-tools` wheel — a
-   missing/old `uv`, or a proxy blocking `pypi.org`. Report the log excerpt and
-   the specific dependency that failed.
+2. Most common: `uv` cannot reach PyPI to fetch the `loci-tools` wheel — an old
+   `uv`, or a proxy blocking `pypi.org` (a *missing* `uv` is caught earlier, in
+   Step 1, with an install command to relay). Report the log excerpt and the
+   specific dependency that failed.
 3. Network/proxy failures: report the log excerpt and suggest retrying with
    `bash <plugin-dir>/hooks/ensure-loci-cli.sh` (self-locking; waits for any
    in-flight install).

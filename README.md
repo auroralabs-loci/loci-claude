@@ -12,8 +12,8 @@ Without running code. No instrumentation. No code changes.
 |-------------|---------|-------------|
 | [Claude Code](https://claude.ai/code) | latest | everything |
 | Python | 3.12+ | the loci CLI (local ELF/build analysis) |
-| [uv](https://docs.astral.sh/uv/) | any | installs the loci CLI as a tool — auto-installed by `setup.sh` |
-| jq | any | session hooks — auto-installed by `setup.sh` |
+| [uv](https://docs.astral.sh/uv/) | any | installs the loci CLI as a tool — **install yourself**; the plugin checks for it and, if missing, Claude gives you the install command |
+| jq | any | session hooks — **install yourself**; the plugin checks for it and, if missing, Claude gives you the install command |
 | Compiled binaries | `.elf` / `.o` / `.axf` | all skills |
 | Network access to the LOCI backend | — | `exec-trace`, `loci-preflight`, `loci-post-edit` |
 

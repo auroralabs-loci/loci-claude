@@ -34,6 +34,27 @@ The compile-the-source skills (preflight, post-edit) additionally use:
 
 ---
 
+## Prerequisites: `jq` and `uv` (checked, never installed)
+
+`jq` and `uv` are host tools the plugin **detects but does not install** — they
+are prerequisites for the scripts and `loci` commands the skills run. `jq` parses
+every loci envelope (below); `uv` installs the loci CLI.
+
+**Check them up front, before running a loci command — don't wait for a failure.**
+Probe with `command -v jq` / `command -v uv`. If either is absent, **you**
+determine the install command for the user's OS and package manager, give it to
+them as `! <command>`, and stop the current loci path until they have run it. Do
+**not** install jq or uv yourself. Pick the command by platform:
+
+- **jq** — `sudo apt-get install -y jq` (Debian/Ubuntu), `sudo dnf install -y jq`
+  (Fedora/RHEL), `sudo pacman -S jq` (Arch), `brew install jq` (macOS),
+  `winget install jqlang.jq` (Windows).
+- **uv** — NOT in Debian/Ubuntu apt. Use `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  (Linux/macOS) or `pipx install uv`; `sudo pacman -S uv` (Arch),
+  `brew install uv` (macOS), `winget install astral-sh.uv` (Windows).
+
+---
+
 ## Tool boundary: `loci elf` only
 
 All assembly, CFG, symbol, section, and ELF inspection goes through
@@ -62,9 +83,8 @@ Every `loci` command prints **one JSON document on stdout**:
 - failure → `{"ok": false, "error": {"message": "…", "code"?: "…"}}`
 
 Parse it with `jq` and branch on `.ok` — never on substrings of the human text.
-Diagnostic/progress logs go to **stderr**; captured stdout is always the envelope
-(the one exception is `loci auth get-token`, which prints a bare token). Two error
-`code`s are stable and must be handled deterministically:
+Diagnostic/progress logs go to **stderr**; captured stdout is always the envelope.
+Two error `code`s are stable and must be handled deterministically:
 
 - `auth_required` (exit 3) — not signed in / token expired. Tell the user to run
   `! loci login`, then stop the current path cleanly (see each skill's auth gate).
@@ -165,6 +185,37 @@ and version it controls so the pre/post rebuild can diff apples-to-apples:
 `.loci-build/<loci_target>/<stem>.o` plus a sidecar `<output>.meta.json`, and
 returns the build metadata and those paths (`data.output`, `data.meta_file`) in
 the envelope.
+
+### If it fails with `compiler_not_found`
+
+Run `loci build compile` **without** `--compiler-path` first — its own cascade
+(PATH, `<project-context>`, `compile_commands.json`, globs) resolves the compiler
+in the common case. Only if the envelope comes back `ok:false` with
+`error.code == "compiler_not_found"` do you step in, in this order:
+
+1. **Cheap retry — alternate driver name only.** The cascade already searched
+   PATH, so do not re-scan it or guess install paths. The one thing it may have
+   missed is a differently-named driver for the same toolchain: for
+   `<loci_target>` try the `-gcc`/`-g++` counterpart and common versioned names
+   via `command -v` (e.g. `arm-none-eabi-gcc` vs `arm-none-eabi-g++` for
+   armv7e-m/armv6-m, `aarch64-linux-gnu-*` for aarch64, `tricore-elf-*` for
+   tc399). If `command -v` returns an absolute path, re-run the **same**
+   `loci build compile` with `--compiler-path <abs-path>` appended.
+2. **Otherwise, ask the user to point us.** Do NOT hunt through vendor install
+   directories yourself. Tell the user the target compiler wasn't found and ask
+   them to either give the path to it (you'll re-run with `--compiler-path`) or
+   install the toolchain. Keep it to what they need — the tool and that you need
+   its path. When they give a path, re-run `loci build compile` with
+   `--compiler-path <that-path>` once.
+3. **Then stop.** If the alternate-name retry and the user-provided path both
+   fail, or the user can't provide one, surface `error.message` verbatim and
+   stop. Do not fabricate a path or fall back to a host compiler for a cross
+   target.
+
+Only branch on `error.code == "compiler_not_found"` (stable, from `_errors.py`).
+Exit code 127 accompanies all compiler-not-found cases but is coarser; the two
+other 127 shapes (`--compiler-path does not exist`, `compiler not found on PATH`
+at invocation time) are terminal — surface and stop, no retry.
 
 ---
 
