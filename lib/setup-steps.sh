@@ -23,7 +23,7 @@ _LOCI_SETUP_STEPS_SOURCED=1
 
 # Pinned loci CLI (prod), from the PyPI wheel. Dev installs float — see
 # ensure_loci. This is the ONLY copy of these constants in the plugin.
-LOCI_CLI_VERSION="0.1.95"
+LOCI_CLI_VERSION="0.1.97"
 LOCI_CLI_PACKAGE="loci-tools"
 
 loci_is_windows() {
