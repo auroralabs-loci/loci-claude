@@ -267,6 +267,17 @@ For modified functions, compute % diff:
 diff_pct = ((post_value - pre_value) / pre_value) * 100
 ```
 
+Both `pre_value` and `post_value` are **response time** (worst-case latency
+including callees). `pre_value` MUST be the pre-edit `.o.prev` re-traced **in this
+run** with the identical extraction (same longest-path + `bl`-expansion). NEVER
+source `pre_value` from the measurement store, from `loci stats trend-line`, or
+from the footer's `<pre>` scalar — those may carry a *different metric* (e.g.
+exec-trace records **throughput time** — self-time, callees excluded — not
+response time), and diffing across metrics produces a meaningless delta. The
+Before column exists **only when `.o.prev` exists**; a prior stored measurement is
+NOT a baseline. If there is no `.o.prev`, use the no-baseline (After-only)
+template — do not manufacture a Before from history.
+
 The diff is meaningful only after expansion — if either side is
 entry-block-only, the % diff is between two understated baselines and
 the noise-margin downgrade rule will silently mask real regressions.
@@ -348,12 +359,15 @@ Order when present. Before/After columns carry the metric value
    missing declaration). Status: ❌ for unbounded recursion or BLOCK-
    level missing declaration; ⚠️ for benign-but-noteworthy hazards.
    Rare in post-edit — the row is omitted when nothing was observed.
-2. **Performance** — fires when `loci timing` returned. Captures
-   `execution_time_ns` diff and hot-path position (new block in top-3).
-   Status: ✅ if `|diff%| ≤ 10%` or improvement AND no new hot-path
+2. **Performance** — fires when `loci timing` returned. Captures the
+   **response-time** (`execution_time_ns`) diff and hot-path position (new block
+   in top-3). Status: ✅ if `|diff%| ≤ 10%` or improvement AND no new hot-path
    block; ⚠️ if `|diff%| > 10%` with absolute within budget OR a new
    hot-path block landed in top-3; ❌ if a known budget is exceeded.
-   Before/After = `execution_time_ns`. Note format:
+   Before/After = response time, both from this run's re-trace of
+   `.o.prev` and `.o` (same metric) — never a stored/trend-line value (see
+   Step 4). Row appears with a Before column only when `.o.prev` exists.
+   Note format:
    `<pre>→<post> ns (±X%) [, new hot-path block <addr> (top-N)]`.
 3. **Energy** — fires when `loci timing` returned energy. Status logic same as
    Performance with target-context thresholds (ISR/battery tighter
@@ -480,10 +494,15 @@ was unavailable.
 echo '<jsonl_records>' | loci stats measure --context-file "<project-context>" --stdin --skill post-edit
 ```
 Where `<jsonl_records>` is one JSON object per line for each modified/added
-function with post-edit timing values:
+function with post-edit timing values. Tag every row with
+`"metric":"response_time"` — post-edit measures **response time** (worst-case
+latency entry→exit including callees: the longest acyclic path + bl-expanded
+callee), LOCI's canonical "Response Time" metric. `loci stats` must compare it
+only against other response-time records (preflight, prior post-edit runs), never
+against exec-trace's throughput time:
 ```
-{"fn":"<func1>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"src":"<source_file>"}
-{"fn":"<func2>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"src":"<source_file>"}
+{"fn":"<func1>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"src":"<source_file>","metric":"response_time"}
+{"fn":"<func2>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"src":"<source_file>","metric":"response_time"}
 ```
 
 The `worst_ns` field name is the storage-schema key consumed by
@@ -496,11 +515,28 @@ written.
 loci stats trend-line --context-file "<project-context>" --function <func1>,<func2>,...
 ```
 
+The footer trend line is cross-edit **history** for the function, not the
+same-run Before→After comparison from the Performance row — the two are
+different things and must never be equated. `loci stats trend-line` compares
+only same-metric records, so when the sole prior record for this function is a
+different metric (e.g. an earlier exec-trace **throughput time**), it returns
+**no line for that function** — a fresh response-time baseline, not a delta.
+In that case render the footer without a `<pre> → <post>` trend (show the
+post-edit absolute as the baseline); do not backfill a `<pre>` from the
+mismatched history.
+
+Each returned line is `<fn> <metric>: <v1> -> … -> <vN> <unit> (<N> edits,
+<±pct>)` — the metric name (always `response time` for post-edit) says which
+metric it is. `data.trends[]` carries the same fields structurally (`function`,
+`metric`, `kind`, `edits`, `net`). Parse the trail and pct from the line; you
+need not echo the metric name into the footer (post-edit is always response
+time).
+
 ### Render the footer — compact by default
 
 One line. Icon-led, no surrounding bars, middle-dot separators, spaces
-around the `→` arrow. The `trend-line` output is the primary scalar —
-parse it into `<fn> · <pre> → <post> ns (<±pct>, <N> edits)`:
+around the `→` arrow. When `trend-line` returned a line for the function it is
+the primary scalar — parse it into `<fn> · <pre> → <post> ns (<±pct>, <N> edits)`:
 
 ```
 <icon> LOCI post-edit · <fn> · <pre> → <post> ns (<±pct>, <N> edits)
@@ -514,6 +550,13 @@ parse it into `<fn> · <pre> → <post> ns (<±pct>, <N> edits)`:
 Worked example (clean run, N=1):
 ```
 ✅ LOCI post-edit · Connection_ConnEventHandler · 1815 → 1498 ns (-17%, 2 edits)
+```
+
+When `trend-line` returned no line for the function (fresh response-time baseline
+— e.g. the only prior record was an exec-trace throughput-time value), drop the
+trend scalar and render the post-edit absolute instead:
+```
+✅ LOCI post-edit · AesEncrypt_C · 4912–7769 ns (baseline, 1 edit)
 ```
 
 ### Clean-escalation suffix

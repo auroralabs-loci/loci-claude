@@ -65,11 +65,14 @@ echo -n "Setting permissions... "
 fix_exec_bits
 echo -e "${GREEN}OK${NC}"
 
-# 5. Project detection — guarded fallback only. Skip when session-init already
-# wrote keyed state for this cwd; detect only to close the cold-install gap.
+# 5. Project detection. Skip only when a healthy context exists; re-detect when
+# missing or a prior detection failed, so setup repairs instead of rubber-stamping.
 echo -n "Detecting project... "
 _hash=$(hash_cwd)
-if [ -f "${STATE_DIR}/project-context-${_hash}.json" ]; then
+_ctx="${STATE_DIR}/project-context-${_hash}.json"
+_status="missing"
+[ -f "$_ctx" ] && _status=$("$JQ" -r '.detection_status // "ok"' "$_ctx" 2>/dev/null)
+if [ "$_status" = "ok" ]; then
   echo -e "${GREEN}OK (already detected this session)${NC}"
 elif detect_and_write_context; then
   echo -e "${GREEN}OK${NC}"

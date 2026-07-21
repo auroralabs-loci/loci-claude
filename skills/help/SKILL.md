@@ -97,12 +97,13 @@ Or point LOCI at an existing binary directly:
 ```
 ## Environment — sign-in needed
 
-LOCI's timing and energy analysis requires a signed-in session.
+Every LOCI analysis skill requires a signed-in session.
 
 → Run `! loci login` in your terminal, then re-run /help.
 
-Skills that work signed-out: /stack-depth, /memory-report, /control-flow
-Skills that need sign-in:    /exec-trace, loci-preflight, loci-post-edit
+Skills that work signed-out: /help, /loci:setup, /bug-report
+Skills that need sign-in:    /exec-trace, /stack-depth, /memory-report,
+                             /control-flow, /trends, loci-preflight, loci-post-edit
 ```
 
 ## Step 2: Show Available Skills

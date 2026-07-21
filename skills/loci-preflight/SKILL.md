@@ -488,8 +488,8 @@ Followed by the conclusion table. Icon vocabulary: ✅ PASS · ⚠️ WARNING ·
    ⚠️ for benign-but-noteworthy hazards (function-pointer dispatch,
    bounded recursion, weak-symbol miss); otherwise the row is omitted.
    Note names the specific hazard(s).
-2. **Performance** — fires when `loci timing` returned. Captures hot-path
-   worst-case latency, hot-path dominance (one callee >60% of budget),
+2. **Performance** — fires when `loci timing` returned. Captures **response
+   time** (worst-case latency including callees), hot-path dominance (one callee >60% of budget),
    and noise margin (only when `.o.prev` exists: did the delta exceed
    `std_dev_ns`?). Status: ✅ within budget and within noise; ⚠️ near
    budget OR delta exceeds std-dev; ❌ over budget. Note format:
@@ -652,10 +652,14 @@ was unavailable.
 ```
 echo '<jsonl_records>' | loci stats measure --context-file "<project-context>" --stdin --skill preflight
 ```
-Where each line is one function:
+Where each line is one function. Tag every row with `"metric":"response_time"` —
+preflight measures **response time** (worst-case latency including callees: the
+longest acyclic path + bl-expanded callee), the same metric post-edit records, so
+`loci stats` treats the two as one comparable series (and keeps exec-trace's
+throughput time separate):
 ```
-{"fn":"<func1>","worst_ns":<execution_time_ns>,"energy_uws":<E>}
-{"fn":"<func2>","worst_ns":<execution_time_ns>,"energy_uws":<E>}
+{"fn":"<func1>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"metric":"response_time"}
+{"fn":"<func2>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"metric":"response_time"}
 ```
 
 The `worst_ns` field name is the storage-schema key consumed by

@@ -12,6 +12,12 @@
       "prompt": "Analyze my post-edit changes. Pre: build/codec.o.prev, Post: build/codec.o. Session: Target: arm64, Compiler: g++, LOCI target: aarch64. Note: the LOCI MCP server is not connected right now.",
       "expected_output": "Runs diff-elfs and extract-cfg successfully. When the MCP call fails or is unavailable, falls back to CFG-only analysis and notes '(timing unavailable — MCP not connected)' in the report. Still provides control-flow analysis for all modified/added functions.",
       "files": []
+    },
+    {
+      "id": "pe-12",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. During this session, /exec-trace recorded a throughput time of 4862 ns for AesEncrypt_C. I then edited AesEncrypt_C to call a new secret-dependent helper, and post-edit measured its response time at 7769 ns. There was no preflight, so there is no .o.prev baseline. How should the Performance row and the footer present this — is 4862 -> 7769 a valid Before->After delta (a +60% regression)? Session: Target: aarch64, Compiler: g++, LOCI target: aarch64.",
+      "expected_output": "Concludes 4862 -> 7769 is NOT a valid Before->After delta and must NOT be shown as one (no +60%): 4862 ns is a throughput-time measurement (self-time, callees excluded) while 7769 ns is response time (includes callees) — different LOCI metrics that are not comparable. Because there is no .o.prev, the Performance row has no Before column and uses the no-baseline (After-only) template, reporting 7769 ns as a fresh response-time baseline. Explains that loci stats trend-line is metric-segmented, so it returns no 4862 -> 7769 trend and the footer shows a baseline rather than a delta. Does not manufacture a Before from the stored 4862 throughput value or fabricate any cross-metric percentage. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": []
     }
   ]
 }

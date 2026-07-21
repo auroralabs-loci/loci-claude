@@ -315,7 +315,7 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 ## Raw Data
 
 <details>
-<summary>project-context.json</summary>
+<summary>project context (`<project-context>` keyed file)</summary>
 
 ```json
 <sanitized contents or "MISSING">

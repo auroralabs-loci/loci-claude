@@ -10,7 +10,8 @@
 #   ./run_tests.sh --update-baselines       # regenerate regression baselines
 #
 # First run creates a Python 3.12 venv and installs loci-service-asmslicer
-# from PyPI. Subsequent runs reuse the cached venv.
+# (the `loci.service.asmslicer` slicer) plus its transitive deps from PyPI.
+# Subsequent runs reuse the cached venv (see the .loci-test-ready marker).
 
 set -euo pipefail
 
@@ -85,7 +86,20 @@ bootstrap() {
   # Runtime + test deps (pinned versions)
   uv pip install -r "${SCRIPT_DIR}/requirements-test.txt"
 
-  # Auto-install any undeclared asmslicer transitive deps
+  # The asmslicer lives in the `loci-service-asmslicer` distribution on PyPI.
+  # Its module path (`loci.service.asmslicer`) does NOT match the dist name, so
+  # it can't be recovered from an ImportError — install it explicitly. (Skipping
+  # this is what made the old guess-loop below `pip install loci`, pulling an
+  # unrelated squatted `loci` off PyPI, then fail on the non-existent
+  # `loci-service`.) cp312-only wheels; the venv is pinned to 3.12 above.
+  uv pip install loci-service-asmslicer
+
+  # Fill in any transitive deps asmslicer imports but doesn't declare (numpy,
+  # scipy, lief, ...). Those have matching module/package names, so guessing the
+  # package from the missing module is safe — but NEVER for a `loci*` module: a
+  # missing `loci.*` here means the asmslicer install itself failed, and pip
+  # installing `loci`/`loci-service` would grab the wrong package (or 404). Fail
+  # loudly instead of masking it.
   for _attempt in 1 2 3 4 5; do
     MISSING=$("$vpy" -c "from loci.service.asmslicer import asmslicer" 2>&1 \
       | grep "ModuleNotFoundError" | head -1 \
@@ -93,6 +107,14 @@ bootstrap() {
     if [ -z "$MISSING" ]; then
       break
     fi
+    case "$MISSING" in
+      loci|loci.*)
+        echo "ERROR: 'loci-service-asmslicer' failed to import ('$MISSING' missing)." >&2
+        echo "  The asmslicer wheel did not install for this Python/platform" >&2
+        echo "  (needs a cp312 wheel). Fix the install above; do not pip install '$MISSING'." >&2
+        exit 1
+        ;;
+    esac
     echo "  Installing undeclared dependency: ${MISSING}"
     uv pip install "$MISSING"
   done

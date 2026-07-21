@@ -2,7 +2,9 @@
 # Detect C++ project context: compiler, build system, binaries, ASM files.
 # Outputs JSON for session initialization.
 
-set -euo pipefail
+# NOT pipefail: `find | head | jq` stages get SIGPIPE (141) on large trees when
+# head closes early; pipefail would abort the script despite jq's valid output.
+set -eu
 
 CWD="${1:-.}"
 IS_WINDOWS=false
@@ -692,5 +694,6 @@ jq -n \
     loci_compatible: $loci_compatible,
     loci_target: (if $loci_target == "null" then null else $loci_target end),
     detected_at: $detected_at,
-    scan_depth: 8
+    scan_depth: 8,
+    detection_status: "ok"
   }'

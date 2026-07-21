@@ -23,7 +23,7 @@ _LOCI_SETUP_STEPS_SOURCED=1
 
 # Pinned loci CLI (prod), from the PyPI wheel. Dev installs float — see
 # ensure_loci. This is the ONLY copy of these constants in the plugin.
-LOCI_CLI_VERSION="0.1.97"
+LOCI_CLI_VERSION="0.1.101"
 LOCI_CLI_PACKAGE="loci-tools"
 
 loci_is_windows() {
@@ -251,9 +251,11 @@ _migrate_legacy_state() {
 detect_and_write_context() {
     local JQ="${JQ:-jq}"
     local PROJECT_INFO
-    PROJECT_INFO=$("${PLUGIN_DIR}/lib/detect-project.sh" "$(pwd)" 2>/dev/null) \
-        || PROJECT_INFO='{}'
-    [ -z "$PROJECT_INFO" ] && PROJECT_INFO='{}'
+    PROJECT_INFO=$("${PLUGIN_DIR}/lib/detect-project.sh" "$(pwd)" 2>/dev/null) || PROJECT_INFO=""
+    # detect-project.sh owns the schema and always emits detection_status:"ok".
+    # No/invalid output means it couldn't run — record that, don't re-declare it.
+    "$JQ" -e 'has("detection_status")' <<< "$PROJECT_INFO" >/dev/null 2>&1 \
+        || PROJECT_INFO='{"detection_status":"failed"}'
 
     local COMPILER BUILD_SYS LOCI_TARGET
     COMPILER=$( "$JQ" -r '.compiler     // "unknown"' <<< "$PROJECT_INFO" 2>/dev/null || echo unknown)
@@ -267,18 +269,13 @@ detect_and_write_context() {
     local KEYED="${STATE_DIR}/project-context-${HASH}.json"
     local TMP="${KEYED}.tmp.$$"
 
-    # Atomic write — prevents torn reads if two SessionStarts hit same CWD
+    # Writer injects only identity fields (cwd_hash/branch) and persists; the
+    # schema is detect-project.sh's. Always overwrites — no stale state left.
     "$JQ" --arg pwd "$(pwd)" --arg branch "$GIT_BRANCH" --arg slug "$BRANCH_SLUG" --arg hash "$HASH" \
         '. + {project_root: $pwd, git_branch: $branch, branch_slug: $slug, cwd_hash: $hash}' <<< "$PROJECT_INFO" \
         > "$TMP" 2>/dev/null \
         && mv -f "$TMP" "$KEYED" 2>/dev/null \
         || { rm -f "$TMP" 2>/dev/null; return 1; }
-
-    # Deprecated unkeyed alias, kept one release. Racy across concurrent sessions
-    # in different projects — readers should prefer the keyed path injected into
-    # additionalContext as "project context:".
-    (cd "$STATE_DIR" && ln -sf "$(basename "$KEYED")" project-context.json 2>/dev/null) \
-        || cp "$KEYED" "${STATE_DIR}/project-context.json" 2>/dev/null
 
     _CTX_TARGET="$LOCI_TARGET"
     _CTX_COMPILER="$COMPILER"

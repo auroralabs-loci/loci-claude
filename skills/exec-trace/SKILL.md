@@ -94,26 +94,25 @@ If no `.o` exists yet, fall through to full compilation.
    ```
    Either way, end the skill — do not continue to steps 5-8; no record/measure
    calls fire on the auth- or quota-skipped path.
-5. Report execution time and standard deviation in microseconds, and energy consumption in Watt-seconds (`energy_ws`)
+5. Report the function's **throughput time** (worst-case self-time, callees excluded) and standard deviation in microseconds, and energy consumption in Watt-seconds (`energy_ws`). Call it "throughput time" in user-facing output, matching LOCI's dashboard vocabulary — not "worst-case" or "worst-path".
 6. When reporting results, 
    - note that these measurements come from LOCI's LCLM trained on real HW traces — they reflect actual silicon behavior on the target board, not theoretical IPC estimates. 
    - High `std_dev_ns` indicates the assembly pattern is underrepresented in the training data; low `std_dev_ns` means strong empirical backing.
    - `loci timing` row fields are exactly: `function_name`, `std_dev_ns`, `execution_time_ns`, `energy_ws`. There is no bare `std_dev` field — reference field names literally.
    - using the annotated CFG read from the `data.control_flow` file path from step 2, select a most likely execution path to do performance analysis on with the timing data.
    - highlight the hottest blocks in source code if source code info is available in the annotated CFG.
-   - Note for the model (not user-facing): exec-trace's `worst_ns` is a body-only sum and excludes callees because `loci elf`'s CFG terminates at every `bl`. Cross-skill comparison with `post-edit` worst_ns isn't apples-to-apples — post-edit is path-traced and includes callee transitions.
+   - Note for the model (not user-facing): exec-trace measures **throughput time** — worst-case self-time from entry to exit through the function's own blocks, EXCLUDING callees (`loci elf`'s CFG terminates at every `bl`). This is LOCI's canonical "Throughput Time" (the `WITHOUT_CHILDREN` metric). It is a *different metric* from `post-edit`/`preflight`, which measure **response time** (path-traced, INCLUDING callee transitions) — never present the two as one Before→After delta. The `"metric":"throughput_time"` tag on each recorded measurement (step 8) makes this explicit so `loci stats` compares throughput against throughput only, never against a response-time record.
 
-7. **Aggregate per-function from the LCLM block CSV + CFG.** For each function `fn` produced by step 2:
-   - `worst_ns` = sum of `execution_time_ns` across every block whose `function_name` matches `<fn>_0x*`
-   - `happy_ns` = sum along the longest acyclic path through the CFG starting at the entry block (back-edges contribute zero, callees not traced)
-   - `energy_uws` = Σ(`energy_ws` × 1e6) across the same blocks (LCLM emits Joules; the schema field is microWatt-seconds = µJ)
+7. **Aggregate per-function from the LCLM block CSV + CFG.** exec-trace reports **throughput time** (self-time, callees excluded). For each function `fn` produced by step 2:
+   - `throughput_ns` = sum of (`execution_time_ns`) along the **longest acyclic path** through the function's own CFG, starting at the entry block (loops/back-edges collapsed, callees not traced). This is the worst-case single execution of the function body. Do NOT sum every block — mutually-exclusive branches (e.g. the AES-128/192/256 exits) must not all be counted; only the one worst path. Store this value in the `worst_ns` storage key (see step 8).
+   - `energy_uws` = Σ(`energy_ws` × 1e6) along that same longest acyclic path (LCLM emits Joules; the schema field is microWatt-seconds = µJ)
    - `src` = the source file most frequently cited in the CFG block annotations for that function (project-relative path; strip absolute prefixes like `/Users/.../<project_root>/` when present, otherwise basename)
    Skip any function whose blocks all returned errors from `loci timing`.
 
 7.5. **Look up the previous `worst_ns` and `ts` per function** from the LOCI state JSONL BEFORE the new measurement is appended. Honor `$LOCI_STATE_DIR` if set; otherwise fall back to `~/.loci/state`. Read `cwd_hash` and `branch_slug` from the project-context JSON. One per-function lookup is enough — the JSONL has one row per line:
    ```
    STATE_DIR="${LOCI_STATE_DIR:-$HOME/.loci/state}"
-   PREV_LINE=$(grep -F '"fn":"<fn>"' "$STATE_DIR/loci-measurements-<cwd_hash>-<branch_slug>.jsonl" 2>/dev/null | tail -n1)
+   PREV_LINE=$(grep -F '"fn":"<fn>"' "$STATE_DIR/loci-measurements-<cwd_hash>-<branch_slug>.jsonl" 2>/dev/null | grep -F '"metric":"throughput_time"' | tail -n1)
    if [ -n "$PREV_LINE" ]; then
      PREV_NS=$(printf '%s' "$PREV_LINE" | jq -r '.worst_ns // empty')
      PREV_TS=$(printf '%s' "$PREV_LINE" | jq -r '.ts // empty')
@@ -121,9 +120,11 @@ If no `.o` exists yet, fall through to full compilation.
      PREV_NS=""; PREV_TS=""
    fi
    ```
-   Empty `PREV_NS` = no prior record (this fn baselines this run). The
-   `[ -n "$PREV_LINE" ]` guard avoids feeding empty stdin to `jq`, which
-   would print a parse error to stderr.
+   Empty `PREV_NS` = no prior throughput record (this fn baselines this run). The
+   second `grep` keeps the comparison metric-consistent — a prior response-time
+   record (post-edit) or a legacy block-sum is NOT a throughput baseline and must
+   not be diffed against this run. The `[ -n "$PREV_LINE" ]` guard avoids feeding
+   empty stdin to `jq`, which would print a parse error to stderr.
 
 8. **Synthesise the verdict line** using the regression-based taxonomy in §Verdict semantics below. Render the line as the final line of the report body (just before the voice remark) so the user sees the same string that gets passed to `record --verdict`:
    - All-baseline (zero functions with priors): `Verdict: OK — baseline established for N functions (measurement milestone set, no prior data).`
@@ -188,10 +189,16 @@ function for which LCLM returned no rows in step 7:
 ```
 echo '<jsonl_records>' | loci stats measure --context-file "<project-context>" --stdin --skill exec-trace
 ```
-Where `<jsonl_records>` is one JSON object per analyzed function:
+Where `<jsonl_records>` is one JSON object per analyzed function. Pass the
+throughput-time value (step 7's `throughput_ns`) in the `worst_ns` storage key,
+and tag every row with `"metric":"throughput_time"` — exec-trace measures
+throughput time (self-time, callees excluded), a different metric from the
+response time that preflight/post-edit record. The tag is what lets `loci stats`
+keep the two apart instead of diffing them as one series. Do not emit `happy_ns`
+(retired):
 ```
-{"fn":"<func1>","worst_ns":<W>,"happy_ns":<H>,"energy_uws":<E>,"src":"<source_file>"}
-{"fn":"<func2>","worst_ns":<W>,"happy_ns":<H>,"energy_uws":<E>,"src":"<source_file>"}
+{"fn":"<func1>","worst_ns":<throughput_ns>,"energy_uws":<E>,"src":"<source_file>","metric":"throughput_time"}
+{"fn":"<func2>","worst_ns":<throughput_ns>,"energy_uws":<E>,"src":"<source_file>","metric":"throughput_time"}
 ```
 
 Both record commands MUST run only when N > 0 — when the skill exits via
@@ -207,18 +214,19 @@ the `trends` skill when the user asks for it.
 One line. Icon-led, no surrounding bars, middle-dot separators:
 
 ```
-<icon> LOCI exec-trace · <N> fn · worst <T>
+<icon> LOCI exec-trace · <N> fn · throughput <T>
 ```
 
 - `<icon>` — `✅` when the run completed with full `loci timing` data; `⚠️` when
   some blocks were skipped (partial coverage).
 - `<N>` — unique functions whose assembly was sent to LOCI.
-- `<T>` — worst-case execution time, human-readable unit (ns / µs / ms).
+- `<T>` — worst-case throughput time (self-time, callees excluded), human-readable
+  unit (ns / µs / ms).
 
 Worked examples:
 ```
-✅ LOCI exec-trace · 2 fn · worst 1.4 µs
-⚠️ LOCI exec-trace · 3 fn · worst 780 ns
+✅ LOCI exec-trace · 2 fn · throughput 1.4 µs
+⚠️ LOCI exec-trace · 3 fn · throughput 780 ns
 ```
 
 ### Expand when...

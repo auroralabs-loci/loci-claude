@@ -96,14 +96,15 @@ happens:
 
 ### Analysis needs sign-in
 
-Timing and energy analysis reach the LOCI backend and require a signed-in
-session. If a skill reports `auth_required`:
+Every LOCI analysis skill requires a signed-in session. The local ELF skills
+(`stack-depth`, `memory-report`, `control-flow`) don't reach the backend, but
+the CLI still gates them behind a session. If a skill reports `auth_required`:
 
 1. Run `! loci login` in your terminal, then retry.
 2. Confirm `loci auth status` shows `signed_in`.
 
-Skills that work signed-out: `stack-depth`, `memory-report`, `control-flow`  
-Skills that need sign-in: `exec-trace`, `loci-preflight`, `loci-post-edit`
+Skills that work signed-out: `/help`, `/loci:setup`, `/bug-report`  
+Skills that need sign-in: `exec-trace`, `stack-depth`, `memory-report`, `control-flow`, `trends`, `loci-preflight`, `loci-post-edit`
 
 ### LOCI was not called / skills didn't trigger
 
