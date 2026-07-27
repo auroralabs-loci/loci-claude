@@ -88,6 +88,11 @@ Run these in parallel where possible via Bash and Read:
 10. **CLI auth** — run `loci auth status` and record signed-in / signed-out.
     (The plugin no longer registers an MCP server; all backend calls go through
     the `loci` CLI and authenticate on demand via `! loci login`.)
+11. **Rust toolchain** (only when the project context shows
+    `build_system: "cargo"`) — record `cargo --version`, `rustc --version`,
+    and `rustup target list --installed 2>/dev/null | head -10` (each falling
+    back to "not found"). Rust compile failures usually trace to a missing
+    rustup std for the LOCI target.
 
 ## Step 2: Run 10-point diagnostics checklist
 
@@ -141,7 +146,7 @@ investigate:
 
 2. **Auto-run conditions** — for auto-triggered skills:
    - `loci-post-edit`: Was the edited file a C/C++/Rust source
-     (.c, .cc, .cpp, .cxx, .h, .hpp, .hxx, .rs)? Was an Edit/Write/MultiEdit
+     (.c, .cc, .cpp, .cxx, .h, .hpp, .hxx, .rs)? Was an Edit/Write
      tool used?
    - `loci-preflight`: Was Claude in `/plan` mode when the user described
      new logic?

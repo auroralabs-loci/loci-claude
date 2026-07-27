@@ -23,7 +23,9 @@ _LOCI_SETUP_STEPS_SOURCED=1
 
 # Pinned loci CLI (prod), from the PyPI wheel. Dev installs float — see
 # ensure_loci. This is the ONLY copy of these constants in the plugin.
-LOCI_CLI_VERSION="0.1.101"
+# 0.1.102 carries the Rust/Cargo build path this plugin version documents —
+# do NOT release this plugin before the loci-tools 0.1.102 wheel ships.
+LOCI_CLI_VERSION="0.1.102"
 LOCI_CLI_PACKAGE="loci-tools"
 
 loci_is_windows() {

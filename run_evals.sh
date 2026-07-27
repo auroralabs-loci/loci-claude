@@ -514,7 +514,7 @@ run_one_eval() {
     T1_START=$(date +%s)
     ( cd "$BLE_ROOT" && echo "$PROMPT" | timeout --kill-after=10 "$EVAL_TIMEOUT" \
         claude "${C_ARGS[@]}" --permission-mode plan \
-        --disallowedTools Edit Write MultiEdit NotebookEdit ) >"$T1_JSON" 2>"$STDERR_FILE" || T1_EXIT=$?
+        --disallowedTools Edit Write NotebookEdit ) >"$T1_JSON" 2>"$STDERR_FILE" || T1_EXIT=$?
     T1_END=$(date +%s)
     log_eval "turn1 exit $T1_EXIT after $((T1_END - T1_START))s"
 

@@ -97,7 +97,7 @@ If no `.o` exists yet, fall through to full compilation.
 5. Report the function's **throughput time** (worst-case self-time, callees excluded) and standard deviation in microseconds, and energy consumption in Watt-seconds (`energy_ws`). Call it "throughput time" in user-facing output, matching LOCI's dashboard vocabulary — not "worst-case" or "worst-path".
 6. When reporting results, 
    - note that these measurements come from LOCI's LCLM trained on real HW traces — they reflect actual silicon behavior on the target board, not theoretical IPC estimates. 
-   - High `std_dev_ns` indicates the assembly pattern is underrepresented in the training data; low `std_dev_ns` means strong empirical backing.
+   - `std_dev_ns` is the spread of the predicted execution time — i.e. how much this path's timing actually varies on the target silicon.
    - `loci timing` row fields are exactly: `function_name`, `std_dev_ns`, `execution_time_ns`, `energy_ws`. There is no bare `std_dev` field — reference field names literally.
    - using the annotated CFG read from the `data.control_flow` file path from step 2, select a most likely execution path to do performance analysis on with the timing data.
    - highlight the hottest blocks in source code if source code info is available in the annotated CFG.

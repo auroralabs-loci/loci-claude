@@ -4,7 +4,7 @@ description: >
   Compare pre-edit and post-edit compiled artifacts to report execution
   timing % diff, energy consumption, and control-flow analysis.
 when_to_use: >
-  MANDATORY after any Edit/Write/MultiEdit to C/C++/Rust source
+  MANDATORY after any Edit/Write to C/C++/Rust source
   (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs). Invoke IMMEDIATELY — do not skip,
   batch, or wait. Also: "analyze the change", "measure the edit", "timing diff".
 ---
@@ -20,7 +20,9 @@ compiled artifacts to show exactly how the change affects hardware execution.
 **Shared runtime contract.** Before running this skill, read
 `<plugin-dir>/skills/_shared/loci-runtime-contract.md` and apply its
 **Tool boundary: `loci elf` only**, **Output: the JSON envelope**, **Supported
-architectures (gate)**, and **Step 0 — Pattern A: compile the source** sections.
+architectures (gate)**, and **Step 0 — Pattern A: compile the source** sections
+— plus, when the edited source is Rust (`.rs`), the **Rust / Cargo projects**
+section, which overrides the artifact-path and `--meta-prev` conventions below.
 The sections below add only this skill's specifics.
 
 **Tool boundary (reminder):** `loci elf` only — never `objdump`, `readelf`,
@@ -74,6 +76,18 @@ If `.o.meta.json.prev` does not exist, preflight did not run before this
 edit. Omit `--meta-prev`; `loci build compile` will re-detect flags and record
 them. Report absolute timing only in Step 5 — no % diff is available without
 a preflight baseline.
+
+**Rust sources (`.rs`): always omit `--meta-prev`.** The artifact is one `.o`
+per *crate* named after the crate target (`<crate>.o`, not `<basename>.o`),
+so the path convention above does not apply — the CLI resolves the crate,
+auto-inherits the recorded cargo config from the `.prev` sidecar when the
+pre-edit hook captured one, and returns every path you need in the envelope:
+`data.output`, `data.meta_file`, and (when a baseline exists)
+`data.output_prev` + `data.meta_prev`. Capture those four fields and use them
+verbatim for Step 1b (`build diff --prev <data.meta_prev> --curr
+<data.meta_file>`) and Step 2 (`elf diff --elf <data.output_prev>
+--comparing-elf <data.output>`). If `data.output_prev` is absent, treat it as
+the no-baseline case (Case B).
 
 If the envelope is `ok:false` with `error.code == "compiler_not_found"`, follow
 the recovery in the runtime contract: try the alternate driver name via
@@ -151,6 +165,13 @@ loci elf diff \
 
 This returns lists of `modified` and `added` functions. Only these functions
 need analysis — skip unchanged code entirely.
+
+For Rust, diff symbols come back demangled (`crate::module::fn`). If the
+edited function appears in neither list while *other* functions changed, it
+was likely inlined into its callers (see the Rust section's tiny-function
+caveat) — analyze the modified callers and say so; if *nothing* changed, the
+edit may sit below codegen visibility (e.g. a `#[inline]` leaf with no
+in-crate caller): report that explicitly rather than "no change".
 
 ### Case B: no `.o.prev` (preflight did not run)
 

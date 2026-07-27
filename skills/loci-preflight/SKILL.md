@@ -26,7 +26,9 @@ supported, the skill stops and tells the user why.
 **Shared runtime contract.** Before running this skill, read
 `<plugin-dir>/skills/_shared/loci-runtime-contract.md` and apply its
 **Tool boundary: `loci elf` only**, **Output: the JSON envelope**, **Supported
-architectures (gate)**, and **Step 0 — Pattern A: compile the source** sections.
+architectures (gate)**, and **Step 0 — Pattern A: compile the source** sections
+— plus, when the analyzed source is Rust (`.rs`), the **Rust / Cargo projects**
+section, which overrides the artifact-path convention below.
 The sections below add only this skill's specifics.
 
 **Tool boundary (reminder):** `loci elf` only — never `objdump`, `readelf`,
@@ -118,7 +120,11 @@ recorded in the `.meta.json` sidecar under `flag_source_v2.attempts`:
 9. Hardcoded defaults — last resort with a warning
 
 It guarantees `-g` and `-c`, and writes `.loci-build/<loci_target>/<basename>.o`
-plus `.loci-build/<loci_target>/<basename>.o.meta.json`. The compiler /
+plus `.loci-build/<loci_target>/<basename>.o.meta.json`. **For Rust sources the
+flag cascade above does not run** — the crate is built through cargo and the
+artifact is `.loci-build/<loci_target>/<crate_target>.o` (named after the
+crate, not the source file); take the actual paths from the envelope's
+`data.output` / `data.meta_file` instead of constructing them. The compiler /
 flags / version / discovery tier are recorded in the sidecar; post-edit
 calls `loci build diff` to verify parity. If you need a field from the envelope,
 capture it in a shell variable (`out=$(loci build compile …); jq … <<<"$out"`) —
@@ -135,6 +141,9 @@ succeeds, run:
 ```
 loci elf symbols --elf .loci-build/<loci_target>/<basename>.o --arch <loci_target>
 ```
+
+(For Rust, `--elf` is the compile envelope's `data.output` — the crate-named
+`.o`. Symbol rows come back demangled with the raw name under `mangled`.)
 
 Read everything from **this one envelope** — never re-run it to "peek". `data.count`
 is the symbol count (the validation gate); `data.payload` tells you where the table

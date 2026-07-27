@@ -1,0 +1,5 @@
+# Shell scripts must stay LF everywhere: hooks and lib scripts are executed
+# by bash on whatever filesystem the checkout lives on, and a CRLF working
+# copy (Windows autocrlf) breaks bash under WSL/Linux with
+# "$'\r': command not found".
+*.sh text eol=lf

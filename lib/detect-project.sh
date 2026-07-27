@@ -94,13 +94,38 @@ detect_compiler() {
 # Detect build system (including vendor IDEs). Emits "ccs+make" when a
 # projectspec and a makefile coexist in the same tree — common for TI
 # SimpleLink gmake builds that also ship CCS IDE metadata.
+# Run a command under `timeout N` when the timeout binary exists (absent on
+# stock macOS) and bare otherwise — a missing timeout must degrade to "run
+# it", never to "silently skip the probe".
+_maybe_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
 detect_build_system() {
+  # A root Cargo.toml is decisive: loci compiles these through cargo, so the
+  # signal must win over an incidental Makefile at the root.
+  [ -f "$CWD/Cargo.toml" ] && echo "cargo" && return
   [ -f "$CWD/CMakeLists.txt" ] && echo "cmake" && return
   [ -f "$CWD/Makefile" ] || [ -f "$CWD/makefile" ] && echo "make" && return
   [ -f "$CWD/meson.build" ] && echo "meson" && return
   [ -f "$CWD/BUILD" ] || [ -f "$CWD/WORKSPACE" ] && echo "bazel" && return
   [ -f "$CWD/conanfile.txt" ] || [ -f "$CWD/conanfile.py" ] && echo "conan" && return
   [ -f "$CWD/vcpkg.json" ] && echo "vcpkg" && return
+
+  # Nested Cargo.toml (a rust/ subdir, workspace member layouts) counts only
+  # when NO root-level build system claimed the tree above — a cargo-xtask
+  # helper inside a CMake/Make project must not reclassify it as Rust.
+  if _maybe_timeout 4 find "$CWD" -maxdepth 2 \
+      -type d \( -name .git -o -name node_modules -o -name .venv \
+      -o -name target -o -name vendor -o -name third_party \) -prune -o \
+      -name "Cargo.toml" -type f -print -quit 2>/dev/null | grep -q .; then
+    echo "cargo" && return
+  fi
 
   # Subdir detection — deep scan, bounded by timeout.
   local has_projectspec=false has_makefile=false
@@ -135,7 +160,22 @@ detect_build_system() {
 }
 
 find_sources() {
-  find "$CWD" -maxdepth 2 \( -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c" -o -name "*.h" -o -name "*.hpp" \) 2>/dev/null | head -20 | jq -Rn '[inputs]'
+  # Two explicit branches, NOT an optional array spliced into one find:
+  # "${arr[@]}" on an empty array is an "unbound variable" error under
+  # `set -u` on bash <= 4.3 (macOS /bin/bash) — see the candidates/compilers
+  # guards elsewhere in this file. Cargo projects also scan one level deeper
+  # so workspace members (crates/<m>/src/*.rs) appear in source_files.
+  if [ -f "$CWD/Cargo.toml" ]; then
+    {
+      find "$CWD" -maxdepth 2 \( -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c" -o -name "*.h" -o -name "*.hpp" -o -name "*.rs" \) 2>/dev/null
+      find "$CWD" -mindepth 3 -maxdepth 4 \
+        -type d \( -name .git -o -name node_modules -o -name target \
+        -o -name vendor -o -name third_party \) -prune -o \
+        -name "*.rs" -type f -print 2>/dev/null
+    } | sort -u | head -20 | jq -Rn '[inputs]'
+  else
+    find "$CWD" -maxdepth 2 \( -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c" -o -name "*.h" -o -name "*.hpp" \) 2>/dev/null | head -20 | jq -Rn '[inputs]'
+  fi
 }
 
 # Single maxdepth-10 walk for linked binaries (*.elf/*.out/*.axf), cached and
@@ -254,6 +294,61 @@ find_binaries() {
 
 find_asm_files() {
   find "$CWD" -maxdepth 2 \( -name "*.asm" -o -name "*.s" -o -name "*.S" \) 2>/dev/null | head -20 | jq -Rn '[inputs]'
+}
+
+# Cargo artifact scan (Rust projects only). Cargo binaries are extensionless
+# and live under target/<triple>/{debug,release} — a tree the generic linked-
+# binary walk deliberately prunes — so scan those dirs directly, bounded, and
+# confirm ELF via `file`. A session opened in a workspace *member* directory
+# has its artifacts in the workspace root's target/, so climb (≤3 levels)
+# while parents still carry a Cargo.toml until something is found.
+find_cargo_elf_files() {
+  local found=() f d base="$CWD" up=0 parent
+  while :; do
+    for d in "$base"/target/debug "$base"/target/release \
+             "$base"/target/*/debug "$base"/target/*/release; do
+      [ -d "$d" ] || continue
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if file "$f" 2>/dev/null | grep -q 'ELF'; then
+          found+=("$f")
+        fi
+      done < <(find "$d" -maxdepth 1 -type f ! -name '*.*' 2>/dev/null | head -10)
+    done
+    [ ${#found[@]} -gt 0 ] && break
+    up=$((up + 1))
+    [ "$up" -gt 3 ] && break
+    parent=$(dirname "$base")
+    [ "$parent" = "$base" ] && break
+    [ -f "$parent/Cargo.toml" ] || break
+    base="$parent"
+  done
+  if [ ${#found[@]} -eq 0 ]; then
+    echo '[]'
+  else
+    printf '%s\n' "${found[@]}" | sort -u | head -20 | jq -Rn '[inputs]'
+  fi
+}
+
+# Rust cross-target detection (Rust projects only): installed rustup stds
+# count as cross-compilers — no external cross-toolchain is needed, loci
+# builds objects via `cargo rustc --emit=obj` without linking. Emits final
+# LOCI target names, mapping ONLY the stds loci-cli itself resolves
+# (cargo.py RUST_TARGETS): thumbv6m is armv6-m in its own right (never
+# armv7e-m), and non-hf thumbv7em is deliberately absent — advertising it
+# would steer users into a `rust_target_missing` for the hf std.
+detect_rust_targets() {
+  command -v rustup >/dev/null 2>&1 || { echo '[]'; return; }
+  local installed compilers=()
+  installed=$(_maybe_timeout 6 rustup target list --installed 2>/dev/null) || installed=""
+  echo "$installed" | grep -q '^aarch64-unknown-linux-gnu$' && compilers+=("aarch64")
+  echo "$installed" | grep -q '^thumbv7em-none-eabihf$'     && compilers+=("armv7e-m")
+  echo "$installed" | grep -q '^thumbv6m-none-eabi$'        && compilers+=("armv6-m")
+  if [ ${#compilers[@]} -eq 0 ]; then
+    echo '[]'
+  else
+    printf '%s\n' "${compilers[@]}" | sort -u | jq -Rn '[inputs]'
+  fi
 }
 
 # Locate a working readelf (system, cross-toolchain, or vendor).
@@ -629,23 +724,54 @@ ELF_FILES=$(_stage find_elf_files         find_elf_files)
 BUILD_DIRS=$(_stage find_build_dirs       find_build_dirs)
 BINARIES=$(_stage find_binaries           find_binaries)
 ASM_FILES=$(_stage find_asm_files         find_asm_files)
+
+# Rust/Cargo augmentation — everything in this block is cargo-gated so
+# non-Rust projects take the exact path they always did.
+IS_CARGO=false
+[ "$BUILD_SYSTEM" = "cargo" ] && IS_CARGO=true
+if $IS_CARGO; then
+  # Cargo bins live under the pruned target/ tree — merge a targeted scan
+  # into ELF_FILES so the freshest-ELF arch detection sees them (e.g. a
+  # CI-built target/aarch64-unknown-linux-gnu/release/<bin>).
+  CARGO_ELF_FILES=$(_stage find_cargo_elf_files find_cargo_elf_files)
+  ELF_FILES=$(printf '%s\n%s\n' "$ELF_FILES" "$CARGO_ELF_FILES" | jq -s 'add | unique')
+  if command -v rustc >/dev/null 2>&1; then
+    COMPILER="rustc"
+  fi
+fi
+
 ARCH=$(_stage detect_architecture         detect_architecture "$ELF_FILES")
 CROSS_COMPILERS=$(_stage detect_cross_compilers detect_cross_compilers)
-LOCI_TARGET=$(_stage resolve_loci_target  resolve_loci_target "$ARCH" "$CROSS_COMPILERS")
+if $IS_CARGO; then
+  # Installed rustup stds count as cross-compilers: `cargo rustc --emit=obj`
+  # produces target objects without any external cross-toolchain. For the
+  # LOCI-target decision only they matter — a C cross-gcc on PATH proves
+  # nothing about what cargo can build, so cargo projects resolve against
+  # the rust list alone (the merged list is still reported for context).
+  RUST_CROSS=$(_stage detect_rust_targets detect_rust_targets)
+  LOCI_TARGET=$(_stage resolve_loci_target resolve_loci_target "$ARCH" "$RUST_CROSS")
+  CROSS_COMPILERS=$(printf '%s\n%s\n' "$CROSS_COMPILERS" "$RUST_CROSS" | jq -s 'add | unique')
+else
+  LOCI_TARGET=$(_stage resolve_loci_target  resolve_loci_target "$ARCH" "$CROSS_COMPILERS")
+fi
 
 # Only compute BUILD_COMPILER when COMPILER is generic: when it's already
 # vendor-specific the result would be discarded anyway, and the fallback
 # grep-tally walks every Makefile + projectspec (~7s on TI trees on Windows).
 BUILD_COMPILER=""
-case "$COMPILER" in
-  g++|clang++|unknown)
-    BUILD_COMPILER=$(_stage detect_build_compiler detect_build_compiler "$BUILD_SYSTEM" "$ELF_FILES")
-    [ -n "$BUILD_COMPILER" ] && COMPILER="$BUILD_COMPILER"
-    ;;
-  *)
-    loci_log INFO detect-project "skip: detect_build_compiler (COMPILER=$COMPILER is vendor-specific)"
-    ;;
-esac
+if $IS_CARGO; then
+  loci_log INFO detect-project "skip: detect_build_compiler (cargo project)"
+else
+  case "$COMPILER" in
+    g++|clang++|unknown)
+      BUILD_COMPILER=$(_stage detect_build_compiler detect_build_compiler "$BUILD_SYSTEM" "$ELF_FILES")
+      [ -n "$BUILD_COMPILER" ] && COMPILER="$BUILD_COMPILER"
+      ;;
+    *)
+      loci_log INFO detect-project "skip: detect_build_compiler (COMPILER=$COMPILER is vendor-specific)"
+      ;;
+  esac
+fi
 
 loci_log INFO detect-project "result: compiler=$COMPILER build_system=$BUILD_SYSTEM arch=$ARCH loci_target=$LOCI_TARGET elfs=$(echo "$ELF_FILES" | jq 'length' 2>/dev/null || echo ?) build_dirs=$(echo "$BUILD_DIRS" | jq 'length' 2>/dev/null || echo ?)"
 
@@ -678,12 +804,12 @@ jq -n \
   --arg loci_target "$LOCI_TARGET" \
   --arg detected_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
   '{
-    language_stack: ["cpp"],
+    language_stack: (if $build_system == "cargo" then ["rust"] else ["cpp"] end),
     compiler: $compiler,
     compiler_path: (if $compiler_path == "" then null else $compiler_path end),
     build_compiler: (if $build_compiler == "" then null else $build_compiler end),
     build_system: $build_system,
-    project_type: $project_type,
+    project_type: (if $build_system == "cargo" then "rust" else $project_type end),
     architecture: $architecture,
     source_files: $source_files,
     binaries: $binaries,

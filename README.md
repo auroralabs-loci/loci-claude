@@ -69,7 +69,7 @@ Gate — Human Decides. Define what matters. LOCI enforces it.
 | Hook | Trigger | Action |
 |------|---------|--------|
 | `SessionStart` | startup | project detection, venv setup, context injection |
-| `PreToolUse` | Edit, Write, MultiEdit | call-graph safety check, `.o` snapshot for delta analysis |
+| `PreToolUse` | Edit, Write | call-graph safety check, `.o` snapshot for delta analysis |
 
 ## Powered by LCLM
 

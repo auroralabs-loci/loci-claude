@@ -30,9 +30,8 @@ fi
 
 code=$(printf '%s' "$payload" | jq -r '
     .tool_name as $tn | .tool_input as $ti |
-    if   $tn == "Write"     then ($ti.content // "")
-    elif $tn == "Edit"      then ($ti.new_string // "")
-    elif $tn == "MultiEdit" then ([$ti.edits[]?.new_string // ""] | join("\n"))
+    if   $tn == "Write" then ($ti.content // "")
+    elif $tn == "Edit"  then ($ti.new_string // "")
     else "" end')
 
 # Skip edits that cannot change a compiled function body (headers, #include-only,

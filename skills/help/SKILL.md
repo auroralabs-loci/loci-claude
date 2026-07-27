@@ -86,6 +86,8 @@ To get started:
    - ARM Cortex-M: `arm-none-eabi-gcc`
    - ARM Cortex-A: `aarch64-linux-gnu-gcc`
    - TriCore: `tricore-elf-gcc`
+   - Rust/Cargo projects need no cross-gcc — just the rustup std for the
+     target (e.g. `rustup target add aarch64-unknown-linux-gnu`)
 3. Restart Claude Code so LOCI can auto-detect the project
 
 Or point LOCI at an existing binary directly:

@@ -146,6 +146,71 @@ asm-analyze).
 
 ---
 
+## Rust / Cargo projects
+
+Applies when the session context shows `Build: cargo` (the project has a
+`Cargo.toml`). The front door is unchanged — the same `loci build compile` /
+`loci elf` calls — but four Rust-specific rules replace their C/C++
+counterparts:
+
+1. **The artifact is one `.o` per crate, named after the crate target** —
+   `.loci-build/<loci_target>/<crate_target>.o` (e.g. `gitoxide.o`,
+   `sensor_hub.o`), NEVER `<basename>.o` (every crate has a `main.rs` /
+   `lib.rs` / `mod.rs`). Do not construct artifact paths from the source
+   filename. Take every path from the compile envelope: `data.output`,
+   `data.meta_file`, and — when a pre-edit snapshot exists — `data.output_prev`
+   and `data.meta_prev`. Those four fields are everything `build diff` and
+   `elf diff` need.
+2. **Omit `--meta-prev`.** The Rust path auto-inherits the recorded cargo
+   config (features, package, target) from `<output>.meta.json.prev` when it
+   exists; the envelope's `flag_source_v2.kind` reads `"inherited"` on that
+   path. There is no flag cascade to re-run and no flag drift to worry about.
+3. **Function names are Rust paths.** Query `--functions` with the simple
+   name (`run`) or any `::`-suffix (`main::run`, `plumbing::main::run`) —
+   both match. Symbol tables, timing-CSV labels, and CFG text carry demangled
+   names (`crate::module::fn`); the raw mangled form rides in each symbol
+   row's `mangled` field.
+4. **No cross-toolchain is required.** Objects are produced by
+   `cargo rustc --emit=obj` without linking, so a Windows host can compile
+   for aarch64-Linux with nothing but the rustup std
+   (`rustup target add <triple>`). If the compile envelope fails with
+   `error.code == "rust_target_missing"`, the message contains the exact
+   `rustup target add …` command — show it to the user as
+   `! rustup target add <triple>`, then stop until they have run it. The
+   compiler-not-found recovery (alternate driver names, `--compiler-path`)
+   does NOT apply to Rust; never point `--compiler-path` at a C compiler for
+   a `.rs` source.
+
+Rust cross-target map (the `<triple>` per LOCI target):
+
+| LOCI target | rustc target triple           |
+|-------------|-------------------------------|
+| aarch64     | `aarch64-unknown-linux-gnu`   |
+| armv7e-m    | `thumbv7em-none-eabihf`       |
+| armv6-m     | `thumbv6m-none-eabi`          |
+| tc399       | — (rustc has no TriCore backend; Rust analysis unavailable) |
+
+Caveats to surface rather than fight:
+
+- **Tiny functions may have no symbol of their own.** rustc ships small
+  `pub`/`#[inline]` functions as MIR for cross-crate inlining — they are
+  codegen'd into their callers, not into the defining crate's object. If the
+  edited function is absent from `elf diff` / `elf asm` output, say exactly
+  that ("`<fn>` was inlined into its callers — measuring the callers
+  instead") and analyze the in-crate callers; do not report "no change".
+- **Feature flags**: builds use the crate's default features. When a project
+  needs specific features (e.g. gix's `--no-default-features --features
+  max-pure`), put them in `.loci-build/flags.json`:
+  `{"rust": {"no_default_features": true, "features": ["max-pure"]}}`.
+- The first compile of a big workspace builds the whole dependency graph
+  once (it stays cached under `.loci-build/cargo/`); subsequent compiles are
+  incremental. If it exceeds the default 900 s budget, raise
+  `LOCI_CARGO_TIMEOUT` and re-run.
+- For readable Rust names asmslicer-side too, `cargo install rustfilt` is a
+  nice-to-have (loci demangles at its own layer regardless).
+
+---
+
 ## Step 0 — Pattern A: compile the source
 
 For skills that compile the analyzed source themselves (preflight, post-edit).
