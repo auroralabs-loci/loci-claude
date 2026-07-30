@@ -1,10 +1,8 @@
 {
   "skill_name": "stack-depth",
   "description": "Tests that the stack depth skill correctly runs asm-analyze stack-depth, interprets the JSON output, and reports worst-case depth, call paths, per-function frames, warnings, and optional budget verdicts. All functions are compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-  "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running.",
-
+  "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running. Evals sd-5 and sd-6 instead use $LOCI_TEST_STALE_ROOT, a fixture run_evals.sh stages from evals/fixtures/stale-artifact/. It needs arm-none-eabi-gcc and a loci CLI with `build fresh`; without either, run_evals.sh skips them by detecting the unexpanded placeholder (there is no `requires` key to set — the placeholder itself is the gate, so a typo cannot bypass it).",
   "evals": [
-
     {
       "id": "sd-1",
       "category": "full-elf-entry-function",
@@ -34,7 +32,6 @@
         }
       ]
     },
-
     {
       "id": "sd-2",
       "category": "full-elf-with-budget",
@@ -60,7 +57,6 @@
         }
       ]
     },
-
     {
       "id": "sd-3",
       "category": "multi-function",
@@ -82,7 +78,6 @@
         }
       ]
     },
-
     {
       "id": "sd-4",
       "category": "recursion-warning",
@@ -101,6 +96,72 @@
         {
           "text": "If recursion is detected, response mentions it explicitly as a warning",
           "description": "Recursion warnings are critical for stack safety — they must be surfaced"
+        }
+      ]
+    },
+    {
+      "id": "sd-5",
+      "category": "stale-artifact-selection",
+      "prompt": "I just changed kernel_main in $LOCI_TEST_STALE_ROOT/blink.c to call a new build_pattern() helper. Give me the worst-case stack depth for kernel_main against a 2048-byte budget. The project builds with `arm-none-eabi-gcc -g -nostartfiles -O0 -mcpu=cortex-m0plus -mthumb -Wl,-T,fixture.ld blink.c startup.c -o kernel.elf` from $LOCI_TEST_STALE_ROOT.",
+      "expected_output": "This is the regression test for the reported bug: the tree contains kernel.elf linked BEFORE the edit (225 s older than blink.c, and it does not contain build_pattern or render_frame at all) plus a post-edit object at .loci-build/armv6-m/blink.o. Per Step 0 Pattern B the skill must gate on freshness (loci build fresh --elf, or data.source_provenance on a loci elf call), find kernel.elf stale, and NOT report numbers from it. It must then rebuild: relinking with the given command line is the correct move, because measuring the fresh .o instead would lose the call edge (an unapplied R_ARM_THM_CALL relocation) and report kernel_main as 8 B / PASS while hiding a 3072-byte buffer. After the relink, kernel_main's worst case is 3120 bytes along kernel_main -> build_pattern -> render_frame, i.e. 152.3% of the 2048-byte budget, verdict FAIL. The report must carry the mandatory Artifact: provenance line naming the binary actually measured. A run that reports 0.4% PASS (the stale ELF) or 8 B PASS (the bare .o) is a FAIL of this eval.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Response checks artifact freshness before reporting numbers — runs `loci build fresh --elf` or reads `source_provenance` / `stale` from a loci elf envelope",
+          "description": "The gate must run at all; this is the defect the tester reported"
+        },
+        {
+          "text": "Response identifies kernel.elf as stale / older than blink.c, and does NOT present its numbers as the answer",
+          "description": "Detecting staleness but reporting the stale numbers anyway is still the bug"
+        },
+        {
+          "text": "Response rebuilds — relinks the project (or compiles and links) rather than measuring the bare .loci-build object as the answer",
+          "description": "A relocatable .o loses cross-call edges, so switching to it reports 8 B / PASS: fresh artifact, confidently wrong answer"
+        },
+        {
+          "text": "Response reports a worst-case depth of 3120 bytes for kernel_main",
+          "description": "3120 = 8 + 3088 + 24, confirmed independently by gcc -fstack-usage; it is only obtainable from a relinked ELF, so it proves both that staleness was caught and that the relink happened"
+        },
+        {
+          "text": "Response reports the worst-case path as kernel_main -> build_pattern -> render_frame",
+          "description": "The call chain only resolves in a linked binary"
+        },
+        {
+          "text": "Response reports a FAIL verdict at roughly 152% of the 2048-byte budget",
+          "description": "The budget verdict must invert relative to the stale artifact's PASS"
+        },
+        {
+          "text": "Response includes an `Artifact:` provenance line naming which binary was measured and when it was built",
+          "description": "The durable safety net: even if selection regresses, the reader can see what was measured"
+        }
+      ]
+    },
+    {
+      "id": "sd-6",
+      "category": "large-buffer-budget-fail",
+      "prompt": "Run a stack depth analysis on kernel_main in $LOCI_TEST_STALE_ROOT/.loci-build/armv6-m/relinked.elf with a stack budget of 2048 bytes. If that file does not exist, first link it with `arm-none-eabi-gcc -g -nostartfiles -O0 -mcpu=cortex-m0plus -mthumb -Wl,-T,fixture.ld blink.c startup.c -o .loci-build/armv6-m/relinked.elf` from $LOCI_TEST_STALE_ROOT.",
+      "expected_output": "A current, correctly linked ELF whose kernel_main reaches a 3072-byte stack buffer through build_pattern. Frame sizes are kernel_main 8, build_pattern 3088, render_frame 24 (gcc -fstack-usage agrees), so the worst case is 3120 bytes: 152.3% of the 2048-byte budget, verdict FAIL, path kernel_main -> build_pattern -> render_frame, largest frame build_pattern at ~99% of the total. This is the frame-sizing half of the regression: before asmslicer 1.1.1, compute_frame_size matched decimal-only immediates while capstone renders >= 10 in hex, so every frame collapsed to ~8 bytes and this exact case reported 16 B / 0.8% / PASS. Any PASS verdict, or a worst case anywhere near 8-24 bytes, is a FAIL of this eval.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Response reports a worst-case depth of 3120 bytes for kernel_main (not ~8, ~16 or ~24)",
+          "description": "A near-zero figure means frame sizing regressed to the decimal-immediate bug"
+        },
+        {
+          "text": "Response reports a FAIL verdict against the 2048-byte budget at roughly 152% usage",
+          "description": "The budget verdict must be FAIL — the code overflows the budget by 2x"
+        },
+        {
+          "text": "Response identifies build_pattern as the dominant frame at about 3088 bytes",
+          "description": "The 3072-byte buffer plus 16 bytes of prologue; it is 99% of the worst path"
+        },
+        {
+          "text": "Response reports the worst-case path as kernel_main -> build_pattern -> render_frame",
+          "description": "All three frames must be summed along the path, not just the entry frame"
+        },
+        {
+          "text": "Response includes an `Artifact:` provenance line naming which binary was measured and when it was built",
+          "description": "Mandatory for every Pattern B report, fresh artifact or not"
         }
       ]
     }

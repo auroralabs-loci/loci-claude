@@ -128,6 +128,162 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Stale-artifact fixture (the reported bug, staged deterministically)
+# ---------------------------------------------------------------------------
+# A tester reported an execution trace based on a linked ELF older than the edit
+# that prompted it. Reproducing that needs three artifacts in a specific mtime
+# relationship, which git cannot carry (it does not preserve mtimes), so the tree
+# is built here from committed sources rather than checked in:
+#
+#   kernel.elf                     linked from blink_pre.c    — 300 s old
+#   blink.c                        == blink_post.c (the edit)  —  75 s old
+#   .loci-build/armv6-m/blink.o    compiled from blink.c       —  60 s old
+#
+# The ELF is 225 s older than its own source and describes a different program
+# (`build_pattern` and `render_frame` do not exist in it), and the freshest
+# artifact in the tree is the object a post-edit run would have written. Numbers
+# the evals assert, all re-derived from this fixture:
+#
+#   gcc -fstack-usage   kernel_main 8, build_pattern 3088, render_frame 24
+#   relinked ELF        3120 B = 152.3% of a 2048 B budget → FAIL
+#   the fresh .o alone  8 B, path [kernel_main] → PASS, has_unknown_callees false
+#
+# That last line is why the eval demands 3120 rather than merely "not the stale
+# answer": in a relocatable object the `bl` is an unapplied relocation, so switching
+# to the fresh `.o` loses the call edge and hides the buffer entirely. 3120 can only
+# come from a relink, so it proves both halves of the fix.
+#
+# The buffer is 3072 bytes, NOT the 4096 of the scenario this reconstructs, because
+# the eval system prompt now inlines SKILL.md — which carries a worked example of
+# the real 4096-byte case. Reusing those constants would let the assertions be
+# satisfied by transcription instead of measurement.
+STALE_ROOT=""
+stage_stale_tree() {
+  local src="$SCRIPT_DIR/evals/fixtures/stale-artifact"
+  local cc; cc=$(command -v arm-none-eabi-gcc 2>/dev/null) || return 1
+  [[ -d "$src" ]] || return 1
+  local dir="$RESULTS_DIR/stale-artifact-tree"
+  rm -rf "$dir"
+  mkdir -p "$dir/.loci-build/armv6-m" || return 1
+  cp "$src/startup.c" "$src/fixture.ld" "$src/blink_pre.c" "$src/blink_post.c" \
+     "$dir/" || return 1
+
+  local cf=(-g -nostartfiles -O0 -mcpu=cortex-m0plus -mthumb)
+  # Each step checked on its own. An earlier revision wrapped these in
+  # `( set -e; … ) || return 1`, where the `set -e` is DEAD: the `||` puts the
+  # subshell in a context that suppresses errexit, and so does the
+  # `if stage_stale_tree; then` caller. Failure detection collapsed to "did the LAST
+  # command succeed", so a broken linker script produced a 0-byte kernel.elf that
+  # was announced as a valid fixture — the linker error swallowed by `2>&1`, `touch`
+  # happy on an empty file, and the nm guard below unable to tell "nm failed" from
+  # "no match". Exactly the vacuous guard the comment there warns about.
+  local log="$dir/stage.log"
+  (
+    cd "$dir" || exit 1
+    # 1. The artifact that goes stale: linked from the PRE source.
+    cp blink_pre.c blink.c || exit 1
+    "$cc" "${cf[@]}" -Wl,-T,fixture.ld blink.c startup.c -o kernel.elf || exit 1
+    # 2. The edit.
+    cp blink_post.c blink.c || exit 1
+    # 3. The object a post-edit run would have written from the edited source.
+    "$cc" "${cf[@]}" -c blink.c -o .loci-build/armv6-m/blink.o || exit 1
+    # 4. The two variants are scaffolding, not part of the tree under test: leaving
+    #    them hands the model the entire edit as a diff, and breaks any `gcc *.c`
+    #    build with "multiple definition of kernel_main".
+    rm -f blink_pre.c blink_post.c || exit 1
+  ) >"$log" 2>&1 || {
+    echo "  fixture rejected: staging failed, see $log" >&2
+    return 1
+  }
+  # Non-empty outputs, since a linker can "succeed" into nothing useful.
+  for f in kernel.elf .loci-build/armv6-m/blink.o; do
+    [ -s "$dir/$f" ] || { echo "  fixture rejected: $f is empty" >&2; return 1; }
+  done
+
+  # Backdate into the reported relationship. Absolute epochs, not `touch -r`, so
+  # the 225 s gap the eval quotes is exact rather than however long the build took.
+  # GNU coreutils take `-d @<epoch>`; macOS/BSD touch does not, and wants
+  # `-t [[CC]YY]MMDDhhmm[.SS]` — same GNU-first split as `_freshest_elf`'s stat.
+  local now; now=$(date +%s)
+  _set_mtime() {
+    local epoch="$1" path="$2" stamp
+    touch -d "@$epoch" "$path" 2>/dev/null && return 0
+    stamp=$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null) || return 1
+    touch -t "$stamp" "$path" 2>/dev/null
+  }
+  _set_mtime "$((now - 300))" "$dir/kernel.elf" || return 1
+  _set_mtime "$((now - 75))"  "$dir/blink.c" || return 1
+  _set_mtime "$((now - 60))"  "$dir/.loci-build/armv6-m/blink.o" || return 1
+
+  # Prove the fixture really is in the failing state before any eval trusts it. A
+  # fixture that quietly staged the *fresh* ELF would make both evals pass for the
+  # wrong reason — the exact class of vacuous guard this repo has been bitten by.
+  #
+  # Positive control first: nm must SEE the symbol that is supposed to be there.
+  # `grep -q` returns 1 for "no match" and for "nm printed nothing at all", so
+  # without this the absence check below passes when nm is missing or the ELF is
+  # unreadable — which is how a broken fixture would look exactly like a good one.
+  local syms
+  syms=$(arm-none-eabi-nm "$dir/kernel.elf" 2>/dev/null) || {
+    echo "  fixture rejected: nm could not read kernel.elf" >&2; return 1; }
+  printf '%s' "$syms" | grep -q "kernel_main" || {
+    echo "  fixture rejected: kernel.elf has no kernel_main (nm broken, or a bad link)" >&2
+    return 1; }
+  if printf '%s' "$syms" | grep -qE "build_pattern|render_frame"; then
+    echo "  fixture rejected: kernel.elf already contains the post-edit functions" >&2
+    return 1
+  fi
+  # GNU-first, BSD fallback — same split as `_freshest_elf` and
+  # `find_loci_artifacts`. `stat -c` alone rejected a perfectly good fixture on
+  # macOS (BSD stat has no -c), so both regression evals silently never ran there.
+  _mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+  local e_mt s_mt o_mt
+  e_mt=$(_mtime_of "$dir/kernel.elf") || return 1
+  s_mt=$(_mtime_of "$dir/blink.c") || return 1
+  o_mt=$(_mtime_of "$dir/.loci-build/armv6-m/blink.o") || return 1
+  [ -n "$e_mt" ] && [ -n "$s_mt" ] && [ -n "$o_mt" ] || {
+    echo "  fixture rejected: could not read mtimes (no usable stat)" >&2; return 1; }
+  if (( e_mt >= s_mt || s_mt >= o_mt )); then
+    echo "  fixture rejected: mtimes are not elf < source < object" >&2
+    return 1
+  fi
+
+  # A project context, because B2 reads `elf_files` / `loci_artifacts` from one and
+  # SESSION_CONTEXT points the model at this path. Without it, B2 ranks 2-3 are
+  # unfollowable inside the very eval meant to test them. Generated by the real
+  # detector, so the schema cannot drift from production.
+  ( cd "$dir" && bash "$SCRIPT_DIR/lib/detect-project.sh" \
+      > "$dir/.loci-build/context.json" 2>/dev/null ) || true
+  if ! jq -e '.loci_artifacts' "$dir/.loci-build/context.json" >/dev/null 2>&1; then
+    echo "  fixture rejected: could not generate a project context" >&2
+    return 1
+  fi
+
+  # These evals exercise the *gated* path, so the `loci` on PATH must have the gate.
+  # Without this check a CLI-version gap reports as a skill FAIL — and the contract
+  # explicitly tells the model NOT to run the gate on an old CLI, so the assertion
+  # "runs loci build fresh" would be demanding the opposite of the rule.
+  if ! loci build fresh --elf "$dir/kernel.elf" >/dev/null 2>&1; then
+    echo "  fixture rejected: the loci on PATH has no working \`build fresh\`" \
+         "($(loci --version 2>&1 | head -1)) — needs the CLI these skills pin" >&2
+    return 1
+  fi
+
+  STALE_ROOT="$dir"
+  return 0
+}
+
+# `--list` prints names and exits; staging first cost a ~27 s cross-compile and left
+# a tree nothing read. STALE_ROOT stays empty, which only affects the skip message.
+if $LIST_MODE; then
+  echo "Stale-artifact fixture: not staged (--list)"
+elif stage_stale_tree; then
+  echo "Stale-artifact fixture: $STALE_ROOT (kernel.elf 225s older than blink.c)"
+else
+  echo "Stale-artifact fixture: unavailable — sd-5/sd-6 will be skipped"
+fi
+
+# ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'
@@ -151,7 +307,21 @@ echo ""
 # Build session context that evals expect to be present
 # ---------------------------------------------------------------------------
 SESSION_CONTEXT="BLE project root: $BLE_ROOT
-Primary test ELF: $BLE_ELF"
+Primary test ELF: $BLE_ELF
+plugin dir: $SCRIPT_DIR"
+if [[ -n "$STALE_ROOT" ]]; then
+  # The stale-artifact evals need a resolved LOCI target the way a real session
+  # gets one from SessionStart; without it the skill has to guess an --arch.
+  # `Build:` must not claim `make` — there is no Makefile in the staged tree, and
+  # B3's rebuild step 1 would send the model at a build system that does not exist
+  # ("No targets specified and no makefile found"). `direct` matches reality: the
+  # eval prompt carries the exact compiler command line instead.
+  SESSION_CONTEXT="$SESSION_CONTEXT
+Stale-artifact fixture root: $STALE_ROOT
+  Target: armv6-m, Compiler: arm-none-eabi-gcc, Build: direct
+  LOCI target: armv6-m
+  project context: $STALE_ROOT/.loci-build/context.json"
+fi
 
 # ---------------------------------------------------------------------------
 # print_error_detail — structured diagnostics for ERROR outcomes
@@ -717,6 +887,7 @@ $R2"
 
   # Extract plain text from JSON output and log tool usage.
   local RESPONSE=""
+  local TOOL_CALLS="(no tool calls captured)"
   if [[ -s "$RESPONSE_FILE" ]]; then
     cp "$RESPONSE_FILE" "$JSON_FILE"
 
@@ -741,6 +912,20 @@ $R2"
     if [[ -n "$tool_summary" ]]; then
       log_eval "$tool_summary"
     fi
+
+    # …and make the tool CALLS graded, not just logged. Assertions of the form
+    # "runs `loci build fresh`" or "rebuilds/relinks" describe *behaviour*, and the
+    # grader only ever saw assistant text — so a model that merely narrated "the ELF
+    # looks older, I'll relink" passed, while one that ran the gate silently failed.
+    # Bash commands and file paths are what those assertions are actually about.
+    TOOL_CALLS=$(jq -rs '
+      [ .[] | select(.type == "assistant") | .message.content[]?
+        | select(.type == "tool_use")
+        | .name + ": " + ((.input.command // .input.file_path // .input.pattern // "")
+                          | tostring | .[0:400]) ]
+      | if length > 0 then join("
+") else "(no tool calls)" end
+    ' "$JSON_FILE" 2>/dev/null || echo "(tool calls unavailable)")
 
     # Log cost/usage from result event
     local usage_info
@@ -845,6 +1030,11 @@ $EXPECTATIONS"
 ## Actual response
 $RESPONSE
 
+## Tool calls the response actually made
+(Assertions about what the response *runs* — a command, a rebuild — must be judged
+from this list, not from the narration above.)
+$TOOL_CALLS
+
 ## Instructions
 Evaluate whether the response meets the expected behavior and all expectations.
 For each expectation, note PASS or FAIL with a brief reason.
@@ -931,6 +1121,9 @@ declare -a JOB_SHOULDTRIGGER=()
 declare -a JOB_FLOWS=()
 declare -a JOB_SOURCEFILES=()
 declare -a JOB_APPROVE=()
+# Evals the host could not run. Surfaced in the summary and report.md, so a run
+# that skipped a regression guard can never look like a clean pass.
+declare -a SKIPPED_EVALS=()
 
 for EVAL_FILE in $EVAL_FILES; do
   SKILL_NAME=$(jq -r '.skill_name' "$EVAL_FILE")
@@ -946,11 +1139,21 @@ for EVAL_FILE in $EVAL_FILES; do
   SKILL_MD="$SKILL_DIR/SKILL.md"
   SYSTEM_PROMPT=""
   if [[ -f "$SKILL_MD" ]]; then
+    # Inline the shared runtime contract. Every SKILL.md opens by telling the model
+    # to read `<plugin-dir>/skills/_shared/loci-runtime-contract.md`, but an eval
+    # has no session context to resolve `<plugin-dir>` from — so anything the
+    # contract owns (Step 0 Pattern B's artifact selection and freshness gate, the
+    # arch gate, the envelope rules) was silently absent from every eval, and an
+    # assertion about it could never fail for the right reason.
     SYSTEM_PROMPT="You are running a skill eval. Follow the skill instructions below EXACTLY.
 
 --- SESSION CONTEXT ---
 $SESSION_CONTEXT
 --- END SESSION CONTEXT ---
+
+--- SHARED RUNTIME CONTRACT (referenced by the skill as <plugin-dir>/skills/_shared/loci-runtime-contract.md) ---
+$(cat "$SCRIPT_DIR/skills/_shared/loci-runtime-contract.md" 2>/dev/null)
+--- END SHARED RUNTIME CONTRACT ---
 
 --- SKILL INSTRUCTIONS ---
 $(cat "$SKILL_MD")
@@ -976,15 +1179,47 @@ $(cat "$SKILL_MD")
     SOURCE_FILE=$(jq -r ".evals[$i].source_file // \"\"" "$EVAL_FILE")
     APPROVE_PROMPT=$(jq -r ".evals[$i].approve_prompt // \"Approved. Implement the plan exactly as described now. Edit the source file directly.\"" "$EVAL_FILE")
 
-    # Expand $LOCI_TEST_BLE_ROOT in prompt/expected to the actual BLE_ROOT path
-    PROMPT="${PROMPT//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
-    EXPECTED="${EXPECTED//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
-    EXPECTATIONS="${EXPECTATIONS//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
+    # An eval may need a fixture the host cannot provide. Skip rather than fail: a
+    # missing cross-compiler is an environment gap, not a skill regression, and a
+    # red suite for that reason trains people to ignore the suite.
+    #
+    # Guard the PLACEHOLDER, not a `requires` literal. A typo'd `requires`
+    # ("stale-root", "stale_root ", or omitted) fell straight through, and the
+    # placeholder then expanded to the empty string — asking the model about
+    # "kernel_main in /blink.c" and grading the confusion as a skill failure.
+    SKIP_REASON=""
+    if [[ "$PROMPT$EXPECTED$EXPECTATIONS" == *'$LOCI_TEST_STALE_ROOT'* \
+          && -z "$STALE_ROOT" ]]; then
+      if $LIST_MODE; then
+        SKIP_REASON="stale-artifact fixture not staged (--list)"
+      else
+        SKIP_REASON="stale-artifact fixture unavailable (see the staging message above)"
+      fi
+    fi
+    # --list is discovery, not execution: an eval that cannot RUN here still exists
+    # and must be listed. Skipping it before the job list made the two evals this
+    # change adds undiscoverable, and `--list --eval-id sd-5` exit 1.
+    if [[ -n "$SKIP_REASON" ]] && $LIST_MODE; then
+      SKIP_REASON=""
+    fi
+    if [[ -n "$SKIP_REASON" ]]; then
+      echo -e "${YELLOW}SKIP ${SKILL_NAME}:${EVAL_ID} — ${SKIP_REASON}${NC}"
+      # Recorded, not erased. Dropping it before the job list meant a run that
+      # executed neither regression guard still printed all-green and exited 0, with
+      # nothing in report.md to say they had never run.
+      SKIPPED_EVALS+=("${SKILL_NAME}:${EVAL_ID} — ${SKIP_REASON}")
+      continue
+    fi
 
     # Expand $LOCI_TEST_BLE_ROOT in prompt/expected to the actual BLE_ROOT path
     PROMPT="${PROMPT//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
     EXPECTED="${EXPECTED//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
     EXPECTATIONS="${EXPECTATIONS//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
+
+    # …and $LOCI_TEST_STALE_ROOT to the fixture staged above.
+    PROMPT="${PROMPT//\$LOCI_TEST_STALE_ROOT/$STALE_ROOT}"
+    EXPECTED="${EXPECTED//\$LOCI_TEST_STALE_ROOT/$STALE_ROOT}"
+    EXPECTATIONS="${EXPECTATIONS//\$LOCI_TEST_STALE_ROOT/$STALE_ROOT}"
 
     JOB_SKILLS+=("$SKILL_NAME")
     JOB_IDS+=("$EVAL_ID")
@@ -1003,6 +1238,18 @@ done
 
 TOTAL=${#JOB_SKILLS[@]}
 if [[ $TOTAL -eq 0 ]]; then
+  if [[ ${#SKIPPED_EVALS[@]} -gt 0 ]]; then
+    echo -e "${RED}No evals ran — every match was skipped:${NC}"
+    for s in "${SKIPPED_EVALS[@]}"; do echo "  - $s"; done
+    # Exit 2 = "guards did not run", the same code the end-of-run path uses, and
+    # honour the same opt-out. This branch previously exited 1 — i.e. "a skill
+    # failed" — for exactly the case the 2 was introduced to distinguish.
+    if [[ "${LOCI_EVALS_ALLOW_SKIPS:-}" == "1" ]]; then
+      echo "  (LOCI_EVALS_ALLOW_SKIPS=1 — treating as success)"
+      exit 0
+    fi
+    exit 2
+  fi
   echo "No evals matched the filters."
   exit 0
 fi
@@ -1025,6 +1272,19 @@ fi
 # in the BLE tree and touch shared build state (.loci-build, the resumed
 # session). Two of them running at once would clobber the same file and race
 # the restore. If any edit-making eval is in the batch, force sequential.
+# The stale-artifact evals share one mutable tree and both rebuild inside it. Run
+# concurrently, one eval's relink refreshes the artifact the other is asserting is
+# stale — so sd-5 could pass without ever detecting staleness.
+if [[ -n "$STALE_ROOT" && $MAX_JOBS -ne 1 ]]; then
+  for (( j=0; j<${#JOB_PROMPTS[@]}; j++ )); do
+    if [[ "${JOB_PROMPTS[$j]}" == *"$STALE_ROOT"* ]]; then
+      echo -e "${YELLOW}NOTE: stale-artifact evals share one tree — forcing sequential (-j 1).${NC}"
+      MAX_JOBS=1
+      break
+    fi
+  done
+fi
+
 for f in "${JOB_FLOWS[@]}"; do
   if [[ ( "$f" == "two-turn" || "$f" == "edit" ) && $MAX_JOBS -ne 1 ]]; then
     echo -e "${YELLOW}NOTE: edit-making evals present (two-turn/edit) — forcing sequential (-j 1) to avoid source-file races.${NC}"
@@ -1172,6 +1432,7 @@ cat >> "$REPORT" <<EOF
 - Passed: $PASSED
 - Failed: $FAILED
 - Blocked: $BLOCKED  (preflight invoked but couldn't analyze — environment/setup gap, not a skill fail)
+- Skipped: ${#SKIPPED_EVALS[@]}  (fixture unavailable on this host — did NOT run)
 - Errors: $ERRORED
 EOF
 
@@ -1180,6 +1441,10 @@ echo -e "  Total:   $TOTAL"
 echo -e "  ${GREEN}Passed:  $PASSED${NC}"
 echo -e "  ${RED}Failed:  $FAILED${NC}"
 echo -e "  ${YELLOW}Blocked: $BLOCKED${NC}  (preflight invoked but couldn't analyze — environment/setup gap)"
+if [[ ${#SKIPPED_EVALS[@]} -gt 0 ]]; then
+  echo -e "  ${YELLOW}Skipped: ${#SKIPPED_EVALS[@]}${NC}  (fixture unavailable — these did NOT run)"
+  for s in "${SKIPPED_EVALS[@]}"; do echo "    - $s"; done
+fi
 echo -e "  ${YELLOW}Errors:  $ERRORED${NC}"
 echo ""
 echo "Report: $RESULTS_DIR/report.md"
@@ -1190,4 +1455,22 @@ echo "Master log: $MASTER_LOG"
 # ERRORs set a non-zero exit.
 if (( FAILED + ERRORED > 0 )); then
   exit 1
+fi
+
+# A skipped eval must not read as a pass. `SKIPPED_EVALS` reached the report body and
+# the console summary but not the exit code, so on any host without
+# `arm-none-eabi-gcc` or without the pinned CLI both stale-artifact regression guards
+# skipped and the suite exited 0 with an all-green summary — and CI reads the exit
+# code, not the summary. Exit 2 to distinguish "guards did not run" from "a skill
+# failed" (1), so a caller can choose to tolerate it deliberately.
+if [[ ${#SKIPPED_EVALS[@]} -gt 0 ]]; then
+  if [[ "${LOCI_EVALS_ALLOW_SKIPS:-}" == "1" ]]; then
+    echo -e "${YELLOW}${#SKIPPED_EVALS[@]} eval(s) never ran (LOCI_EVALS_ALLOW_SKIPS=1 — exiting 0).${NC}"
+  else
+    # Announce the code actually being used: this printed "Exiting 2" even when the
+    # opt-out then made it exit 0.
+    echo -e "${YELLOW}Exiting 2: ${#SKIPPED_EVALS[@]} eval(s) never ran.${NC}"
+    echo "  Set LOCI_EVALS_ALLOW_SKIPS=1 to treat this as success."
+    exit 2
+  fi
 fi

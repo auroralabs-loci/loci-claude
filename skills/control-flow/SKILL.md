@@ -27,13 +27,33 @@ LLM analysis); read that file for the analysis steps.
 
 Follow **Step 0 — Pattern B** and **Cross-compilation defaults** in the shared
 runtime contract: use `<loci_target>` from the session context (do not
-re-detect), reuse an existing binary when one is available, otherwise
-cross-compile for `<loci_target>` with the default compiler/flags. In the steps
+re-detect), then pick a binary through B1-B4 — collect candidates, **discard the
+ones B3 reports stale**, and cross-compile only if nothing survives. "An existing
+binary is available" is not on its own a reason to measure it; that reading is what
+produced an analysis of a binary older than its own source. In the steps
 below, replace `<compiler>` and `<flags>` with the resolved values.
 
-## Incremental Path (preferred)
+## Incremental Path — only for a known in-flight edit
 
-If a previous `.o` exists in `.loci-build/<loci_target>/`, use incremental compilation:
+**When this path applies.** Only when you are measuring an edit already in flight —
+the `preflight` → `post-edit` chain, where a `.o` for *this* source was produced
+earlier in *this* session and the point is the before/after diff. A standalone
+`/control-flow` request in a fresh session is **not** that: it goes through
+freshness-gated **Step 0 — Pattern B** instead, whose B1 rule decides whether a `.o`
+can answer the question at all.
+
+"A previous `.o` exists" is therefore a precondition, not a trigger — an orphaned
+`.o` from an earlier session says nothing about the request in hand. Pattern B is
+read first and it wins; this path is the exception it delegates to.
+
+A CFG cut from a `.o` **stops at the translation-unit boundary**: every `bl` to an
+outside symbol is an unapplied relocation whose encoded target is the instruction
+itself, so cross-TU call edges are absent, not merely unlabelled (Pattern B, B1).
+For a call-dependency or function-impact question that is a wrong answer, not a
+partial one — use a linked binary. For "what changed inside this function", it is
+the right tool; say "within this translation unit" in the report.
+
+Then, with those conditions met:
 
 1. Save the existing `.o` as `.o.prev`
 2. Compile only the changed source with `-c`.
@@ -68,6 +88,25 @@ If no `.o` exists yet, fall through to full compilation.
    `data.control_flow` is the path to the CFG file (text optimized for LLM
    analysis); read it for step 3.
 3. Report analysis for selected functions based on the generated CFG's
+
+## Artifact provenance (mandatory)
+
+Emit the **Step 0 — Pattern B, B4** line once per run, at the end of the report
+body:
+
+```
+Artifact: filter.elf (linked 2026-07-28 09:14:02, sources current)
+```
+
+Take the build time and the freshness phrase from what `loci build fresh` returned,
+or from `.data.source_provenance` on the `loci elf cfg` envelope you already have
+(`elf_mtime`, and `stale` → `sources current` /
+`SOURCES NEWER THAN THIS BINARY` / `freshness unverified — <reason>`). When the CFG
+came from a `.o`, add B4's scope note — cross-TU call edges are absent, so a
+call-dependency claim from that graph is incomplete by construction.
+
+Never omit this line, and never write "sources current" without having run the
+check.
 
 ## LOCI voice remark
 

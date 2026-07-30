@@ -23,7 +23,10 @@ skill's specifics.
 binutils cannot produce. Always pass `--arch <loci_target>`.
 
 The practical workflow is: use `.o` for fast incremental checks on individual files
-(did my change increase the frame?), use the linked ELF for full worst-case depth.
+(did my change increase *this function's own frame*?), use the linked ELF for
+anything that walks the call graph — which is every worst-case-depth question.
+Pattern B, B1 explains why a `.o` cannot answer the second kind and why it fails
+without warning; the split below is not a matter of convenience.
 
 ## Step 0: Check session context
 
@@ -49,10 +52,19 @@ Determine which functions to analyze:
 Stack budget is optional. If provided, the tool reports usage as a percentage and
 gives a pass/fail verdict against the threshold.
 
-## Incremental Path — `.o` files (preferred for per-file checks)
+## Incremental Path — `.o` files (per-function frames only)
 
-Use this when checking if a change to a single file increased the stack frame.
-Works on individual `.o` object files without needing a fully linked binary.
+Use this when checking whether a change to a single file increased **that
+function's own frame**. Works on individual `.o` object files without needing a
+fully linked binary.
+
+**It does not give worst-case depth.** In a relocatable object every `bl` is an
+unapplied relocation, so `worst_case_depth` collapses to the function's own frame
+and `worst_case_path` to `[<function>]` — with `has_unknown_callees: false`, so
+nothing warns you (Pattern B, B1). Report only `frame_size` from this path, label
+it "own frame", and never present the `.o`'s `worst_case_depth` or a budget
+verdict: a 4144-byte real depth reads as 8 bytes and PASS here. A budget question
+means the Full ELF Path.
 
 1. If a previous `.o` exists, save it as `.o.prev`
 2. Compile only the changed source with `-c`.
@@ -77,7 +89,10 @@ This gives fast feedback on whether a change grew the stack without needing a fu
 Use this for full call-graph traversal to find the worst-case stack depth across
 all call chains from a task entry point.
 
-1. Cross-compile or use the existing linked binary
+1. Select the binary per **Step 0 — Pattern B** (B1–B3): a *linked* binary, ranked
+   per B2, and proven not older than its sources per B3. A stale linked ELF is the
+   defect this gate exists for — it answers about a program that is no longer on
+   disk, and the answer looks exactly as confident as a correct one.
 2. Run full stack depth analysis:
    ```
    loci elf stack --elf <binary> --entry-functions <funcs> --arch <loci_target> [--stack-budget <bytes>] [--threshold <percent>]
@@ -122,6 +137,22 @@ Per-function frames along worst path:
   func_d:   88 bytes
 ```
 
+### Artifact provenance (mandatory)
+
+Emit the **Step 0 — Pattern B, B4** line once per run, immediately before the
+Conclusion table:
+
+```
+Artifact: build/app.elf (linked 2026-07-28 09:14:02, sources current)
+```
+
+Take the build time and the freshness phrase from what `loci build fresh` (or
+`.data.source_provenance` on the `loci elf stack` envelope) returned — `elf_mtime`,
+and `stale` → `sources current` / `SOURCES NEWER THAN THIS BINARY` /
+`freshness unverified — <reason>`. On the Incremental Path add B4's
+single-function-scope note. Never omit this line, and never write "sources current"
+without having run the check.
+
 ### With stack budget (when --stack-budget provided)
 
 ```
@@ -140,6 +171,25 @@ Flag any issues that affect accuracy:
 
 These warnings mean the reported depth is an estimate. Indirect calls and unknown
 callees may undercount the real depth.
+
+### A bare PASS requires a clean upper bound
+
+`verdict: PASS` from `loci elf stack` means *the depth I computed* fits the budget.
+When any of `has_recursion`, `has_indirect_calls`, `has_unknown_callees` is `true`,
+or `warnings` is non-empty, the computed depth is a **lower bound**, not a worst
+case — the real depth can only be larger. So:
+
+- **Never render a bare `PASS`** while any of those is set. Render
+  `PASS (lower bound)` in the body and `⚠️ CAUTION` in the Conclusion table, with
+  the flag that caused it named in the Note column.
+- `unknown_callee_size` (default 64 B) silently substitutes for any callee with no
+  disassembled body. One under-sized substitution is all it takes to invert a
+  verdict: a function whose real frame is 4120 B contributing 64 B turns a FAIL
+  into a PASS. When `has_unknown_callees` is true, name the missing symbols and the
+  substituted size.
+- A **fresh, unflagged** result is still not an upper bound if it came from a `.o`
+  — see the Incremental Path warning above. Scope, not soundness flags, is what
+  limits that case, which is why B4's label is mandatory.
 
 ### Incremental comparison (when .o.prev available)
 
@@ -191,6 +241,8 @@ Table footer: bolded single-line verdict.
 ### Example
 
 ```
+Artifact: build/app.elf (linked 2026-07-28 09:14:02, sources current)
+
 ### Conclusion
 | Gate              | Status | Note                                               |
 |-------------------|:------:|----------------------------------------------------|
@@ -199,6 +251,23 @@ Table footer: bolded single-line verdict.
 | Largest frame     |   ⚠️   | decode: 128 B (41% of total)                        |
 
 Verdict: **PASS** 15.2%
+```
+
+Second example — the reported scenario, after the gate did its job:
+
+```
+Artifact: .loci-build/armv6-m/kernel.elf (relinked 2026-07-29 12:03:11 by this run, sources current)
+         kernel.elf in the project root was 225 s older than blink.c and did not
+         contain build_pattern or render_frame; it was rebuilt before measuring.
+
+### Conclusion
+| Gate              | Status | Note                                               |
+|-------------------|:------:|----------------------------------------------------|
+| Worst-case depth  |   ❌   | 4144 B (202.3% of 2048 B budget)                    |
+| Worst-case path   |   ❌   | kernel_main → build_pattern → render_frame          |
+| Largest frame     |   ⚠️   | build_pattern: 4112 B (99% of total)                |
+
+Verdict: **FAIL** 202.3%
 ```
 
 ### Escalation fold-back

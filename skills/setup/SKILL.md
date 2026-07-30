@@ -20,6 +20,10 @@ registration, project-detection internals, or how SessionStart works. If a line
 isn't something the user needs to know or act on, drop it. Aim for a few lines
 total; when all is well, a sentence or two is the right length.
 
+**One version number.** Report the plugin version (`loci version:` in the session
+context) as *the* LOCI version. The CLI version is plumbing — don't print it;
+`doctor` reports what's broken without it.
+
 ## Step 0: Locate the plugin
 
 Read `plugin dir: <path>` from the LOCI session context in the

@@ -21,7 +21,9 @@ session to diagnose and fix the issue.
 This skill must work even when LOCI is completely broken. Do NOT run analysis
 skills or heavy `loci` verbs (timing / elf) for collection — they may be the
 thing that's broken. Use only: Read, Bash, Glob, Grep, plus the lightweight,
-fast-failing probes `command -v loci`, `loci auth status`, and `loci doctor`.
+fast-failing probes `command -v loci`, `loci auth status`, `loci doctor`, and
+`loci build fresh` (a local mtime/DWARF check — no backend call, no asmslicer, and
+it runs signed out, which is why check 8 can rely on it here).
 
 Read these values from the LOCI session context (system-reminder block at
 session start) and substitute them wherever the placeholders appear below:
@@ -94,7 +96,7 @@ Run these in parallel where possible via Bash and Read:
     back to "not found"). Rust compile failures usually trace to a missing
     rustup std for the LOCI target.
 
-## Step 2: Run 10-point diagnostics checklist
+## Step 2: Run 11-point diagnostics checklist
 
 For each check, record status (PASS / FAIL) and a detail string.
 
@@ -106,17 +108,26 @@ For each check, record status (PASS / FAIL) and a detail string.
 | 4 | Architecture detected | `architecture` field in `<project-context>` is not `unknown` or empty | Has a value |
 | 5 | LOCI target supported | `loci_target` in `<project-context>` is one of: `aarch64`, `armv7e-m`, `armv6-m`, `tc399` | Value in set |
 | 6 | loci CLI healthy | `loci doctor` exits 0 and `data.healthy` is true (covers Python 3.12, asmslicer, analysis deps, c++filt, cross-compilers, credential store, state dir) | Exit 0 / healthy |
-| 7 | Build artifacts exist | Glob for `.loci-build/**/*.o` or any `.elf`/`.o`/`.axf` in project root | At least one found |
-| 8 | session-init executable | `test -x <plugin-dir>/hooks/session-init.sh` | Exit code 0 |
-| 9 | hooks.json valid | `<plugin-dir>/hooks/hooks.json` parses with `jq .` | Valid JSON |
-| 10 | Quota not exceeded | If check 1 passed (signed in), run `loci usage` and read `data.eligible` / `data.daily` (`{used, limit}`). | `data.eligible` is true |
+| 7 | Build artifacts exist | Read `loci_artifacts` and `elf_files` from `<project-context>`; fall back to a glob for `.loci-build/**/*.o` or any `.elf`/`.o`/`.axf` in the project root | At least one found |
+| 8 | Analysed artifact is not stale | For each candidate from check 7 (cap at 5, newest first) run `loci build fresh --elf <path>` and read `.data.stale` + `.data.sources_newer` | No candidate reports `stale: true` |
+| 9 | session-init executable | `test -x <plugin-dir>/hooks/session-init.sh` | Exit code 0 |
+| 10 | hooks.json valid | `<plugin-dir>/hooks/hooks.json` parses with `jq .` | Valid JSON |
+| 11 | Quota not exceeded | If check 1 passed (signed in), run `loci usage` and read `data.eligible` / `data.daily` (`{used, limit}`). | `data.eligible` is true |
 
-If `loci` is not on PATH, checks 6 and 10 automatically FAIL (the analysis
+Check 8 is here because **"the results are wrong" is most often "the results
+describe a different binary"** — that is the defect behind the report this check
+was added for. Record, per candidate, the artifact path, its `elf_mtime`, `stale`,
+and the first entry of `sources_newer` (path + `newer_by_s`), so a "results are
+wrong" report arrives with the artifact/source delta already computed instead of
+needing a round trip. A `stale: null` is **not** a FAIL — record it with its
+`reason` (usually no `-g`, or built on another machine).
+
+If `loci` is not on PATH, checks 6, 8 and 11 automatically FAIL (the analysis
 stack lives inside the CLI; `loci doctor` reports the specific missing piece).
-If check 1 failed (not signed in), check 10 automatically FAILs with
+If check 1 failed (not signed in), check 11 automatically FAILs with
 "not signed in — cannot check quota".
 
-Check 10 is the only check that reaches the backend. Skip it if check 1
+Check 11 is the only check that reaches the backend. Skip it if check 1
 failed; record "skipped: not signed in" in the detail column.
 
 ## Step 3: Collect stats
@@ -167,6 +178,20 @@ investigate:
 
 If a skill ran but produced no results, wrong results, or results that weren't
 used, investigate:
+
+0. **Which binary was measured, and was it current?** Check this first — it is the
+   cheapest explanation for "the numbers are wrong" and the one that has actually
+   happened. Take check 8's output: if the artifact the skill analysed reports
+   `stale: true`, the numbers describe a program that is no longer on disk, and
+   nothing downstream needs investigating. Two shapes to separate:
+   - **stale linked ELF** — the project's own build predates the edit. The report
+     is correct about the wrong binary.
+   - **fresh `.o`, whole-program question** — a relocatable object's call edges are
+     unapplied relocations, so a worst-case depth or a cross-call timing measured
+     from a `.o` collapses to the single function, with `has_unknown_callees: false`
+     and no warning. Correct artifact, wrong scope. Check the report's `Artifact:`
+     provenance line (Pattern B, B4) for which of the two it was; if that line is
+     missing altogether, record *that* as the finding.
 
 1. **Compilation** — did the compilation step succeed? Look for compiler errors,
    missing headers, wrong flags. Check if the compiler from `<project-context>`
@@ -220,7 +245,7 @@ dependency chain to find the most upstream failure:
 hooks → loci CLI install → sign-in → project-context → loci timing → compilation → analysis
 ```
 
-If all 10 checks pass, the issue is likely:
+If all 11 checks pass, the issue is likely:
 - Skill trigger wording mismatch (Claude didn't recognize the intent)
 - Transient `loci timing` backend timeout
 - A bug in the skill logic itself
@@ -277,11 +302,12 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 | 5 | LOCI target supported | <PASS/FAIL> | <detail> |
 | 6 | loci CLI healthy | <PASS/FAIL> | <detail> |
 | 7 | Build artifacts exist | <PASS/FAIL> | <detail> |
-| 8 | session-init executable | <PASS/FAIL> | <detail> |
-| 9 | hooks.json valid | <PASS/FAIL> | <detail> |
-| 10 | Quota not exceeded | <PASS/FAIL> | <detail, e.g. "18,000 / 30,000 daily tokens (free)" or "LIMIT REACHED — 35,000 / 30,000"> |
+| 8 | Analysed artifact is not stale | <PASS/FAIL> | <detail, e.g. "kernel.elf stale — blink.c 225s newer" or "3 candidates current" or "unverified: no DWARF"> |
+| 9 | session-init executable | <PASS/FAIL> | <detail> |
+| 10 | hooks.json valid | <PASS/FAIL> | <detail> |
+| 11 | Quota not exceeded | <PASS/FAIL> | <detail, e.g. "18,000 / 30,000 daily tokens (free)" or "LIMIT REACHED — 35,000 / 30,000"> |
 
-**Result: <N>/10 checks passed.**
+**Result: <N>/11 checks passed.**
 
 ## Reasoning
 
@@ -379,7 +405,7 @@ After writing the report file, display a concise summary:
 ```
 ## LOCI Diagnostic Summary
 
-<N>/10 checks passed.
+<N>/11 checks passed.
 
 **Root cause:** <one-sentence diagnosis>
 

@@ -43,52 +43,6 @@ _plugin_version() {
         "${dir}/.claude-plugin/plugin.json" 2>/dev/null || echo "0"
 }
 
-# Return 0 if dotted-numeric version $1 is strictly greater than $2. Pure bash
-# so we don't depend on sort -V (BSD sort before macOS 10.13 lacks it).
-_semver_gt() {
-    local a b IFS=.
-    # shellcheck disable=SC2206
-    a=($1)
-    # shellcheck disable=SC2206
-    b=($2)
-    local n=${#a[@]} m=${#b[@]} i
-    [ "$m" -gt "$n" ] && n=$m
-    for (( i=0; i<n; i++ )); do
-        local x=${a[i]:-0} y=${b[i]:-0}
-        case "$x$y" in *[!0-9]*) return 1;; esac
-        if   [ "$x" -gt "$y" ]; then return 0
-        elif [ "$x" -lt "$y" ]; then return 1
-        fi
-    done
-    return 1
-}
-
-# Resolve the plugin dir for paths emitted in the session context. PLUGIN_DIR
-# (from $0) is stale if Claude Code launched a previous CLAUDE_PLUGIN_ROOT or an
-# in-flight upgrade deletes this version's cache dir before the first tool call.
-# Scan the cache root for the highest-semver version that still has both
-# .claude-plugin/plugin.json and lib/ — its paths survive the upgrade. Fall back
-# to PLUGIN_DIR when the cache layout doesn't match (dev install, test sandbox).
-_resolve_authoritative_plugin_dir() {
-    local cache_root; cache_root="$(dirname "$PLUGIN_DIR")"
-    [ -d "$cache_root" ] || { printf '%s' "$PLUGIN_DIR"; return; }
-    local d ver best_dir="" best_ver=""
-    for d in "$cache_root"/*/; do
-        [ -d "$d" ] || continue
-        ver="${d%/}"; ver="${ver##*/}"
-        # Dir name must be dotted-numeric — skip "current", tarballs, hidden.
-        case "$ver" in ''|*[!0-9.]*) continue;; esac
-        [ -f "${d}.claude-plugin/plugin.json" ] || continue
-        [ -d "${d}lib" ] || continue
-        if [ -z "$best_ver" ] || _semver_gt "$ver" "$best_ver"; then
-            best_ver="$ver"; best_dir="${d%/}"
-        fi
-    done
-    if [ -n "$best_dir" ]; then printf '%s' "$best_dir"
-    else printf '%s' "$PLUGIN_DIR"
-    fi
-}
-
 loci_log INFO session-init "start: jq detection"
 if ! JQ=$(find_jq); then
     loci_log ERROR session-init "jq not found — emitting jq-free deps-missing context"
@@ -136,7 +90,7 @@ nohup bash "${PLUGIN_DIR}/hooks/ensure-loci-cli.sh" </dev/null >/dev/null 2>&1 &
 
 loci_log INFO session-init "start: project detection"
 detect_and_write_context
-loci_log INFO session-init "end: project detection (target=$_CTX_TARGET compiler=$_CTX_COMPILER build=$_CTX_BUILD)"
+loci_log INFO session-init "end: project detection (status=$_CTX_STATUS target=$_CTX_TARGET compiler=$_CTX_COMPILER build=$_CTX_BUILD)"
 
 # AUTH_PLUGIN_DIR is the highest-semver version in the cache root, not
 # necessarily $0's location — see _resolve_authoritative_plugin_dir.
@@ -146,13 +100,11 @@ _LOCI_VER=$(_plugin_version "$JQ" "$AUTH_PLUGIN_DIR")
 # The `loci` CLI (a uv tool on PATH) ships its own asmslicer + deps, so its
 # presence is the single analysis-readiness proxy.
 _DETECTION_READY=false
-_LOCI_CLI_VER=""
 if command -v loci >/dev/null 2>&1; then
     _DETECTION_READY=true
-    # Read-only version probe — reported so pin drift is visible; the reinstall
-    # is the detached installer's job.
-    _LOCI_CLI_VER=$(loci --version 2>/dev/null | tr -cd '0-9.')
 fi
+
+_VERSION_LINE="loci version: ${_LOCI_VER} — LOCI's only user-facing version; when the user asks for LOCI's version, report exactly this number. Internal component versions (e.g. the loci CLI binary's) are not LOCI's version — do not report or compare them."
 
 # loci health is reported here, never installed inline. Combine the installer's
 # last recorded outcome (loci-cli-status.json) with the live presence check.
@@ -201,13 +153,25 @@ Neutral (when results are baseline or first measurement):
 - "First measurement recorded — this is your baseline."
 Rules: Always cite numbers. Never use emoji. Never be vague ("looks good" without data). Attribute improvements to the user. Skip the remark when results are complex or the user needs raw data only. This is a presentation tone, not a persona — do not roleplay.'
 
-if $_DETECTION_READY; then
-    CONTEXT=$(printf 'loci version: %s\nTarget: %s, Compiler: %s, Build: %s\nLOCI target: %s\nBranch: %s\nloci command: loci (on PATH, v%s)\nplugin dir: %s\nproject context: %s\nAvailable: /help, /exec-trace, /stack-depth, /memory-report, /control-flow, /bug-report\nAuto-runs: loci-preflight (in /plan), loci-post-edit (after edits)\nLOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to C/C++/Rust source files (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs), you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.\nLOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); parse it with `jq` and branch on `.ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252; `jq` is faster and ships with the plugin). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory — Claude Code prompts the user for permission on every out-of-project access, halting automated preflight/post-edit/eval runs. Always write inside the project (e.g. `.loci-build/`) so every tool sees the same path.\n%s' \
-        "$_LOCI_VER" "$_CTX_TARGET" "$_CTX_COMPILER" "$_CTX_BUILD" "$_CTX_TARGET" "$_CTX_BRANCH" \
-        "$_LOCI_CLI_VER" "$AUTH_PLUGIN_DIR" "$_CTX_PROJECT_CONTEXT" "$LOCI_VOICE")
+# No project here → no analysis target, no mandatory auto-run rules. A parent
+# dir holding many repos, or a non-C/C++/Rust tree, must not get a fabricated
+# "Target: <host arch>" context that arms preflight/post-edit.
+if [ "$_CTX_STATUS" = "no_project" ] || [ "$_CTX_STATUS" = "multi_project" ]; then
+    if [ "$_CTX_STATUS" = "multi_project" ]; then
+        _INACTIVE_REASON=$(printf 'this directory contains %s independent projects (each with its own repo or build files) and is not itself a project. To analyze one of them, start a session in that project'"'"'s directory.' \
+            "${_CTX_SUBPROJECT_COUNT:-multiple}")
+    else
+        _INACTIVE_REASON='no C/C++/Rust build files, sources, or compiled binaries were found in this directory.'
+    fi
+    CONTEXT=$(printf '%s\nBranch: %s\nplugin dir: %s\nproject context: %s\nLOCI: inactive (detection: %s) — %s\nThe loci-preflight and loci-post-edit auto-run rules do NOT apply in this session; do not invoke LOCI skills automatically. /help and /bug-report remain available. If the user explicitly requests LOCI analysis, suggest starting a session in the relevant project directory.' \
+        "$_VERSION_LINE" "$_CTX_BRANCH" "$AUTH_PLUGIN_DIR" "$_CTX_PROJECT_CONTEXT" "$_CTX_STATUS" "$_INACTIVE_REASON")
+elif $_DETECTION_READY; then
+    CONTEXT=$(printf '%s\nTarget: %s, Compiler: %s, Build: %s\nLOCI target: %s\nBranch: %s\nloci command: loci (on PATH)\nplugin dir: %s\nproject context: %s\nAvailable: /help, /exec-trace, /stack-depth, /memory-report, /control-flow, /bug-report\nAuto-runs: loci-preflight (in /plan), loci-post-edit (after edits)\nLOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to C/C++/Rust source files (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs), you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.\nLOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); parse it with `jq` and branch on `.ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252; `jq` is faster and ships with the plugin). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory — Claude Code prompts the user for permission on every out-of-project access, halting automated preflight/post-edit/eval runs. Always write inside the project (e.g. `.loci-build/`) so every tool sees the same path.\n%s' \
+        "$_VERSION_LINE" "$_CTX_TARGET" "$_CTX_COMPILER" "$_CTX_BUILD" "$_CTX_TARGET" "$_CTX_BRANCH" \
+        "$AUTH_PLUGIN_DIR" "$_CTX_PROJECT_CONTEXT" "$LOCI_VOICE")
 else
-    CONTEXT=$(printf 'loci version: %s\nTarget: %s, Compiler: %s, Build: %s\nLOCI target: %s\nBranch: %s\n%s\nplugin dir: %s\nproject context: %s\nAvailable: /help, /exec-trace, /stack-depth, /memory-report, /control-flow, /bug-report\nAuto-runs: loci-preflight (in /plan), loci-post-edit (after edits)\nLOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to C/C++/Rust source files (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs), you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.\n%s' \
-        "$_LOCI_VER" "$_CTX_TARGET" "$_CTX_COMPILER" "$_CTX_BUILD" "$_CTX_TARGET" "$_CTX_BRANCH" \
+    CONTEXT=$(printf '%s\nTarget: %s, Compiler: %s, Build: %s\nLOCI target: %s\nBranch: %s\n%s\nplugin dir: %s\nproject context: %s\nAvailable: /help, /exec-trace, /stack-depth, /memory-report, /control-flow, /bug-report\nAuto-runs: loci-preflight (in /plan), loci-post-edit (after edits)\nLOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to C/C++/Rust source files (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs), you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.\n%s' \
+        "$_VERSION_LINE" "$_CTX_TARGET" "$_CTX_COMPILER" "$_CTX_BUILD" "$_CTX_TARGET" "$_CTX_BRANCH" \
         "$_LOCI_STATUS_LINE" "$AUTH_PLUGIN_DIR" "$_CTX_PROJECT_CONTEXT" "$LOCI_VOICE")
 fi
 

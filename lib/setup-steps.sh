@@ -23,9 +23,7 @@ _LOCI_SETUP_STEPS_SOURCED=1
 
 # Pinned loci CLI (prod), from the PyPI wheel. Dev installs float — see
 # ensure_loci. This is the ONLY copy of these constants in the plugin.
-# 0.1.102 carries the Rust/Cargo build path this plugin version documents —
-# do NOT release this plugin before the loci-tools 0.1.102 wheel ships.
-LOCI_CLI_VERSION="0.1.102"
+LOCI_CLI_VERSION="0.1.111"
 LOCI_CLI_PACKAGE="loci-tools"
 
 loci_is_windows() {
@@ -66,6 +64,46 @@ find_jq() {
 
 have_uv() { command -v uv >/dev/null 2>&1; }
 
+# Return 0 if dotted-numeric version $1 is strictly greater than $2. Pure bash
+# so we don't depend on sort -V (BSD sort before macOS 10.13 lacks it).
+_semver_gt() {
+    local a b IFS=.
+    # shellcheck disable=SC2206
+    a=($1)
+    # shellcheck disable=SC2206
+    b=($2)
+    local n=${#a[@]} m=${#b[@]} i
+    [ "$m" -gt "$n" ] && n=$m
+    for (( i=0; i<n; i++ )); do
+        local x=${a[i]:-0} y=${b[i]:-0}
+        case "$x$y" in *[!0-9]*) return 1;; esac
+        if   [ "$x" -gt "$y" ]; then return 0
+        elif [ "$x" -lt "$y" ]; then return 1
+        fi
+    done
+    return 1
+}
+
+# Highest-semver plugin version in the cache root. PLUGIN_DIR (from $0) is stale
+# after an in-flight upgrade — the session keeps running the old version's files.
+# Cannot detect a deliberate plugin downgrade (0.1.105 still cached wins).
+_resolve_authoritative_plugin_dir() {
+    local cache_root="${PLUGIN_DIR%/*}"
+    [ -n "$cache_root" ] && [ -d "$cache_root" ] \
+        || { printf '%s' "$PLUGIN_DIR"; return; }
+    local d ver best_dir="" best_ver=""
+    for d in "$cache_root"/*/; do
+        ver="${d%/}"; ver="${ver##*/}"
+        case "$ver" in ''|*[!0-9.]*) continue;; esac # reject anything that isn't dotted-numeric
+        [ -n "$best_ver" ] && ! _semver_gt "$ver" "$best_ver" && continue
+        [ -f "${d}.claude-plugin/plugin.json" ] && [ -d "${d}lib" ] || continue
+        best_ver="$ver"; best_dir="${d%/}"
+    done
+    if [ -n "$best_dir" ]; then printf '%s' "$best_dir"
+    else printf '%s' "$PLUGIN_DIR"
+    fi
+}
+
 # Executable bits on the shell entry points; guards checkouts that lose +x.
 fix_exec_bits() {
     chmod +x "${PLUGIN_DIR}/hooks/"*.sh 2>/dev/null || true
@@ -74,11 +112,8 @@ fix_exec_bits() {
 
 # Installer for the loci CLI (a uv tool on PATH). Install-source resolution is
 # INDEPENDENT of LOCI_ENV: set LOCI_DEV_CLI_PATH=<checkout> for an editable
-# install; otherwise the pinned build. Backend URLs are chosen at runtime by the
-# CLI, not by which build is installed, so a tester runs the dev backend
-# (LOCI_ENV=dev) against the pinned build. Idempotent — reinstalls only when
-# loci is missing, the pin drifted, or the recorded install spec changed. Never
-# installs under _LOCI_BOOTSTRAP (set by tests; also an air-gapped opt-out).
+# install; otherwise the pinned build. Idempotent — reinstalls only when
+# loci is missing, the pin drifted, or the recorded install spec changed.
 # ALWAYS returns 0.
 _loci_install_spec=""      # resolved by _loci_resolve_install_spec
 _loci_cli_pinned=""        # set only when the spec is the version-tag pin
@@ -99,25 +134,39 @@ _loci_resolve_install_spec() {
         loci_log WARN setup-steps "LOCI_DEV_CLI_PATH set but no valid loci-cli checkout at '${LOCI_DEV_CLI_PATH}' — falling back to the pinned build"
     fi
 
+    # A stale hook file's pin is behind (see _resolve_authoritative_plugin_dir);
+    # taking the newer version's pin lands the upgrade in THIS session.
+    local _auth; _auth=$(_resolve_authoritative_plugin_dir)
+    if [ "$_auth" != "$PLUGIN_DIR" ]; then
+        local _p
+        _p=$(sed -n 's/^LOCI_CLI_VERSION="\([0-9.]*\)".*/\1/p' \
+             "${_auth}/lib/setup-steps.sh" 2>/dev/null | head -1)
+        if [ -n "$_p" ] && _semver_gt "$_p" "$LOCI_CLI_VERSION"; then
+            loci_log INFO setup-steps \
+                "newer pin from authoritative plugin dir ${_auth}: ${LOCI_CLI_VERSION} -> ${_p}"
+            LOCI_CLI_VERSION="$_p"
+        fi
+    fi
+
     _loci_install_spec="${LOCI_CLI_PACKAGE}==${LOCI_CLI_VERSION}"
     _loci_cli_pinned=1
 }
 
+# The CLI only ever moves FORWARD: the pin is a floor, so no plugin version —
+# stale or current — can roll a user back. Fix a bad CLI release by publishing a
+# fix and bumping the pin.
 _loci_cli_ready() {
     command -v loci >/dev/null 2>&1 || return 1
-    # A prior install recording a different spec means the source changed
-    # (pinned↔editable, or a different editable path) — force reinstall so the
-    # opt-in takes. No record (externally installed loci) → fall through.
     if command -v jq >/dev/null 2>&1 && [ -f "${STATE_DIR}/loci-cli-status.json" ]; then
-        local _recorded
+        local _recorded _want="$_loci_install_spec"
         _recorded=$(jq -r '.spec // ""' "${STATE_DIR}/loci-cli-status.json" 2>/dev/null)
-        [ -n "$_recorded" ] && [ "$_recorded" != "$_loci_install_spec" ] && return 1
+        [ -n "$_loci_cli_pinned" ] && { _recorded="${_recorded%%==*}"; _want="${_want%%==*}"; }
+        [ -n "$_recorded" ] && [ "$_recorded" != "$_want" ] && return 1
     fi
-    # Editable/floating installs float — accept presence. Only the pin is
-    # version-gated (a bump forces reinstall).
+    # Editable/floating installs float — accept presence.
     [ -n "$_loci_cli_pinned" ] || return 0
     local v; v=$(loci --version 2>/dev/null | tr -cd '0-9.')
-    [ "$v" = "$LOCI_CLI_VERSION" ]
+    [ "$v" = "$LOCI_CLI_VERSION" ] || _semver_gt "$v" "$LOCI_CLI_VERSION"
 }
 
 _loci_write_status() {
@@ -150,8 +199,14 @@ ensure_loci() {
     # -p 3.12 pins the interpreter (CLI + asmslicer need it). --force replaces an
     # existing install on a bump. Word-split $_loci_install_spec so a dev
     # editable spec ("--editable /path") passes as two args.
+    # --refresh-package: a plugin release pins a CLI published minutes earlier;
+    # uv's cached simple index predates the upload and resolution fails with
+    # "no version of loci-tools==X" even though PyPI has it. Pinned installs
+    # only run on pin drift, so the revalidation cost is one-off.
+    local _refresh=""
+    [ -n "$_loci_cli_pinned" ] && _refresh="--refresh-package ${LOCI_CLI_PACKAGE}"
     # shellcheck disable=SC2086
-    if uv tool install --force -p 3.12 $_loci_install_spec >"$_install_log" 2>&1; then
+    if uv tool install --force -p 3.12 $_refresh $_loci_install_spec >"$_install_log" 2>&1; then
         _loci_write_status installed
         loci_log INFO setup-steps "loci CLI installed ($_loci_install_spec)"
     else
@@ -254,8 +309,9 @@ detect_and_write_context() {
     local JQ="${JQ:-jq}"
     local PROJECT_INFO
     PROJECT_INFO=$("${PLUGIN_DIR}/lib/detect-project.sh" "$(pwd)" 2>/dev/null) || PROJECT_INFO=""
-    # detect-project.sh owns the schema and always emits detection_status:"ok".
-    # No/invalid output means it couldn't run — record that, don't re-declare it.
+    # detect-project.sh owns the schema and emits detection_status "ok",
+    # "no_project", or "multi_project". No/invalid output means it couldn't
+    # run — record that, don't re-declare it.
     "$JQ" -e 'has("detection_status")' <<< "$PROJECT_INFO" >/dev/null 2>&1 \
         || PROJECT_INFO='{"detection_status":"failed"}'
 
@@ -263,6 +319,8 @@ detect_and_write_context() {
     COMPILER=$( "$JQ" -r '.compiler     // "unknown"' <<< "$PROJECT_INFO" 2>/dev/null || echo unknown)
     BUILD_SYS=$("$JQ" -r '.build_system // "unknown"' <<< "$PROJECT_INFO" 2>/dev/null || echo unknown)
     LOCI_TARGET=$("$JQ" -r '.loci_target // "unknown"' <<< "$PROJECT_INFO" 2>/dev/null || echo unknown)
+    _CTX_STATUS=$("$JQ" -r '.detection_status // "failed"' <<< "$PROJECT_INFO" 2>/dev/null || echo failed)
+    _CTX_SUBPROJECT_COUNT=$("$JQ" -r '.subproject_roots | length' <<< "$PROJECT_INFO" 2>/dev/null || echo 0)
 
     local HASH; HASH=$(hash_cwd)
     local GIT_BRANCH; GIT_BRANCH=$(_git_branch)

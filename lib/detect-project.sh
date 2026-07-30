@@ -62,6 +62,112 @@ _find_windows_compiler() {
   return 1
 }
 
+# ---- Project evidence gate ---------------------------------------------
+# Detection must be anchored on evidence IN the tree. PATH toolchains and
+# `uname -m` prove the machine, not the directory — without this gate any dir
+# on an ARM host resolved to a valid LOCI target, and the deep scans below
+# claimed a parent dir full of unrelated repos via some subproject's Makefile.
+
+_has_root_build_file() {
+  local d="$1"
+  [ -f "$d/Cargo.toml" ] || [ -f "$d/CMakeLists.txt" ] ||
+  [ -f "$d/Makefile" ] || [ -f "$d/makefile" ] || [ -f "$d/GNUmakefile" ] ||
+  [ -f "$d/meson.build" ] || [ -f "$d/BUILD" ] || [ -f "$d/WORKSPACE" ] ||
+  [ -f "$d/conanfile.txt" ] || [ -f "$d/conanfile.py" ] || [ -f "$d/vcpkg.json" ]
+}
+
+_has_vendor_project_file() {
+  find "$CWD" -maxdepth 2 \( -name "*.projectspec" -o -name "*.ccsproject" \
+    -o -name ".cproject" -o -name "*.ewp" -o -name "*.eww" \
+    -o -name "*.uvprojx" -o -name "*.uvproj" \) -type f -print -quit \
+    2>/dev/null | grep -q .
+}
+
+# C/C++/Rust sources, asm, or a linked binary within the given depth.
+_has_source_evidence() {
+  local depth="$1"
+  find "$CWD" -maxdepth "$depth" \
+    -type d \( -name .git -o -name node_modules -o -name .venv \
+    -o -name target -o -name vendor -o -name third_party \) -prune -o \
+    \( -name "*.c" -o -name "*.cc" -o -name "*.cpp" -o -name "*.cxx" \
+    -o -name "*.h" -o -name "*.hh" -o -name "*.hpp" -o -name "*.hxx" \
+    -o -name "*.rs" -o -name "*.asm" -o -name "*.s" -o -name "*.S" \
+    -o -name "*.elf" -o -name "*.out" -o -name "*.axf" \) \
+    -type f -print -quit 2>/dev/null | grep -q .
+}
+
+# Immediate subdirs that are project roots in their own right (own repo or
+# own root-level build file). `-e` catches `.git` files too (worktrees,
+# submodules).
+_list_subproject_roots() {
+  local d
+  for d in "$CWD"/*/; do
+    d="${d%/}"
+    [ -d "$d" ] || continue
+    if [ -e "$d/.git" ] || _has_root_build_file "$d"; then
+      echo "$d"
+    fi
+  done
+}
+
+# True when CWD sits INSIDE a git worktree (a `.git` entry in a strict
+# ancestor) — e.g. a repo subdir whose children are submodules; those are one
+# project's parts, never a container. The walk stops before $HOME so a
+# dotfiles repo at ~ can't make every dir under home look like project
+# interior.
+_inside_git_worktree() {
+  local d
+  d=$(cd "$CWD" 2>/dev/null && pwd) || return 1
+  local i=0
+  while [ $i -lt 40 ]; do
+    d=$(dirname "$d")
+    [ "$d" = "${HOME:-/}" ] || [ "$d" = "/" ] && return 1
+    [ -e "$d/.git" ] && return 0
+    i=$((i + 1))
+  done
+  return 1
+}
+
+_is_home_dir() {
+  local d h
+  d=$(cd "$CWD" 2>/dev/null && pwd -P) || return 1
+  h=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P) || return 1
+  [ "$d" = "$h" ]
+}
+
+# Echoes the detection verdict:
+#   ok            — a single analyzable project; run full detection
+#   multi_project — a container of independent projects, not a project itself
+#   no_project    — no C/C++/Rust evidence anchored to this tree
+_project_gate() {
+  # .loci-build/ is LOCI's own artifact cache — it only exists because LOCI
+  # analyzed this tree before, so it anchors the dir as a project by itself.
+  if _has_root_build_file "$CWD" || [ -d "$CWD/.loci-build" ] \
+      || _has_vendor_project_file; then
+    echo "ok"; return
+  fi
+  if [ -e "$CWD/.git" ] || _inside_git_worktree; then
+    # A single repo: sources may sit deep (src/app/...), so scan deeper —
+    # safe because everything under one repo belongs to it.
+    _has_source_evidence 6 && { echo "ok"; return; }
+    echo "no_project"; return
+  fi
+  # Sources sitting directly in CWD claim the dir even without git/build files.
+  _has_source_evidence 1 && { echo "ok"; return; }
+  local n
+  n=$(_list_subproject_roots | grep -c . || true)
+  if [ "$n" -ge 2 ]; then echo "multi_project"; return; fi
+  # Any subproject root means depth-2 sources belong to IT, not to CWD.
+  # $HOME is excluded: its repos live at ~/Projects/<repo>, deeper than
+  # _list_subproject_roots looks, so n==0 there means "layout too deep to see",
+  # not "nothing owns these sources" — and one stray ~/Downloads/*.out would
+  # then claim the whole home tree.
+  if [ "$n" -eq 0 ] && ! _is_home_dir && _has_source_evidence 2; then
+    echo "ok"; return
+  fi
+  echo "no_project"
+}
+
 # Detect C++ compiler (including vendor/embedded toolchains).
 detect_compiler() {
   command -v g++ >/dev/null 2>&1 && echo "g++" && return
@@ -230,6 +336,110 @@ find_elf_files() {
   else
     printf '%s\n' "${found[@]}" | sort -u | head -30 | jq -Rn '[inputs]'
   fi
+}
+
+# Find the artifacts LOCI itself produced, under .loci-build/.
+#
+# These never reach find_elf_files: its .o sweep globs "$CWD"/*[Bb]uild* plus a
+# handful of fixed names, and with `dotglob` off (the default — nothing here sets
+# it) a leading-dot directory matches none of those patterns. So the freshest
+# artifact in the tree, the object loci-post-edit had just written, was invisible
+# to the session context while a stale linked ELF in the project root was the only
+# candidate advertised. That is how a reported analysis came to be based on a
+# binary older than its own source. DO NOT "simplify" this into the find_elf_files
+# globs: the dot prefix is the whole trap.
+#
+# Published under its own context key (`loci_artifacts`) rather than merged into
+# `elf_files`, because the skills rank the two differently and existing consumers
+# of `elf_files` (loci-cli's flag_sources/linked_elf_dwarf.py) must keep seeing exactly the
+# project's own build. Each entry carries `mtime` (epoch seconds) and `kind` —
+# `linked` for .elf/.out/.axf, `object` for .o — because a relocatable object
+# cannot answer a whole-program question (its call edges are unapplied
+# relocations) and a skill has to tell the two apart before choosing. Newest first.
+# Turn NUL-delimited `<epoch>|<path>` records into the published array, newest
+# first, capped. jq does the framing, the sort AND the cap on purpose:
+#
+#   ⚠ `sort -z` and `head -z` are GNU-only (`head -z` since coreutils 8.25). An
+#   earlier revision piped both branches through them — including the BSD branch,
+#   which exists *because* BSD `find` has no `-printf`. On macOS `head` exits
+#   "illegal option -- z", the pipeline yields nothing, and `loci_artifacts` was
+#   unconditionally `[]`. Silently: `setup-steps.sh` runs the detector with
+#   `2>/dev/null`. Since `elf_files` still cannot see `.loci-build` (the dotglob
+#   trap), that made the ORIGINAL reported bug live on macOS — freshest artifact
+#   invisible, only the stale root ELF advertised. Three consecutive rounds of
+#   repair to this function broke the platform the repair was for; keeping the
+#   sort and the cap inside jq removes the portability surface altogether.
+#
+#   `jq -Rs` slurps raw input and `split("\u0000")` frames on NUL *inside* jq, so a
+#   path containing a newline stays one record — no fabricated truncated path gets
+#   published (the previous `tr '\0' '\n'` produced one, and with no `.o` suffix it
+#   was classified `linked`, i.e. exactly the rank-2 candidate Pattern B prefers).
+#
+#   `|| echo '[]'` is load-bearing: under `set -e` inside
+#   `LOCI_ARTIFACTS=$(_stage …)` a jq failure took the whole session context down
+#   with it — no compiler, no arch, no elf_files.
+_LOCI_ARTIFACTS_JQ='
+  [ split("\u0000")[]
+    | select(length > 0)
+    | split("|") as $f
+    | select(($f | length) >= 2 and ($f[0] | test("^[0-9]+([.][0-9]+)?$")))
+    | ($f[1:] | join("|")) as $p
+    | {path: $p,
+       mtime: ($f[0] | tonumber | floor),
+       kind: (if ($p | endswith(".o")) then "object" else "linked" end)} ]
+  | sort_by(-.mtime) | .[0:30]'
+
+_loci_artifacts_json() {
+  jq -Rs "$_LOCI_ARTIFACTS_JQ" 2>/dev/null || echo '[]'
+}
+
+find_loci_artifacts() {
+  local dir="$CWD/.loci-build"
+  [ -d "$dir" ] || { echo '[]'; return 0; }
+  # NB: pre-edit snapshots (`loci build snapshot` writes `<output>.prev`, e.g.
+  # blink.o.prev) cannot reach here — none of the -name patterns below match a path
+  # ending in .prev. That is deliberate: a .prev is by definition the state BEFORE
+  # the current edit, so it is never a candidate for "measure this now". An earlier
+  # revision also carried a `case *.prev) continue` guard; it was dead code, and dead
+  # code reading as protection is how a vacuous guard happens. If the patterns are
+  # ever widened the filter has to come back — the property is pinned by
+  # tests/unit/test_freshness_contract.py.
+  #
+  # ⚠ NUL framing must never pass through a shell variable: `$(...)` strips NUL, so
+  # buffering the records collapsed every one of them into a single line. Each branch
+  # pipes straight into the jq above.
+  local prune_names=( -name "*.elf" -o -name "*.out" -o -name "*.axf" -o -name "*.o" )
+
+  # `-printf` gets every mtime from ONE process; without it this needs a `stat` spawn
+  # per file (~19 ms each on Git Bash). Probe for it rather than inferring from the
+  # output, so an empty tree cannot be mistaken for a missing feature.
+  if find "$dir" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+    timeout 6 find "$dir" -maxdepth 4 -type f \( "${prune_names[@]}" \) \
+      -printf '%T@|%p\0' 2>/dev/null \
+      | _loci_artifacts_json
+    return 0
+  fi
+
+  # BSD/macOS: no -printf. One `stat` per file, GNU-first split as in _freshest_elf.
+  local rows=() f mt
+  while IFS= read -r -d '' f; do
+    [ -n "$f" ] || continue
+    mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+    [ -n "$mt" ] || continue
+    rows+=("$mt|$f")
+  done < <(
+    timeout 6 find "$dir" -maxdepth 4 -type f \( "${prune_names[@]}" \) \
+      -print0 2>/dev/null
+  )
+  # `${rows[@]}` on an empty array is an unbound-variable error under `set -u` on
+  # bash <= 4.3 (macOS /bin/bash, our shebang) — guarded as at the three other array
+  # expansions in this file. A `.loci-build/` holding only `elf/<stem>/` text dumps
+  # is the common way to reach it.
+  if [ ${#rows[@]} -eq 0 ]; then
+    echo '[]'
+    return 0
+  fi
+  printf '%s\0' "${rows[@]}" | _loci_artifacts_json
 }
 
 # Find candidate build directories by locating dirs that contain either a
@@ -711,6 +921,23 @@ _stage() {
     return $rc
 }
 
+# Every probe writes these globals and the jq at the bottom is the script's
+# single emit point. Non-ok gate verdicts keep the defaults and skip probing.
+COMPILER="unknown"
+BUILD_COMPILER=""
+BUILD_SYSTEM="none"
+ARCH="unknown"
+LOCI_TARGET="null"
+SOURCES='[]'
+BINARIES='[]'
+ELF_FILES='[]'
+LOCI_ARTIFACTS='[]'
+BUILD_DIRS='[]'
+ASM_FILES='[]'
+CROSS_COMPILERS='[]'
+SUBPROJECT_ROOTS='[]'
+
+detect_full() {
 COMPILER=$(_stage detect_compiler        detect_compiler)
 BUILD_SYSTEM=$(_stage detect_build_system detect_build_system)
 SOURCES=$(_stage find_sources             find_sources)
@@ -721,6 +948,7 @@ loci_log INFO detect-project "start: scan_linked_bins"
 _scan_linked_bins
 loci_log INFO detect-project "end: scan_linked_bins (rc=0)"
 ELF_FILES=$(_stage find_elf_files         find_elf_files)
+LOCI_ARTIFACTS=$(_stage find_loci_artifacts find_loci_artifacts)
 BUILD_DIRS=$(_stage find_build_dirs       find_build_dirs)
 BINARIES=$(_stage find_binaries           find_binaries)
 ASM_FILES=$(_stage find_asm_files         find_asm_files)
@@ -758,7 +986,6 @@ fi
 # Only compute BUILD_COMPILER when COMPILER is generic: when it's already
 # vendor-specific the result would be discarded anyway, and the fallback
 # grep-tally walks every Makefile + projectspec (~7s on TI trees on Windows).
-BUILD_COMPILER=""
 if $IS_CARGO; then
   loci_log INFO detect-project "skip: detect_build_compiler (cargo project)"
 else
@@ -774,6 +1001,18 @@ else
 fi
 
 loci_log INFO detect-project "result: compiler=$COMPILER build_system=$BUILD_SYSTEM arch=$ARCH loci_target=$LOCI_TARGET elfs=$(echo "$ELF_FILES" | jq 'length' 2>/dev/null || echo ?) build_dirs=$(echo "$BUILD_DIRS" | jq 'length' 2>/dev/null || echo ?)"
+}
+
+GATE_STATUS=$(_stage project_gate _project_gate)
+case "$GATE_STATUS" in
+  ok)
+    detect_full ;;
+  multi_project)
+    SUBPROJECT_ROOTS=$(_list_subproject_roots | head -20 | jq -Rn '[inputs]')
+    loci_log INFO detect-project "result: detection_status=multi_project — compiler/arch not probed" ;;
+  *)
+    loci_log INFO detect-project "result: detection_status=$GATE_STATUS — compiler/arch not probed" ;;
+esac
 
 # Resolve full path for compilers discovered via Windows search (not on PATH).
 COMPILER_PATH=""
@@ -797,29 +1036,36 @@ jq -n \
   --argjson source_files "$SOURCES" \
   --argjson binaries "$BINARIES" \
   --argjson elf_files "$ELF_FILES" \
+  --argjson loci_artifacts "$LOCI_ARTIFACTS" \
   --argjson build_dirs "$BUILD_DIRS" \
   --argjson asm_files "$ASM_FILES" \
   --argjson cross_compilers "$CROSS_COMPILERS" \
   --argjson loci_compatible "$LOCI_COMPATIBLE" \
   --arg loci_target "$LOCI_TARGET" \
+  --argjson subproject_roots "$SUBPROJECT_ROOTS" \
+  --arg detection_status "$GATE_STATUS" \
   --arg detected_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
   '{
-    language_stack: (if $build_system == "cargo" then ["rust"] else ["cpp"] end),
+    language_stack: (if $detection_status != "ok" then []
+                     elif $build_system == "cargo" then ["rust"] else ["cpp"] end),
     compiler: $compiler,
     compiler_path: (if $compiler_path == "" then null else $compiler_path end),
     build_compiler: (if $build_compiler == "" then null else $build_compiler end),
     build_system: $build_system,
-    project_type: (if $build_system == "cargo" then "rust" else $project_type end),
+    project_type: (if $detection_status != "ok" then "none"
+                   elif $build_system == "cargo" then "rust" else $project_type end),
     architecture: $architecture,
     source_files: $source_files,
     binaries: $binaries,
     elf_files: $elf_files,
+    loci_artifacts: $loci_artifacts,
     build_dirs: $build_dirs,
     asm_files: $asm_files,
     cross_compilers: $cross_compilers,
     loci_compatible: $loci_compatible,
     loci_target: (if $loci_target == "null" then null else $loci_target end),
+    subproject_roots: $subproject_roots,
     detected_at: $detected_at,
     scan_depth: 8,
-    detection_status: "ok"
+    detection_status: $detection_status
   }'

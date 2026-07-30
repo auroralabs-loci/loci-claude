@@ -28,9 +28,32 @@ emitted at session start) and substitute them wherever the placeholders appear:
 - `LOCI target: <arch>` → use as `<loci_target>` (one of `aarch64`, `armv7e-m`, `armv6-m`, `tc399`)
 - `plugin dir: <path>` → use as `<plugin-dir>` (to locate shared docs like this contract)
 
-The compile-the-source skills (preflight, post-edit) additionally use:
+All skills read this one; the Pattern B skills depend on it:
 
-- `project context: <path>` → use as `<project-context>` (the persisted detection JSON)
+- `project context: <path>` → use as `<project-context>` (the persisted detection
+  JSON). The compile-the-source skills (preflight, post-edit) pass it to
+  `loci build compile`; the Pattern B skills read `elf_files` and `loci_artifacts`
+  out of it when choosing a binary.
+
+The Pattern B skills read two lists out of that same JSON when picking a binary
+(see **Step 0 — Pattern B**):
+
+- `elf_files` — linked binaries and objects found in the project's own build.
+- `loci_artifacts` — artifacts **LOCI** produced under `.loci-build/`, each as
+  `{path, mtime, kind}` with `kind` one of `linked` / `object`, newest first. Kept
+  separate from `elf_files` on purpose: these are the ones whose provenance LOCI
+  knows exactly, and the two are ranked differently.
+
+### Reporting versions to the user
+
+The context carries two versions, and they are released separately:
+
+    loci version: 0.1.105                     ← the plugin
+    loci command: loci (on PATH, v0.1.104)    ← the CLI
+
+Report the plugin version as *the* LOCI version, and never show the two side by
+side. Surface the CLI version only in `/bug-report`. If the CLI is genuinely too
+old, say so as an action (run `/loci:setup`), not as a number.
 
 ---
 
@@ -129,9 +152,13 @@ original behavior.)
 
 ## Cross-compilation defaults
 
-Use these defaults **only when the user has no existing build**. Prefer an
-existing binary (`.elf`, `.out`, `.o`, `.axf`) whenever one is available. The
-`<loci_target>` values are the same vocabulary used on every `loci elf` command.
+Use these defaults **only when the user has no existing build**, or when every
+existing binary failed the freshness gate and cannot be rebuilt by its own build
+system. Prefer an existing binary (`.elf`, `.out`, `.o`, `.axf`) **that passes
+Step 0 — Pattern B, B3** — availability alone is not a reason to measure something,
+which is exactly the reading that produced an analysis of a binary older than its
+own source. The `<loci_target>` values are the same vocabulary used on every
+`loci elf` command.
 
 | LOCI target | Compiler                | Flags                                | Build dir               |
 |-------------|-------------------------|--------------------------------------|-------------------------|
@@ -296,15 +323,153 @@ The LOCI target architecture is already resolved in the session context
     Target: <target>, Compiler: <compiler>, Build: <build>
     LOCI target: <loci_target>
 
-Pick the binary to analyze in this order:
-
-1. **User's own compilation** — if the user already compiled targeting a LOCI
-   architecture, reuse their binary.
-2. **Existing ELF/object files** — if the project already has `.elf`, `.out`,
-   `.o`, or `.axf` files, use them directly.
-3. **No existing build** — cross-compile with the **Cross-compilation defaults**
-   above, or ask the user which target.
-
 If the user provides their own binary, asm-analyze auto-detects the architecture
 from the ELF. Do **not** re-run detection scripts — use the values already in the
 session context.
+
+Selecting the binary has four parts, in this order, and **none of them is
+optional**: decide what kind of artifact the question needs (B1), rank the
+candidates (B2), prove the candidate is not older than its sources (B3), and name
+the artifact you measured in the report (B4).
+
+### B1 — Match the artifact to the question
+
+| The question | Needs |
+|---|---|
+| Worst-case stack depth, ROM/RAM totals, timing across a call, anything that crosses a call edge | **A linked binary only** (`.elf` / `.out` / `.axf`) |
+| One function's own frame, its own blocks, its own CFG | A linked binary, **or** a relocatable `.o` — labelled as such |
+
+**A relocatable `.o` cannot answer a whole-program question, and it fails
+silently.** In a `.o`, a `bl` is an unapplied relocation: the encoded target is a
+branch to itself (`f7ff fffe` for `R_ARM_THM_CALL`) and the real callee lives only
+in the relocation table. `objdump` *renders* the resolved name because it applies
+relocations; the `loci elf` pipeline disassembles the bytes and does not, so the
+call edge is simply absent. Measured on a fresh object whose `kernel_main` calls a
+function with a 4096-byte stack buffer:
+
+    on the .o        kernel_main   8 B    path ['kernel_main']                                    PASS
+    relinked ELF     kernel_main   4144 B path kernel_main → build_pattern → render_frame  202%  FAIL
+
+Both runs used a **fresh, correct** artifact. `has_unknown_callees` was `false` in
+the first — the soundness flags do not catch this, so nothing warns you. Preferring
+the fresh `.o` for a whole-program question is therefore *worse* than measuring a
+stale ELF: a stale ELF gives a wrong answer about a provably wrong binary, while
+the `.o` gives a confidently wrong answer about the right one.
+
+So when the question needs call edges and only a `.o` is fresh, the `.o` is
+**evidence that a relink is required**, not the thing to measure. Relink, then
+measure the ELF.
+
+### B2 — Collect the candidates, then filter by freshness before ranking
+
+The project-context JSON (`project context:` in the session context) carries
+`elf_files` (the project's own build) and `loci_artifacts` (artifacts LOCI itself
+produced under `.loci-build/`, each with its `mtime` and `kind`, newest first).
+Read both. Note the context is a **session-start snapshot** and is never refreshed,
+so anything built during this session is in neither list — you know those paths
+because you just created them.
+
+**Freshness is a filter, not a tiebreak.** Gather every candidate, run B3 on them,
+discard the stale ones, and only then rank what is left:
+
+1. A binary the user named explicitly — if it survives B3, use it.
+2. Any surviving **linked** binary (`.elf` / `.out` / `.axf`), from either list or
+   from this session's own rebuild. Among several, take the newest `mtime`.
+   **Reject one built for a different architecture.** `loci_artifacts` covers all of
+   `.loci-build/`, so a relink a previous session left under
+   `.loci-build/<other-target>/` can be the newest linked candidate, pass the
+   freshness gate (its sources are unchanged) and then be measured with
+   `--arch <loci_target>` for the wrong ISA — with no flag warning. A path under
+   `.loci-build/` is scoped by the target directory it sits in; anything outside
+   `.loci-build/<loci_target>/` needs the ISA confirmed before you trust it.
+3. A surviving **object** (`.loci-build/<loci_target>/*.o`) — **only** for a
+   single-function question per B1, and only with the label from B4.
+4. **Nothing usable survives** — including the case where the only survivor is an
+   object and the question needs call edges (B1). That is not "no build": it is
+   *evidence a relink is needed*, and it is the common shape after a `make clean`
+   plus a post-edit compile. Relink the surviving object(s) per B3's rebuild step,
+   or cross-compile with the **Cross-compilation defaults** above, or ask the user
+   which target.
+
+Ranking by *provenance first* is what produced the reported bug, and ranking
+`.loci-build` above the user's own build repeats it in a new way: a relink left in
+`.loci-build/` by a **previous** session outranks the `.elf` the user's `make` just
+produced, and rebuilding with `make` does not touch it — so a provenance-first
+ranking will keep re-nominating the same stale artifact forever. Filter first and
+that cannot happen.
+
+`elf_files` entries carry no `mtime` (they are bare path strings); `stat` them, or
+just rely on B3's `elf_mtime`, which every candidate gets anyway.
+
+### B3 — Prove it is not older than its sources
+
+Ask before spending a model call:
+
+    loci build fresh --elf <candidate>
+
+Branch on `.data.stale` — never on the message text. (The same block rides on
+every `loci elf` verb as `.data.source_provenance`, so if you have already made an
+`elf` call you can read it from there instead of paying for a second check.)
+
+- **`true` — this candidate is out. Do not report numbers from it.**
+  `.data.sources_newer` names what changed and by how much. Either move to the next
+  surviving candidate from B2, or rebuild:
+  1. the project's own build system when it is a cheap one-liner (`make`,
+     `cmake --build <dir>`, `ninja`) — it produces a *linked* binary, which is what
+     a whole-program question needs;
+  2. otherwise `loci build compile --source <file> --loci-target <loci_target>
+     --context <project-context>` for the translation unit, and then link it, per
+     B1's rule about `.o` files. No `loci` verb links, and the defaults table gives
+     compile flags only — so if you cannot reconstruct the link (no linker script,
+     other objects unknown), do **not** fall back to measuring the object for a
+     whole-program question. Say what is missing and stop, per the paragraph below;
+     a single-function answer from the object is acceptable *only* with B4's
+     scope label.
+
+  Then **measure the artifact you just produced** — confirm it with one
+  `loci build fresh` on *that path* and go straight to B4. Do **not** re-enter B2's
+  candidate list: a rebuild refreshes one artifact, and re-ranking would hand you
+  back a different, still-stale one. A candidate B3 rejected stays rejected for the
+  rest of this run.
+- **`false`** — proceed.
+- **`null` — freshness is unknown, not confirmed.** Common and not an error: no
+  `-g`, or the binary was built on another machine. Proceed, and say so in the
+  report using `.data.reason` verbatim. For a binary with no debug info at all,
+  `loci build fresh --elf <path> --source-root <project-root>` adds a coarser
+  mtime comparison.
+
+If every candidate is stale and no rebuild is possible (no build system, no
+compiler, the user declines), **say that and stop**. Do not report numbers for code
+that is not on disk. Reporting "here are the numbers, but they may be stale" is the
+failure this gate exists to prevent — an engineer acts on the numbers and ignores
+the caveat.
+
+**If the installed CLI is too old to have the gate** — `loci build fresh` comes back
+`ok:false` with a usage error (argparse `invalid choice`, exit 2) and no `loci elf`
+envelope carries `source_provenance` — do not treat that as "fresh". Say once:
+
+    This loci CLI predates the artifact-freshness check; run `/loci:setup` to
+    update. Freshness of <artifact> is unverified.
+
+then continue with the freshness state recorded as unverified, and carry that
+through to B4's line. The pinned CLI (`lib/setup-steps.sh`) always has the verb;
+this path exists for a stale `loci` on PATH ahead of the pin.
+
+### B4 — Name the artifact you measured
+
+Every Pattern B report **must** carry one provenance line, immediately before its
+conclusion table or footer:
+
+    Artifact: kernel.elf (linked 2026-07-27 13:27:42, sources current)
+
+Variants, matching what B3 returned:
+
+    Artifact: .loci-build/armv6-m/kernel.elf (relinked 2026-07-29 12:03:11 by this run, sources current)
+    Artifact: build/app.elf (linked 2026-07-28 09:14:02, freshness unverified — no DWARF debug info)
+    Artifact: .loci-build/armv6-m/blink.o (object, 2026-07-29 12:31:41, sources current)
+              Single-function scope: callees are not resolved in a relocatable object.
+
+This line is the durable part of this section. Selection rules live in prose and a
+future rewording can weaken them; a line that names the file and its build time
+means a reader can always see *what* was measured and decide for themselves
+whether it was the right thing.

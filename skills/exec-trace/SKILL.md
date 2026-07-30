@@ -29,8 +29,10 @@ read it when generating analysis results.
 
 Follow **Step 0 — Pattern B** and **Cross-compilation defaults** in the shared
 runtime contract: use `<loci_target>` from the session context (do not
-re-detect), reuse an existing binary when one is available, otherwise
-cross-compile for `<loci_target>` with the default compiler/flags. In the steps
+re-detect), then pick a binary through B1-B4 — collect candidates, **discard the
+ones B3 reports stale**, and cross-compile only if nothing survives. "An existing
+binary is available" is not on its own a reason to measure it; that reading is what
+produced an analysis of a binary older than its own source. In the steps
 below, replace `<compiler>` and `<flags>` with the resolved values.
 
 **Authentication is on-demand.** `loci timing` (step 3) needs a signed-in LOCI
@@ -38,9 +40,27 @@ session; it checks lazily. There is no upfront probe — if step 3 returns
 `error.code == "auth_required"`, handle it per §4 (tell the user to run
 `! loci login`, then stop). Do not run `/mcp` — timing no longer goes through MCP.
 
-## Incremental Path (preferred)
+## Incremental Path — only for a known in-flight edit
 
-If a previous `.o` exists in `.loci-build/<loci_target>/`, use incremental compilation:
+**When this path applies.** Only when you are measuring an edit already in flight —
+the `preflight` → `post-edit` chain, where a `.o` for *this* source was produced
+earlier in *this* session and the point is the before/after delta. A standalone
+`/exec-trace` request in a fresh session is **not** that: it goes through
+freshness-gated **Step 0 — Pattern B** instead, and Pattern B's B1 rule decides
+whether a `.o` can answer the question at all.
+
+Read that way, "a previous `.o` exists" is a precondition, not a trigger: an
+orphaned `.o` left in `.loci-build/` by an earlier session says nothing about the
+request in hand. Pattern B is read first and it wins; this path is the exception it
+delegates to, not a competing option.
+
+Timing measured on a `.o` covers the function's **own blocks only** — a `bl` to
+anything outside the translation unit is an unapplied relocation and its callee is
+not traced (Pattern B, B1). That is exactly what a self-time delta wants, and it is
+why the delta is still valid here; say "own blocks" in the report so it is not read
+as an end-to-end figure.
+
+Then, with those conditions met:
 
 1. Save the existing `.o` as `.o.prev`
 2. Compile only the changed source with `-c`.
@@ -159,6 +179,26 @@ Verdict line format matches `loci-post-edit`'s exactly:
 ```
 Verdict: <OK|CAUTION> — <one-sentence cause grounded in numbers>
 ```
+
+## Artifact provenance (mandatory)
+
+Emit the **Step 0 — Pattern B, B4** line once per run, immediately before the
+verdict line:
+
+```
+Artifact: filter.elf (linked 2026-07-28 09:14:02, sources current)
+```
+
+Take the build time and the freshness phrase from what `loci build fresh` returned,
+or from `.data.source_provenance` on the `loci elf asm` envelope you already have
+(`elf_mtime`, and `stale` → `sources current` /
+`SOURCES NEWER THAN THIS BINARY` / `freshness unverified — <reason>`). On the
+Incremental Path add B4's single-function-scope note: timing from a `.o` covers the
+function's own blocks, callees excluded.
+
+Never omit this line, and never write "sources current" without having run the
+check. Timing numbers are the ones an engineer is most likely to act on without
+re-deriving, so the binary they describe has to be on the page.
 
 ## LOCI voice remark
 

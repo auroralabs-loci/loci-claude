@@ -36,12 +36,16 @@ auto-detects architecture from the ELF.
 
 ## Step 1: Identify the Binary and Optional Map File
 
-Determine which binary to analyze:
+Rank and freshness-gate the candidates per **Step 0 — Pattern B** (B1–B3) — a binary
+older than its sources reports the footprint of a program that is no longer on disk,
+and section sizes look no less confident for being wrong. In short:
 
-1. **User provides a binary** — use it directly
+1. **User provides a binary** — use it directly, and still run B3 on it.
 2. **Build from source** — cross-compile for the resolved architecture:
        <compiler> <flags> -o .loci-build/<arch>/<basename>.elf <source>
-   For per-file analysis, compile with `-c` to get a `.o` file.
+   For per-file analysis, compile with `-c` to get a `.o` file. A `.o` has no linked
+   addresses, so its report is per-section sizes only (see "For .o files" below);
+   ROM/RAM region budgets need the linked binary.
 
 If a linker `.map` file is available (often next to the ELF), the user may
 provide its path for region budget analysis. Supported map file formats:
@@ -331,6 +335,25 @@ One bullet per warning, with the `detail` field on a continuation line.
 The Conclusion table verdict must reflect that no region budgets were
 computed (do not claim "PASS <x>%" when `memory_regions` is null because
 of a map-file warning — use the no-budget verdict form instead).
+
+## Artifact provenance (mandatory)
+
+Emit the **Step 0 — Pattern B, B4** line once per run, immediately before the
+Conclusion table:
+
+```
+Artifact: build/app.elf (linked 2026-07-28 09:14:02, sources current)
+```
+
+Take the build time and the freshness phrase from what `loci build fresh` returned,
+or from `.data.source_provenance` on the `loci elf memmap` envelope you already have
+(`elf_mtime`, and `stale` → `sources current` /
+`SOURCES NEWER THAN THIS BINARY` / `freshness unverified — <reason>`). In delta mode
+emit one line per side — `memmap --comparing-elf` returns
+`.data.comparing_source_provenance` for the second binary — because a delta between
+a current binary and a stale one reads as a code change that never happened.
+
+Never omit this line, and never write "sources current" without having run the check.
 
 ## Conclusion table
 

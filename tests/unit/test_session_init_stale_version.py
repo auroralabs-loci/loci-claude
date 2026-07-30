@@ -6,8 +6,8 @@ dir from ``$0``'s location points at a dir the upgrade is about to delete, and
 the next tool call hits ``No such file or directory``. The hook instead scans
 the cache root for the highest-semver version that still has both
 ``.claude-plugin/plugin.json`` and ``lib/``. Internal sourcing keeps using
-``PLUGIN_DIR`` — the divergence only matters for paths referenced after the
-hook returns.
+``PLUGIN_DIR`` — the divergence matters for paths referenced after the hook
+returns, and for the loci-CLI pin (see test_cli_pin_resolution.py).
 """
 
 from __future__ import annotations
