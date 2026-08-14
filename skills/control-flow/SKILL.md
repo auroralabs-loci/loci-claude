@@ -12,6 +12,21 @@ the JSON envelope**, **Cross-compilation defaults**, and **Step 0 — Pattern B:
 analyze an existing binary** sections. The sections below add only this skill's
 specifics.
 
+**Bounds.** The cycles and indirect calls this skill reports are the facts the
+repository's structural invariants bound, so also apply the shared **The Contract
+Envelope is input only**, **One fact, one row: the entry decides the status**,
+**Structural invariants: which measurement answers which signal**, and **When
+there is no contract** sections. The contract is read-only to you.
+
+Your scope is the limit here, and it decides what you may claim. A CFG is cut per
+function, while every structural invariant covers the whole binary — so a hazard
+you find is **evidence of a breach** and you report it as one, quoting the entry's
+`text`, but a clean set of CFGs is **not** the invariant holding. Never report `0`
+against a whole-binary bound from the functions you happened to analyze; say the
+invariant is unmeasured at this scope and that `stack-depth` is what measures it
+over the linked binary. Reporting a breach needs no such caveat: one unbounded
+cycle breaches `unbounded_recursion` no matter how few functions you looked at.
+
 **Tool boundary (reminder):** `loci elf` only — never `objdump`, `readelf`,
 `addr2line`, or `nm`. This skill needs the annotated CFG that binutils cannot
 produce. Always pass `--arch <loci_target>`.
@@ -157,7 +172,9 @@ One line. Icon-led, no surrounding bars, middle-dot separators:
   unresolved indirect calls in a context that forbids them); `⚠️` when
   non-critical findings surface (indirect calls on non-ISR paths,
   bounded recursion); `❌` when unbounded recursion or CFI violations
-  are found.
+  are found. "A context that forbids them" is the contract when an entry
+  covers the signal: its `severity` sets the icon, so a `fail` entry on
+  `unresolved_indirect_calls` makes a single call site `❌`, not `⚠️`.
 - `<shape>` — one of: `clean` (no findings), `<K> cycles` (K
   back-edges/loops reported), `<K> indirect` (K indirect-call sites
   flagged), or a combined `<K> cycles · <L> indirect`.

@@ -1,12 +1,15 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "loci",
-  "version": "0.1.111",
-  "description": "Execution-aware analysis for C/C++/Rust — hardware-grounded timing, energy, stack depth, memory, and security from compiled binaries. Real silicon traces, not simulated.",
+  "displayName": "LOCI",
+  "version": "0.1.117",
+  "description": "LOCI predicts what AI-generated code will do — time, power, memory, and system behavior — during planning and code writing, before it runs.",
   "author": {
     "name": "AuroraLabs Ltd",
     "email": "loci@auroralabs.com"
   },
+  "homepage": "https://github.com/auroralabs-loci/loci-claude#readme",
+  "repository": "https://github.com/auroralabs-loci/loci-claude",
   "license": "LicenseRef-AuroraLabs-Proprietary",
   "keywords": [
     "C",
@@ -41,7 +44,7 @@
     "security",
     "vulnerability-detection",
     "execution-aware",
-    "hardware-grounded",
+    "platform-traces",
     "HW-modeling"
   ]
 }

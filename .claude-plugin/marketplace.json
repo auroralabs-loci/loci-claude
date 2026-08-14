@@ -5,10 +5,7 @@
     "name": "AuroraLabs Ltd",
     "email": "loci@auroralabs.com"
   },
-  "forceRemoveDeletedPlugins": true,
-  "metadata": {
-    "description": "Execution-aware analysis for C/C++/Rust — hardware-grounded timing, energy, stack depth, memory, and security from compiled binaries. Real silicon traces, not simulated."
-  },
+  "description": "The execution-aware Guardian for C/C++/Rust coding agents — predicts timing, energy, stack depth, memory, and regressions from the compiled binary, learned from real workloads and platform traces.",
   "plugins": [
     {
       "name": "loci",
@@ -48,7 +45,7 @@
         "security",
         "vulnerability-detection",
         "execution-aware",
-        "hardware-grounded",
+        "platform-traces",
         "HW-modeling"
       ]
     }

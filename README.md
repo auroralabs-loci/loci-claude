@@ -1,8 +1,8 @@
 # LOCI
 
-AI Writes Code. LOCI Gates It.
+Coding agents write code. LOCI thinks ahead.
 
-LOCI's quality gate agent models regressions, power, latency, and bugs from the binary. From plan to merge. 
+LOCI predicts what AI-generated code will do — time, power, memory, and system behavior — during planning and code writing, before it runs.
 
 Without running code. No instrumentation. No code changes.
 
@@ -40,7 +40,7 @@ Skills that work without a cross-compiler or MCP: `stack-depth`, `memory-report`
 
 After installing, try these in any C/C++/Rust project with compiled binaries.
 
-AI Writes Code. LOCI Gates It.
+Coding agents write code. LOCI thinks ahead.
 1. **Timing & energy** — ask: *"What's the execution cost of main()?"*
 2. **Memory budget** — ask: *"How much ROM/RAM does my build use?"*
 3. **Stack safety** — ask: *"Is my stack safe for TaskMain?"*
@@ -52,13 +52,13 @@ LOCI also runs automatically:
 
 ## Skills
 
-Gate — Human Decides. Define what matters. LOCI enforces it.
+Guardian — human-on-the-loop. LOCI predicts, warns, and guides; you review the verdict.
 
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
 | **loci-preflight** | Auto in `/plan` mode | Audits the plan at binary level before code is written — timing, energy, and CFG impact. |
 | **loci-post-edit** | Auto after edits | Diffs pre/post compiled artifacts — regression verdict on  timing, energy, and control-flow. |
-| **exec-trace** | User-invoked | Function-level timing and energy from real-time hardware traces, powered by LCLM. |
+| **exec-trace** | User-invoked | Function-level timing and energy from real workloads and platform traces, powered by LCLM. |
 | **stack-depth** | User-invoked | Worst-case stack depth via call-graph traversal, per-function frame sizes |
 | **memory-report** | User-invoked | ROM/RAM section breakdown and top consumers from compiled ELF binaries. No runtime instrumentation. No code modifications. |
 | **control-flow** | User-invoked | Annotated control-flow graphs optimized for LLM analysis |
@@ -71,9 +71,9 @@ Gate — Human Decides. Define what matters. LOCI enforces it.
 | `SessionStart` | startup | project detection, venv setup, context injection |
 | `PreToolUse` | Edit, Write | call-graph safety check, `.o` snapshot for delta analysis |
 
-## Powered by LCLM
+## Powered by AI Physics
 
-LCLM (Large Code Language Model — trained on billions of ASM blocks and real hardware traces from IoT, networking, and safety-critical systems) — the only execution-aware model for code. Not a GPT wrapper.
+LCLM (the execution model behind AI Physics) is trained on real workloads and platform traces — six years of them — and reads the compiled binary directly. Not a GPT wrapper: no source-only reasoning, no hallucinated timing.
 
 Connects to the LOCI backend for Binary Execution Grounding powered by LCLM — real-time execution data, no instrumentation required.
 Plug LOCI into your CI/CD pipeline at any stage — code, build, test, or merge.
@@ -131,6 +131,6 @@ Run `/bug-report` to generate a full diagnostic report.
 
 ## Further Reading
 
-- [LOCI Portal](PORTAL.md) — sessions, binary analysis results, quality gate verdicts, PR review, and account plans
+- [LOCI Portal](PORTAL.md) — sessions, binary analysis results, Guardian verdicts, PR review, and account plans
 - [setup/setup.sh](setup/setup.sh) — full setup script with platform-specific install logic
 - [LICENSE](LICENSE) — Aurora Labs Proprietary License

@@ -1,6 +1,10 @@
 ---
 description: Analyze function execution timing and energy from compiled assembly
-when_to_use: When user asks for timing/energy of a specific function from compiled assembly.
+when_to_use: >
+  When user asks for timing/energy of a specific function from compiled assembly.
+  Measurement vs. requirement: this skill measures. If the user is instead stating
+  a limit ("must run under 200 ns", "cap energy at N uWs"), that is the contract
+  skill — it authors the bound.
 ---
 
 # LOCI Timing Analysis
@@ -11,6 +15,11 @@ when_to_use: When user asks for timing/energy of a specific function from compil
 the JSON envelope**, **Cross-compilation defaults**, and **Step 0 — Pattern B:
 analyze an existing binary** sections. The sections below add only this skill's
 specifics.
+
+**Bounds.** This skill judges its findings against the repository's Contract
+Envelope, so also apply the shared **The Contract Envelope is input only** and
+**When there is no contract** sections. The contract is read-only to you: report a
+breach with its numbers, and never resolve one by moving the bound.
 
 **Tool boundary (reminder):** `loci elf` only — never `objdump`, `readelf`,
 `addr2line`, or `nm`. This skill needs the per-block timing CSV and annotated
@@ -116,7 +125,7 @@ If no `.o` exists yet, fall through to full compilation.
    calls fire on the auth- or quota-skipped path.
 5. Report the function's **throughput time** (worst-case self-time, callees excluded) and standard deviation in microseconds, and energy consumption in Watt-seconds (`energy_ws`). Call it "throughput time" in user-facing output, matching LOCI's dashboard vocabulary — not "worst-case" or "worst-path".
 6. When reporting results, 
-   - note that these measurements come from LOCI's LCLM trained on real HW traces — they reflect actual silicon behavior on the target board, not theoretical IPC estimates. 
+   - note that these measurements come from LOCI's LCLM trained on real workloads and platform traces — they reflect actual silicon behavior on the target board, not theoretical IPC estimates. 
    - `std_dev_ns` is the spread of the predicted execution time — i.e. how much this path's timing actually varies on the target silicon.
    - `loci timing` row fields are exactly: `function_name`, `std_dev_ns`, `execution_time_ns`, `energy_ws`. There is no bare `std_dev` field — reference field names literally.
    - using the annotated CFG read from the `data.control_flow` file path from step 2, select a most likely execution path to do performance analysis on with the timing data.

@@ -22,7 +22,7 @@ wheels = [
 
 [[package]]
 name = "loci"
-version = "0.1.111"
+version = "0.1.117"
 source = { virtual = "." }
 
 [package.optional-dependencies]

@@ -356,6 +356,11 @@ def test_every_pinned_phrase_is_new_in_this_change():
             "Never render a bare `PASS`",
             "It does not give worst-case depth.",
             "Artifact provenance (mandatory)",
+            # Added 2026-08-13 with the carried-qualifier change (ADR 06 Q6.1/Q6.2),
+            # a later change than the rest of this registry. Same guarantee holds:
+            # fcdc0d2 predates both, so absent-at-base still proves non-vacuity.
+            "lower bound: <cause>",
+            "Never write a bare `<usage_pct>%` on a flagged run",
         ],
         "skills/exec-trace/SKILL.md": [
             "only for a known in-flight edit",
@@ -486,6 +491,41 @@ def test_stack_depth_forbids_a_bare_pass_on_an_unsound_depth():
     # The specific claim: a flagged depth is a floor, not a ceiling. "lower bound"
     # alone also appears in the footer's expand-when list, so it survived alone.
     assert "the computed depth is a **lower bound**, not a worst case" in sec
+
+
+def test_the_lower_bound_qualifier_survives_into_the_recorded_verdict():
+    """The caveat is worthless on a surface that never receives it.
+
+    `PASS (lower bound)` is body-only and the body is not persisted, so before this
+    the recorded line was `CAUTION <usage>%` — level intact, reason gone. The
+    cockpit could show amber with nothing to explain it, which is how one run ended
+    up green on one surface and flagged on the other.
+    """
+    body = _skill("stack-depth")
+
+    footer = _section(body, "### Row catalogue (order when present)", "### Example")
+    assert "`Verdict: **CAUTION** ≥<usage_pct>% — lower bound: <cause>`" in footer, (
+        "the footer no longer enumerates a flagged form, so a flagged run has only "
+        "the bare `CAUTION <pct>%` to render")
+    assert "worst-case ≥<N> bytes, lower bound: <cause>" in footer, (
+        "the no-budget flagged form is gone")
+    # The `≥` is the whole point: without it the figure reads as exact.
+    assert "Never write a bare `<usage_pct>%` on a flagged run" in footer
+
+    rec = _section(body, "**Record cumulative stats + verdict**",
+                   "**Record per-function measurements**")
+    assert "Verdict: CAUTION ≥<usage>% — lower bound: <cause>" in rec, (
+        "the stats-record step no longer names the flagged form, so the qualifier "
+        "stops at the chat boundary again")
+    # Naming *why* it must be recorded, not just that it may be — a rewrite that
+    # keeps the form but drops the reason is how this regresses.
+    assert "is not persisted" in rec
+
+    fold = _section(body, "### Fold-back to parent (escalation mode)",
+                    "### Expand when...")
+    assert "stack: ≥<worst_case_depth> B (≥<usage_pct>%) — CAUTION, lower bound:" in fold, (
+        "the escalation fold-back drops the qualifier, so a parent skill's Stack "
+        "row cannot know the depth was a floor")
 
 
 def test_bug_report_precomputes_the_staleness_evidence():

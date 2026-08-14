@@ -6,7 +6,7 @@ Each example shows a complete LOCI interaction — the trigger phrase, what LOCI
 
 ---
 
-### 1. Quality Gate for AI Coding Agents
+### 1. Plan Guard — Execution-Fit Check
 
 **Trigger:** Describe new logic during `/plan`
 
@@ -29,7 +29,7 @@ Both skills run without instrumentation, profilers, or a connected board — ana
 
 ---
 
-### 2. Regression Prevention Gate
+### 2. Save Guard — Regression Diff
 
 **Trigger:** Ask after any code change
 
@@ -53,7 +53,7 @@ Regressions are caught at the binary level, not the source level — changes tha
 
 > "What is the execution cost of `motor_control_loop`?"
 
-LOCI extracts the compiled assembly, calls LCLM — Aurora Labs' Large Code Language Model trained on billions of ASM blocks and real hardware traces — and returns cycle-accurate timing and energy grounded in actual silicon behavior, not simulation.
+LOCI extracts the compiled assembly, calls LCLM — the execution model behind AI Physics, trained on real workloads and platform traces — and returns cycle-accurate timing and energy grounded in actual silicon behavior, not simulation.
 
     motor_control_loop
       Execution time:  3.82 µs  (std dev: 0.12 µs)

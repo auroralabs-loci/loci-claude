@@ -4,9 +4,13 @@ description: >
   per-function frame sizes, recursion detection, and stack budget pass/fail from
   compiled .o or linked ELF binaries.
 when_to_use: >
-  When user asks about stack sizing, stack overflow, task stack budgets, frame
-  size impact of a change, or RAM optimization in embedded/RTOS projects. Also
-  when investigating hard faults or sizing new RTOS tasks.
+  When user asks what the stack actually costs: worst-case depth, stack overflow
+  risk, frame size impact of a change, whether a task stack is big enough, or RAM
+  optimization in embedded/RTOS projects. Also when investigating hard faults or
+  sizing new RTOS tasks. Measurement vs. requirement: this skill measures and
+  judges against existing bounds. If the user is instead stating a new limit
+  ("max 4 kB of stack for xyz", "cap it at N", "must not exceed N"), that is the
+  contract skill — it authors the bound.
 ---
 
 # LOCI Stack Depth Analysis
@@ -17,6 +21,20 @@ when_to_use: >
 the JSON envelope**, **Supported architectures (gate)**, and **Step 0 — Pattern
 B: analyze an existing binary** sections. The sections below add only this
 skill's specifics.
+
+**Bounds.** This skill judges its findings against the repository's Contract
+Envelope, so also apply the shared **The Contract Envelope is input only**, **One
+fact, one row: the entry decides the status**, **Structural invariants: which
+measurement answers which signal**, and **When there is no contract** sections. The
+contract is read-only to you: report a breach with its numbers, and never resolve
+one by moving the bound.
+
+This skill is where the four structural invariants get measured — one
+`loci elf stack` over a linked binary answers all of them for the whole program,
+which is the only scope they have. So a run that reports a stack number and stays
+silent on `unbounded_recursion`, `recursion_cycles`,
+`unresolved_indirect_calls` and `unknown_callees` has left enabled bounds unjudged.
+Report each enabled one, including the count `0` when the run was clean.
 
 **Tool boundary (reminder):** `loci elf` only — never `objdump`, `readelf`,
 `addr2line`, or `nm`. This skill needs the call-graph and frame-size output
@@ -234,9 +252,46 @@ Icon vocabulary: ✅ PASS · ⚠️ WARNING · ❌ FAIL.
 6. **Unknown callees** — only if `has_unknown_callees = true`. Status
    mirrors (5); Note cites the missing symbol and the fallback size used.
 
+Rows 4–6 are the same three facts the structural invariants bound, so when an
+enabled entry covers one, the shared **One fact, one row** rule applies: the
+entry's `severity` decides that row's status, the row quotes its `text`, and the
+count goes in the Note against the bound (`2 cycles (bound 0)`). The statuses
+above are your judgement for when no entry covers the signal. Two consequences
+worth stating, because both invert a status:
+
+- **An entry fires the row that would otherwise be omitted.** A clean run has no
+  Recursion row today; with `recursion_cycles` enabled it gets one, at `0` and ✅ —
+  that is the whole point of reporting the zero.
+- **`fail` outranks your ⚠️.** A bounded-recursion cycle is ⚠️ on your own
+  thresholds and ❌ against `unbounded_recursion`'s sibling entry
+  `recursion_cycles: {max: 0}` when its severity says `fail`. The user asked for
+  none; you found one.
+
+An entry for `unbounded_recursion` needs a hazard *classified*, not just counted:
+`--max-recursion-depth` bounds every cycle by fiat, so a cycle counts against it
+only when nothing in the code bounds it. If you cannot tell from the warnings and
+the source, say the invariant is unjudged and why — never guess `0`.
+
 Table footer: bolded single-line verdict.
 - With budget: `Verdict: **PASS** <usage_pct>%` · `**CAUTION** <usage_pct>%` · `**FAIL** <usage_pct>%`
 - Without budget: `Verdict: **PASS** — worst-case <N> bytes` · or the CAUTION/FAIL equivalent if a concerning absolute size surfaced.
+
+**When the depth is a lower bound** (any soundness flag set — see *A bare PASS
+requires a clean upper bound*), the verdict line must carry the qualifier and its
+cause, and every figure in it takes a `≥`:
+
+- With budget: `Verdict: **CAUTION** ≥<usage_pct>% — lower bound: <cause>`
+- Without budget: `Verdict: **CAUTION** — worst-case ≥<N> bytes, lower bound: <cause>`
+
+`<cause>` is the flag that caused it, stated as a fact with its number:
+`recursion capped at depth <N>` · `<N> unresolved indirect call sites` ·
+`<N> callees missing from the binary, 64 B assumed`. More than one — name the
+one on the worst path and append `(+<K> more)`.
+
+The `≥` is not decoration: the figure is a floor, and this line is the only form
+of it that leaves the chat (see the `stats record` step). Never write a bare
+`<usage_pct>%` on a flagged run — a surface reading the recorded line cannot
+recover the qualifier once it is dropped.
 
 ### Example
 
@@ -270,13 +325,49 @@ Artifact: .loci-build/armv6-m/kernel.elf (relinked 2026-07-29 12:03:11 by this r
 Verdict: **FAIL** 202.3%
 ```
 
+Third example — fits the budget, but the depth is a floor. Note that no figure
+appears without its `≥`, and that the Note names the flag rather than hinting at
+it. Constants here are deliberately unlike the two cases above so that neither
+can be answered by copying the other.
+
+```
+Artifact: build/sensor.elf (linked 2026-08-13 10:41:55, sources current)
+
+### Conclusion
+| Gate              | Status | Note                                               |
+|-------------------|:------:|----------------------------------------------------|
+| Worst-case depth  |   ⚠️   | ≥1880 B (≥91.8% of 2048 B budget) — lower bound     |
+| Worst-case path   |   ⚠️   | sample_task → filter_iir → filter_iir (depth 2 cap) |
+| Largest frame     |   ⚠️   | filter_iir: 912 B (49% of total)                    |
+| Soundness         |   ⚠️   | has_recursion — recursion capped at depth 2         |
+
+Verdict: **CAUTION** ≥91.8% — lower bound: recursion capped at depth 2
+```
+
+Read that verdict as: 1880 B is what two iterations cost, the budget holds for
+two, and nothing here says two is the maximum. A third iteration breaches it.
+
 ### Escalation fold-back
 
 When stack-depth is invoked as an ESCALATION from loci-preflight or
 loci-post-edit, still emit the full Conclusion table above, AND hand back
 to the parent skill a one-line summary in the form:
-`stack: <worst_case_depth> B (<usage_pct>%) — <PASS|CAUTION|FAIL>`.
+`stack: <worst_case_depth> B (<usage_pct>%) — <PASS|CAUTION|FAIL>`, or on a
+lower-bound run `stack: ≥<worst_case_depth> B (≥<usage_pct>%) — CAUTION, lower
+bound: <cause>`.
 The parent skill folds that line into its own "Stack escalation" row.
+
+When any structural invariant was enabled, hand back a second line — the parent's
+`Safety` row is judged from it, and it is the only thing that carries these counts
+across:
+
+```
+safety: recursion_cycles 0 · unresolved_indirect_calls 2 · unknown_callees 0 · unbounded_recursion 0 — FAIL (unresolved_indirect_calls bound 0)
+```
+
+Name only the signals the contract has enabled, each with its count, and close with
+the worst verdict and the entry that produced it. On a `.o`, or when a hazard could
+not be classified, write `unmeasured` in place of the count rather than `0`.
 
 ## LOCI voice remark
 
@@ -297,8 +388,15 @@ Pass `--verdict "<verbatim-verdict-line>"` so the gate outcome ships alongside
 the per-function trends payload on the next Stop-hook flush — the line is the
 same string already rendered to chat in the conclusion-table footer
 (`Verdict: PASS <usage>%`, `Verdict: CAUTION <usage>%`, `Verdict: FAIL <usage>%`,
-or — when no `--stack-budget` was supplied — `Verdict: PASS — worst-case <N> bytes`).
+or — when no `--stack-budget` was supplied — `Verdict: PASS — worst-case <N> bytes`;
+and on a lower-bound run the flagged form,
+`Verdict: CAUTION ≥<usage>% — lower bound: <cause>`).
 Pass it unbolded, no surrounding asterisks.
+
+Record the flagged form **verbatim, qualifier included**. The recorded line is
+what the cockpit and every other surface see; `(lower bound)` in the report body
+is not persisted, so a bare `CAUTION <usage>%` tells them the level and loses the
+reason — leaving a surface that shows amber with nothing to explain it.
 ```
 loci stats record --context-file "<project-context>" --skill stack-depth --functions <N> --mcp-calls 0 --co-reasoning 0 --verdict "<verbatim-verdict-line>"
 ```
@@ -313,6 +411,13 @@ Where `<jsonl_records>` is one JSON object per line for each entry function:
 {"fn":"<func>","stack_b":<worst_case_depth>,"src":"<source_file>"}
 ```
 Use the `worst_case_depth` value (in bytes) from the stack-depth JSON output.
+
+**This step is mandatory on an escalated run too** — `stack_b` is the only field
+in the product that carries a stack figure into the measurement store, and this
+is the only skill that writes it. Record the same `worst_case_depth` you judged
+against the bound; a figure that reaches only the verdict line and the parent's
+fold-back leaves the store holding whatever a previous run measured. See
+**Fold-back to parent (escalation mode)**.
 
 Do NOT call `loci stats summary` here. The cumulative branch-stats
 line is deliberately removed from skill footers — it is available via
@@ -331,16 +436,22 @@ One line. Icon-led, no surrounding bars, middle-dot separators:
 - `<entry-fn>` — the single entry function when `N = 1`. When `N > 1`
   the compact form is `<N> fn, worst <max> B` (drops the usage % since
   budgets may differ per entry).
-- `<worst>` — `worst_case_depth` in bytes.
-- `<usage>` — usage as % of budget; omit the parenthetical entirely
-  when no budget was supplied (`--stack-budget` not set).
+- `<worst>` — `worst_case_depth` in bytes, prefixed `≥` when the depth is a
+  lower bound.
+- `<usage>` — usage as % of budget, likewise `≥` on a lower-bound run; omit the
+  parenthetical entirely when no budget was supplied (`--stack-budget` not set).
 
 Worked examples:
 ```
 ✅ LOCI stack-depth · BLEAppUtil_Task · 312 B (30% budget)
 ✅ LOCI stack-depth · main · 288 B
 ⚠️ LOCI stack-depth · sensor_task · 1620 B (79% budget)
+⚠️ LOCI stack-depth · sensor_task · ≥3152 B (≥77% budget)
 ```
+
+The one-line form has no room for the cause; the `≥` is what carries the
+qualifier here, and the expanded form (below) is mandatory on a lower-bound run
+precisely because the cause has to be stated somewhere.
 
 ### Fold-back to parent (escalation mode)
 
@@ -350,11 +461,31 @@ parent a one-line summary for fold-back:
 
 ```
 stack: <worst_case_depth> B (<usage_pct>%) — <PASS|CAUTION|FAIL>
+stack: ≥<worst_case_depth> B (≥<usage_pct>%) — CAUTION, lower bound: <cause>
 ```
+
+The second form whenever the depth is a lower bound. Both figures take the `≥`.
+
+plus the `safety:` line from **Escalation fold-back** above whenever a structural
+invariant was enabled.
 
 The parent skill renders its own compact or expanded footer based on
 whether this fold-back was clean (see the clean-escalation suffix rule
 in the `loci-preflight` / `loci-post-edit` SKILL.md files).
+
+**Escalation does not skip the record steps.** Run `loci stats record` and
+`loci stats measure` exactly as a standalone run does, with
+`--skill stack-depth`, before handing back the fold-back line. The fold-back
+goes to the *parent*, not to the store, and the parent has no `stack_b` field in
+its own measurement payload — so a depth reported only through fold-back is
+judged, shown to the user, and then lost.
+
+That gap is not hypothetical. A post-edit escalation judged `quicksort` at
+8352 B against a 4096 B bound — 204%, `warn` — while the newest `stack_b` on
+disk stayed at the 3152 B a standalone run had recorded 74 minutes earlier. The
+cockpit costed the older figure, reached `pass`, and drew the row green. Anything
+reading the measurement store rather than the run's `judged[]` — trends, the
+stack series, any future surface — still sees only the 3152.
 
 ### Expand when...
 

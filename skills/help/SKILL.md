@@ -116,7 +116,7 @@ should know what's possible even if their setup isn't complete yet.
 ```
 ## On-demand skills
 
-  /exec-trace      Timing & energy from real silicon traces
+  /exec-trace      Timing & energy from real workloads & platform traces
                    "What's the execution cost of main()?"
 
   /stack-depth     Worst-case stack depth & budget check
@@ -145,7 +145,7 @@ Based on the environment state from Step 0, suggest a single next action:
 - **Ready + ELF files exist in project**: "You have compiled binaries — try asking about timing for a specific function, or run `/memory-report` for a full ROM/RAM breakdown."
 - **Ready + no ELF files**: "Compile your project first, then ask about timing or stack depth for a specific function."
 - **No build env**: "Navigate to your C/C++/Rust project directory and restart Claude Code, or point me at a `.elf`, `.o`, or `.axf` file directly."
-- **Not signed in**: "Run `! loci login` to unlock timing and energy analysis."
+- **Not signed in**: "Run `! loci login` to enable timing and energy analysis."
 
 If multiple issues exist, prioritize sign-in first (it's the quicker fix),
 then build environment setup.

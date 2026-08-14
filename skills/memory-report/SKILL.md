@@ -7,6 +7,9 @@ when_to_use: >
   When user says "memory report", "ROM/RAM usage", "how much flash/RAM",
   "memory footprint", "memory map", "memory delta", "size impact". Do NOT
   invoke for web/script projects without flash/ROM/RAM constraints.
+  Measurement vs. requirement: this skill measures. If the user is instead stating
+  a limit ("ROM must stay under 256 kB", "cap .bss at N"), that is the contract
+  skill — it authors the bound.
 ---
 
 # LOCI Memory Report
@@ -17,6 +20,11 @@ when_to_use: >
 the JSON envelope**, **Supported architectures (gate)**, **Cross-compilation
 defaults**, and **Step 0 — Pattern B: analyze an existing binary** sections. The
 sections below add only this skill's specifics.
+
+**Bounds.** This skill judges its findings against the repository's Contract
+Envelope, so also apply the shared **The Contract Envelope is input only** and
+**When there is no contract** sections. The contract is read-only to you: report a
+breach with its numbers, and never resolve one by moving the bound.
 
 **Tool boundary (reminder):** all section/symbol inspection goes through
 `loci elf memmap` — never `objdump`, `size`, `readelf`, `nm`, or

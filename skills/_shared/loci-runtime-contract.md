@@ -125,6 +125,98 @@ envelope you already have; never re-run a verb to re-read its own output.
 
 ---
 
+## The Contract Envelope is input only
+
+`.loci/contract.yaml` holds the bounds this repository requires — stack, timing,
+energy, memory, and structural invariants. Read it with `loci contract show` and
+judge your findings against the **enabled** entries, quoting an entry's `text`
+when you report a verdict so the user hears their own words back.
+
+**You never change it.** Not with Edit/Write, and not with the CLI verbs that
+write it (`accept`, `init`, bare `edit`/`disable`/`enable`) — a hook denies all
+of them. Only `/loci:contract` drafts changes, and only the **user** applies one.
+
+A breach is **reported, never resolved by moving the bound.** If a measurement
+exceeds a budget, say so with the numbers; do not propose loosening the entry, do
+not suggest disabling it, and do not mention that either is possible. The entry
+is the requirement — your job is to report against it, not to negotiate it.
+
+Fields you will read: `text` (the intent, verbatim), `kind`
+(`budget`/`regression`/`invariant`), `function` (absent ⇒ whole binary), `signal`,
+`bound` (`max`/`min`/`max_delta`, with `unit`), `severity` (absent ⇒ `warn`), and
+`enabled` (`false` ⇒ skip it entirely). An entry with no `signal`/`bound` is a
+sentence — judge it yourself and say that you did. An entry whose `signal` you do
+not recognise is the same case; never substitute a signal you do know.
+
+## One fact, one row: the entry decides the status
+
+Where an enabled entry covers a fact you would also have classified on your own —
+a recursion or indirect-call hazard under `Safety`, a depth you would have judged
+against your own 50%/80% thresholds — **the entry decides that row's status**, and
+the row quotes its `text`. Your measurement is the evidence in the Note, not a
+second verdict on it. Take the icon from `severity`: `fail` ⇒ ❌, `warn` (and
+absent) ⇒ ⚠️, `info` ⇒ report it and let it gate nothing.
+
+Your own thresholds apply only where **no** enabled entry covers that signal. That
+is the **When there is no contract** rule below, applied per signal rather than per
+run: a contract holding one stack budget does not silence your built-in judgement
+of everything else.
+
+Never emit both your own row and a contract row for one fact. Two verdicts on one
+fact is how a ⚠️ of your own and a ❌ from the user's stated requirement end up in
+the same table with nothing saying which of them gates the run.
+
+**A soundness caveat is not a verdict** and is never displaced by an entry: "this
+depth is a lower bound because a callee is missing" qualifies what the number
+means. Keep those caveats whatever the contract says — including on a row whose
+status an entry just decided.
+
+## Structural invariants: which measurement answers which signal
+
+The four structural signals are the ones nothing was mapping to a measurement, so
+`loci contract check` filed them as "no measurement supplied" and the report
+dropped them as routine. They come from one `loci elf stack` run over a **linked**
+binary, and each one's `curr` is a **count** — the signal has no unit:
+
+| Signal | Read from | `curr` is |
+|---|---|---|
+| `unbounded_recursion` | a recursion warning whose cycle has no visible exit condition — `--max-recursion-depth` bounded it by fiat, not by the code | cycles that could not be bounded |
+| `recursion_cycles` | `has_recursion`, and the recursion `warnings` | distinct cycles, bounded ones included |
+| `unresolved_indirect_calls` | `has_indirect_calls`, and the indirect-call `warnings` | call sites with no statically resolved target |
+| `unknown_callees` | `has_unknown_callees`, and the unknown-callee `warnings` | distinct symbols missing from the binary |
+
+Three rules make the mapping usable:
+
+- **Report the zero.** A clean run measures `0` and must say so against the entry.
+  A bound nothing measured is filed as unjudged, and unjudged is invisible — which
+  is exactly how these four went two-thirds of the starter contract unnoticed.
+- **They are whole-binary, always.** The contract rejects a `function` on a
+  structural signal (`scope_unexpected`), so there is no per-function structural
+  bound to judge. A hazard you found in one function is evidence *for the
+  whole-binary entry*; name the function in the Note, not in the scope.
+- **A `.o` cannot answer them.** In a relocatable object the call edges are
+  unapplied relocations, so `has_unknown_callees` reads `false` for a binary whose
+  callees were simply never linked (Pattern B, B1). From a `.o`, the invariant is
+  **unmeasured** — say that. Never report `0` for it.
+
+## When there is no contract
+
+`data.exists: false`, or zero enabled entries. This is a **first-class state**,
+not a warning and not a degraded mode.
+
+Report your measurement **exactly as you would otherwise** — same numbers, same
+table, same verdicts against the skill's own built-in thresholds. Then, after the
+report, add at most **one** line:
+
+> No bounds are set for this repository — `/contract` sets them up.
+
+Rules on that line: after the report, never before it and never instead of it;
+**once per session**, not once per skill run; and never at session start. If you
+have already said it this session, say nothing. If the user declines, drop it for
+the session and do not raise it again.
+
+---
+
 ## Supported architectures (gate)
 
 Map the LOCI target to the loci MCP supported architectures and binary targets:

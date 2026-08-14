@@ -1,10 +1,10 @@
 # LOCI Portal
 
-LOCI's quality gate agent models regressions, power, latency, and bugs from the binary. From plan to merge.
+LOCI is the execution-aware Guardian for coding agents — it predicts what AI-generated code will do (timing, power, memory, regressions) from the compiled binary, before it merges.
 
 Without running code. No instrumentation. No code changes.
 
-The LOCI Portal is your control centre for monitoring binary analysis results, configuring quality gates, and reviewing PR decisions — whether you are an individual developer or part of a team. All results are grounded in real execution data from your codebase.
+The LOCI Portal is your control centre for monitoring binary analysis results, configuring the Guardian, and reviewing PR decisions — whether you are an individual developer or part of a team. All results are grounded in real execution data from your codebase.
 
 Access the LOCI Portal in your browser once you have a LOCI account.
 
@@ -19,9 +19,9 @@ Access the LOCI Portal in your browser once you have a LOCI account.
   - [Binary Analysis Results](#binary-analysis-results)
     - [What LOCI measures](#what-loci-measures)
     - [Reading a result](#reading-a-result)
-  - [Quality Gate](#quality-gate)
-    - [Gate verdicts](#gate-verdicts)
-    - [Human-on-the-Loop](#human-on-the-loop)
+  - [The Guardian](#the-guardian)
+    - [Guardian verdicts](#guardian-verdicts)
+    - [human-on-the-loop](#human-on-the-loop)
   - [PR Review](#pr-review)
   - [Team Management](#team-management)
   - [Usage \& Quota](#usage--quota)
@@ -78,13 +78,13 @@ LOCI grounds every result in real execution data — no simulation, no instrumen
 
 ### Reading a result
 
-Each result is anchored to a specific commit and function. The portal shows the current measurement alongside the previous baseline so regressions are immediately visible. Results are flagged automatically when they exceed the thresholds you define in the Quality Gate.
+Each result is anchored to a specific commit and function. The portal shows the current measurement alongside the previous baseline so regressions are immediately visible. Results are flagged automatically when they exceed the thresholds you define in the Guardian.
 
 ---
 
-## Quality Gate
+## The Guardian
 
-The Quality Gate is where you define what matters. LOCI enforces it.
+The Guardian is where you define what matters. LOCI predicts, warns, and guides — you decide.
 
 Configure thresholds per metric:
 
@@ -95,17 +95,17 @@ Configure thresholds per metric:
 | Stack budget | Block if stack usage exceeds 80% of task budget |
 | ROM growth | Warn if binary size grows by more than 2 KB per PR |
 
-### Gate verdicts
+### Guardian verdicts
 
 LOCI returns one of three verdicts for each analysis:
 
 - **GOOD** — all metrics within threshold. Safe to proceed.
 - **CAUTION** — one or more metrics approaching threshold. Review recommended.
-- **FLAG** — threshold exceeded. LOCI proposes a fix and blocks the gate.
+- **FLAG** — threshold exceeded. LOCI proposes a fix and holds the change for review.
 
-### Human-on-the-Loop
+### human-on-the-loop
 
-The gate is advisory by default — a human always makes the final decision. When LOCI flags a result, it appears in your PR review queue for approval or override. You can calibrate gate sensitivity over time as LOCI learns your quality standards. 
+The Guardian is advisory by default — a human always makes the final decision. When LOCI flags a result, it appears in your PR review queue for approval or override. You can calibrate its sensitivity over time as LOCI learns your quality standards. 
 
 On Company User plans, shared thresholds apply across the whole team.
 
@@ -119,12 +119,12 @@ For each open PR, LOCI shows:
 
 - Binary diff between the PR branch and base
 - Regression summary across timing, energy, stack, and ROM
-- Gate verdict with the specific functions and metrics that triggered it
+- Guardian verdict with the specific functions and metrics that triggered it
 - LOCI's proposed fix when a FLAG is raised
 
-Approve or block the PR directly from the portal. All decisions are logged with the reviewer, timestamp, and gate verdict for audit purposes.
+Approve or block the PR directly from the portal. All decisions are logged with the reviewer, timestamp, and Guardian verdict for audit purposes.
 
-> LOCI integrates into your CI/CD pipeline at any stage — code, build, test, or merge. See your CI/CD setup guide for pipeline-level gate configuration.
+> LOCI integrates into your CI/CD pipeline at any stage — code, build, test, or merge. See your CI/CD setup guide for pipeline-level Guardian configuration.
 
 ---
 
@@ -137,9 +137,9 @@ Available on Company User plans.
 | **Invite developers** | Add team members by email |
 | **Assign seats** | Manage per-seat licensing across your organisation |
 | **View team activity** | See sessions, verdicts, and quota usage per developer |
-| **Set shared gate config** | Apply quality thresholds across the whole team |
+| **Set shared Guardian config** | Apply quality thresholds across the whole team |
 
-Team-wide gate configuration ensures consistent quality standards regardless of which developer or AI agent is writing the code.
+Team-wide Guardian configuration ensures consistent quality standards regardless of which developer or AI agent is writing the code.
 
 ---
 
