@@ -42,7 +42,14 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+# jq is gated as hard as bash: without it the guard degrades to matching the raw
+# payload, which is a different code path from the one these tests are written
+# against. Running anyway meant the "must deny" cases failed and every "must not
+# over-deny" case passed for the wrong reason.
+pytestmark = pytest.mark.skipif(
+    _find_bash() is None or shutil.which("jq") is None,
+    reason="bash and jq required",
+)
 
 
 def _to_bash_path(p: Path) -> str:
@@ -51,10 +58,27 @@ def _to_bash_path(p: Path) -> str:
     return f"/{m.group(1).lower()}/{m.group(2)}" if m else s
 
 
+def _base_path() -> str:
+    """A PATH the guard can actually parse a payload on.
+
+    Without `jq` the guard degrades to matching the raw payload — deliberately
+    over-broad, and NOT the code path these tests are written against. jq is not in
+    /usr/bin on a Windows checkout (chocolatey, scoop and winget all put it
+    elsewhere), so hardcoding a jq-less PATH silently sent every case down the
+    fallback: the "must deny" assertions failed and, worse, every "must not
+    over-deny" assertion passed for the wrong reason. Resolve jq's real directory.
+    """
+    base = "/usr/bin:/bin:/usr/local/bin"
+    jq = shutil.which("jq")
+    if jq:
+        base = f"{_to_bash_path(Path(jq).parent)}:{base}"
+    return base
+
+
 def _run(payload: dict, project_dir: Path, *, env: dict | None = None) -> dict | None:
     """Run the guard on one hook payload; return its decision, or None if allowed."""
     base = {
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "PATH": _base_path(),
         "HOME": str(Path.home()),
         "CLAUDE_PROJECT_DIR": _to_bash_path(project_dir),
     }

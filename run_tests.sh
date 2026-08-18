@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run the LOCI plugin test suite.
 #
 # Usage:

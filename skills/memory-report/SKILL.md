@@ -14,17 +14,43 @@ when_to_use: >
 
 # LOCI Memory Report
 
+## Fast path (mandatory when the user named a binary)
+
+When the prompt already names an ELF (`.elf`/`.out`/`.axf`/`.o`):
+
+1. Do **not** Read `loci-runtime-contract.md`. Session context has `LOCI target`.
+2. Do **not** Glob, `find`, `ls`, Read source, or Read `CODEBASE.md`.
+3. Do **not** `loci build fresh`. Do **not** `loci contract show` unless
+   `[ -f .loci/contract.yaml ]`.
+4. **One Bash:** `loci elf memmap --elf <named> [--top-n 10]`
+   (`memmap` does **not** take `--arch`).
+5. **One Bash** for stats (`record` then `measure` in that same command).
+6. Report: **verdict first**, section totals, top 5 consumers, compact footer.
+
+If the named file is missing or `.ok` is false, stop in that turn.
+
+Otherwise follow the rest of this skill.
+
 **Shared runtime contract.** Before running this skill, read
 `<plugin-dir>/skills/_shared/loci-runtime-contract.md` and apply its
 **Session context placeholders**, **Tool boundary: `loci elf` only**, **Output:
 the JSON envelope**, **Supported architectures (gate)**, **Cross-compilation
-defaults**, and **Step 0 — Pattern B: analyze an existing binary** sections. The
-sections below add only this skill's specifics.
+defaults**, **Step 0 — Pattern B: analyze an existing binary**, **Step 0 — Pattern
+A: compile the source** and **Compile a change and read the artifact paths back**
+sections. The sections below add only this skill's specifics.
+
+The last two of those are what the **Incremental Path** below runs on: it compiles
+through the plugin's script rather than a compiler line, and Pattern A is where the
+`compiler_not_found` recovery that compile can hit is written down.
+
+**Verdict vocabulary.** This skill closes on `PASS` / `CAUTION` / `FAIL` and
+no other words — see `<plugin-dir>/skills/_shared/verdicts.md`.
 
 **Bounds.** This skill judges its findings against the repository's Contract
-Envelope, so also apply the shared **The Contract Envelope is input only** and
-**When there is no contract** sections. The contract is read-only to you: report a
-breach with its numbers, and never resolve one by moving the bound.
+Envelope, so also apply the shared **The Contract Envelope is input only**, **Every
+row says where its bound came from**, and **When there is no contract** sections.
+The contract is read-only to you: report a breach with its numbers, and never
+resolve one by moving the bound.
 
 **Tool boundary (reminder):** all section/symbol inspection goes through
 `loci elf memmap` — never `objdump`, `size`, `readelf`, `nm`, or
@@ -49,11 +75,18 @@ older than its sources reports the footprint of a program that is no longer on d
 and section sizes look no less confident for being wrong. In short:
 
 1. **User provides a binary** — use it directly, and still run B3 on it.
-2. **Build from source** — cross-compile for the resolved architecture:
-       <compiler> <flags> -o .loci-build/<arch>/<basename>.elf <source>
-   For per-file analysis, compile with `-c` to get a `.o` file. A `.o` has no linked
-   addresses, so its report is per-section sizes only (see "For .o files" below);
-   ROM/RAM region budgets need the linked binary.
+2. **Build from source** — cross-compile for the resolved architecture. This one is
+   a *link*, and no `loci` verb links, so the driver is invoked directly:
+       <compiler> <flags> -o .loci-build/<loci_target>/<basename>.elf <source>
+   Naming that path yourself is fine, and is not an exception to the Incremental
+   Path's "never assemble a `.loci-build/…` path" below: **you are choosing where
+   your own link output goes.** That rule is about never *guessing* where the CLI
+   put something it wrote — the guess that breaks the moment the object layout
+   changes.
+   For per-file analysis do **not** hand-roll a `-c` compile — take the Incremental
+   Path below, which routes it through the CLI and returns the object's real path.
+   Either way a `.o` has no linked addresses, so its report is per-section sizes
+   only (see "For .o files" below); ROM/RAM region budgets need the linked binary.
 
 If a linker `.map` file is available (often next to the ELF), the user may
 provide its path for region budget analysis. Supported map file formats:
@@ -94,14 +127,49 @@ binary — same convention as `loci elf diff`. The reported delta is signed
 Use this when checking if a change to a single file affected memory usage.
 Works on individual `.o` object files without needing a fully linked binary.
 
-1. If a previous `.o` exists, save it as `.o.prev` (this is the **base** —
-   the state *before* the change).
-2. Compile only the changed source with `-c`.
-   Always include `-g` to emit DWARF debug info (required by `loci elf`):
-       <compiler> -g <flags> -c <source> -o .loci-build/<arch>/<basename>.o
-3. Run delta comparison — base (`.o.prev`) is `--elf`, current
-   (`.o`) is `--comparing-elf`:
-       loci elf memmap --elf .loci-build/<arch>/<basename>.o.prev --comparing-elf .loci-build/<arch>/<basename>.o
+1. **Do NOT create, refresh, or go looking for a `.o.prev` yourself.** It already is
+   the **base** — the state before this turn's first edit — captured by the pre-edit
+   hook and stamped with the turn it belongs to. Copying the current object over it
+   replaces that baseline, and every later edit of the turn then reports its delta
+   against your copy instead of against the turn's start. This matters here in
+   particular: post-edit escalates into this skill mid-turn, so a hand-made copy
+   lands squarely between two of its measurements. Item 2 below tells you whether
+   a usable base exists; that answer is the only one to act on.
+2. Compile the changed source and read the paths back — one command, per
+   **Compile a change and read the artifact paths back** in the shared runtime
+   contract. Not a raw `<compiler> -g <flags> -c` line: that writes no
+   `.meta.json` sidecar, so the next `loci build snapshot` refuses and the turn
+   loses its baseline entirely.
+   ```
+   bash "<plugin-dir>/lib/compile-and-read-back.sh" \
+       --source "<source>" --loci-target <loci_target> \
+       --context "<project-context>" --project-root "<project_root>" \
+       --phase post-edit
+   ```
+   It prints one `key<TAB>value` per line:
+   ```
+   OBJ        the object just compiled
+   META       its build record
+   PREV       the turn's baseline — an empty value means there is none
+   PREV_META  that baseline's build record
+   NOTE       zero or more; why a baseline was withheld, or how it was established
+   ```
+   **Never assemble a `.loci-build/…` path** — telling you where the object
+   actually is, is the script's whole job. If it prints `FAILED` instead, stop the
+   Incremental Path: on code `compiler_not_found` take Pattern A's recovery
+   (alternate driver name, then ask the user for a path), and on anything else
+   surface the message verbatim. `--loci-target` takes only `aarch64`, `armv7e-m`,
+   `armv6-m` or `tc399`, verbatim from the session context — a raw architecture
+   name such as `cortexm` is rejected and you get no paths at all.
+3. Run delta comparison — base (`PREV`) is `--elf`, current (`OBJ`) is
+   `--comparing-elf` — **only when `PREV` is non-empty:**
+
+       loci elf memmap --elf <PREV> --comparing-elf <OBJ>
+
+   Substitute the values item 2 printed; nothing it set survives into this block,
+   which is a separate Bash call. An **empty `PREV` means there is no base**:
+   report the current totals from `loci elf memmap --elf <OBJ>` with no delta, and
+   surface any `NOTE` that explains why there is none.
 
 This gives fast feedback on whether a change grew ROM/RAM without needing a full link.
 
@@ -335,7 +403,7 @@ Conclusion table so the user knows the region-budgets table is missing
 on purpose, not by oversight:
 
     ### Map-file notes
-    - ⚠️ MAP_FORMAT_UNRECOGNIZED: <path>
+    - 🔶 MAP_FORMAT_UNRECOGNIZED: <path>
       Header matched no known format (tried: gcc-ld, iar, armlink).
       First line: 'TI ARM Clang Linker PC v2.1.3'
 
@@ -361,16 +429,22 @@ emit one line per side — `memmap --comparing-elf` returns
 `.data.comparing_source_provenance` for the second binary — because a delta between
 a current binary and a stale one reads as a code change that never happened.
 
+**A side whose `role` is `baseline` is the exception.** A pre-edit `.o.prev` is older
+than the current sources by construction, so write `pre-edit baseline` for it rather
+than `SOURCES NEWER THAN THIS BINARY` — that phrase is an alarm, and raising it on
+the "before" side of every delta is noise that teaches a reader to ignore it on the
+side where it is real. Apply the alarm to the `measured` side only.
+
 Never omit this line, and never write "sources current" without having run the check.
 
 ## Conclusion table
 
 After the section breakdown, top-consumers, and (optional) region/delta blocks,
 emit a single conclusion table that summarises the memory verdict. Include
-only rows that apply this run. Every ⚠️ / ❌ row MUST cite a concrete reason
+only rows that apply this run. Every 🔶 / ❌ row MUST cite a concrete reason
 in the Note column.
 
-Icon vocabulary: ✅ PASS · ⚠️ WARNING · ❌ FAIL.
+Icon vocabulary: ✅ PASS · 🔶 CAUTION · ❌ FAIL.
 
 ### Row catalogue (order when present)
 
@@ -378,23 +452,23 @@ Icon vocabulary: ✅ PASS · ⚠️ WARNING · ❌ FAIL.
    usage when a map file was provided:
    - ✅ `usage_pct < 50%` (or, without map file, if total seems comfortable
      for the target)
-   - ⚠️ `50% ≤ usage_pct ≤ 80%`
+   - 🔶 `50% ≤ usage_pct ≤ 80%`
    - ❌ `usage_pct > 80%`
    Note cites the percentage + total bytes.
 2. **RAM static total** — same rules as ROM, but for RAM.
 3. **Largest single symbol** — only when one symbol is ≥ 25% of its region
    total. Actionable: its name in the Note so the engineer knows where to
-   look first. Status: ⚠️ unless the allocation is clearly intentional
+   look first. Status: 🔶 unless the allocation is clearly intentional
    (e.g., a known flash buffer).
 4. **Region delta** (delta mode only) — one row per region that grew.
    Status by delta size vs the region's available headroom. Before/After
    columns if the mode supports them.
 5. **Section growth concerns** (delta mode only) — one row per section
-   that grew by > 20% of its previous size. Status ⚠️ with the growing
+   that grew by > 20% of its previous size. Status 🔶 with the growing
    section name + delta_pct in the Note.
 6. **Heap allocations** (only when `--with-heap` was used).
    - **Single mode:** include the row only when `heap.totals.alloc_sites
-     > 0`. Status: ⚠️ when `dynamic_sites > 0` (variable-size allocations
+     > 0`. Status: 🔶 when `dynamic_sites > 0` (variable-size allocations
      are hardest to bound on embedded targets); ✅ otherwise. Note cites
      `<sites> sites · <static_b> B static · <dynamic> dynamic`.
    - **Delta mode:** include the row when any of `alloc_sites_after`,
@@ -402,7 +476,7 @@ Icon vocabulary: ✅ PASS · ⚠️ WARNING · ❌ FAIL.
      `_before` counterpart, OR when `added`/`removed` is non-empty.
      Status: ❌ when `dynamic_count_after > dynamic_count_before` (a new
      unknown-size allocation is the highest-risk delta on embedded);
-     ⚠️ when `alloc_sites_after > alloc_sites_before` without a new
+     🔶 when `alloc_sites_after > alloc_sites_before` without a new
      dynamic allocation; ✅ otherwise (sites unchanged or shrunk). Note
      cites the net change, e.g. `+2 sites · +192 B · +1 dynamic`.
 
@@ -420,11 +494,11 @@ Table footer: bolded single-line verdict.
 
 ```
 ### Conclusion
-| Gate                 | Before             | After              | Status | Note                              |
-|----------------------|--------------------|--------------------|:------:|-----------------------------------|
-| ROM usage            | 16,880 / 2,097,152 | 17,248 / 2,097,152 |   ✅   | 0.8% → 0.8%                        |
-| RAM static total     |  4,608 /   262,144 |  4,736 /   262,144 |   ✅   | 1.8% → 1.8%                        |
-| Section growth       |     512 B          |     640 B          |   ⚠️   | .data +25%                         |
+| Gate                 | Before             | After              | Status | Basis    | Note        |
+|----------------------|--------------------|--------------------|:------:|----------|-------------|
+| ROM usage            | 16,880 / 2,097,152 | 17,248 / 2,097,152 |   ✅   | contract | 0.8% → 0.8% |
+| RAM static total     |  4,608 /   262,144 |  4,736 /   262,144 |   ✅   | LOCI     | 1.8% → 1.8% |
+| Section growth       |     512 B          |     640 B          |   🔶   | LOCI     | .data +25%  |
 
 Verdict: **PASS** 1.8%
 ```
@@ -498,7 +572,7 @@ One line. Icon-led, no surrounding bars, middle-dot separators:
 ```
 
 - `<icon>` — `✅` when every region is under its warning threshold;
-  `⚠️` when any region is 70–90% full; `❌` when any region is ≥90%.
+  `🔶` when any region is 70–90% full; `❌` when any region is ≥90%.
 - `<X>` / `<Y>` — region usage as percent-of-budget when a linker map /
   region budget is available. When no budget is available, drop the
   `%` suffix and report the absolute byte delta instead (e.g.
@@ -507,7 +581,7 @@ One line. Icon-led, no surrounding bars, middle-dot separators:
 Worked examples:
 ```
 ✅ LOCI memory-report · ROM 42% · RAM 58%
-⚠️ LOCI memory-report · ROM 72% · RAM 58%
+🔶 LOCI memory-report · ROM 72% · RAM 58%
 ❌ LOCI memory-report · ROM 94% · RAM 58%
 ✅ LOCI memory-report · ROM +24 B · RAM 0 B
 ```
@@ -517,7 +591,7 @@ mode: `alloc_sites > 0`; delta mode: any non-zero net change), append a
 `Heap` segment to the footer in the same middle-dot format. Examples:
 ```
 ✅ LOCI memory-report · ROM 42% · RAM 58% · Heap 0 sites
-⚠️ LOCI memory-report · ROM 42% · RAM 58% · Heap 7 sites · 1 dynamic
+🔶 LOCI memory-report · ROM 42% · RAM 58% · Heap 7 sites · 1 dynamic
 ❌ LOCI memory-report · ROM 42% · RAM 58% · Heap +2 sites · +1 dynamic
 ```
 The Heap segment uses the same icon as the leading status (it does not

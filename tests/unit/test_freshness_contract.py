@@ -786,3 +786,265 @@ def test_loci_artifacts_is_newest_first_and_typed(tmp_path: Path):
     assert [a["kind"] for a in arts][:2] == ["linked", "object"]
     mtimes = [a["mtime"] for a in arts]
     assert mtimes == sorted(mtimes, reverse=True), "not newest-first"
+
+
+# ── the mirrored object layout (phase 02c) ───────────────────────────────────
+
+def _detect(proj: Path, tmp_path: Path, extra_env: dict | None = None):
+    env = {**os.environ, "LOCI_STATE_DIR": (tmp_path / "state").as_posix()}
+    env.update(extra_env or {})
+    res = subprocess.run(
+        [_find_bash(), DETECT.as_posix()],
+        cwd=proj, capture_output=True, text=True, timeout=180, env=env,
+    )
+    assert res.returncode == 0, res.stderr[-2000:]
+    return json.loads(res.stdout)
+
+
+def _mirrored_tree(proj: Path) -> Path:
+    """`.loci-build/<target>/<the source's own directories>/<stem>.o`, as
+    `build compile` now writes it — six levels down, which is an ordinary depth
+    for a vendor SDK example (the BLE fixture's `app_data.c` sits exactly there).
+    """
+    deep = (proj / ".loci-build" / "armv6-m" / "examples" / "rtos"
+            / "LP_CC2652R7" / "ble5stack" / "basic_ble" / "app")
+    deep.mkdir(parents=True)
+    obj = deep / "app_data.o"
+    obj.write_bytes(b"\x7fELF")
+    os.utime(obj, (1_785_000_000, 1_785_000_000))
+    return obj
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_a_mirrored_object_deep_in_the_tree_reaches_the_context(tmp_path: Path):
+    """Objects are keyed on the SOURCE's path now, so they are no longer flat.
+
+    A translation unit six directories down lands six directories down under the
+    target dir. At the old depth cap it is invisible to every skill that reads
+    `loci_artifacts` — which is the same failure this list was added to fix, just
+    reached from the other side.
+    """
+    proj = tmp_path / "proj"
+    obj = _mirrored_tree(proj)
+
+    paths = [a["path"] for a in _detect(proj, tmp_path)["loci_artifacts"]]
+    assert any(p.endswith("app_data.o") for p in paths), (
+        f"the mirrored object is invisible: {paths}")
+    assert obj.is_file()
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_the_cargo_dependency_cache_cannot_evict_the_real_objects(tmp_path: Path):
+    """Depth alone is the wrong instrument — that is why the prune comes first.
+
+    `.loci-build/cargo` is the private CARGO_TARGET_DIR. Walking deep without
+    pruning it swept 201 build-script objects into a 30-entry list and pushed the
+    crate's own object out of it: the same invisibility, arrived at by fixing the
+    other half. The crate's real object is published up at `<target>/<stem>.o`, so
+    nothing measurable is lost by never looking inside.
+    """
+    proj = tmp_path / "proj"
+    real = _mirrored_tree(proj)
+    cache = proj / ".loci-build" / "cargo" / "thumbv7em-none-eabi" / "release" / "build"
+    cache.mkdir(parents=True)
+    for i in range(60):                      # newer than the real object
+        p = cache / f"build_script_build-{i:03d}.o"
+        p.write_bytes(b"\x7fELF")
+        os.utime(p, (1_790_000_000 + i, 1_790_000_000 + i))
+
+    arts = _detect(proj, tmp_path)["loci_artifacts"]
+    paths = [a["path"] for a in arts]
+    assert not any("/cargo/" in p for p in paths), (
+        f"the dependency cache is being advertised as measurable: {paths[:5]}")
+    assert any(p.endswith(real.name) for p in paths), (
+        f"the crate's own object was evicted by the cache: {paths[:5]}")
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_the_text_dumps_and_turn_baselines_are_not_candidates(tmp_path: Path):
+    """`elf/` holds CFG and timing text; `turns/` holds pre-edit baselines. A
+    Before is by definition not "measure this now" — the same rule that keeps
+    `.prev` out, made structural instead of resting on a filename suffix."""
+    proj = tmp_path / "proj"
+    real = _mirrored_tree(proj)
+    for rel in (".loci-build/elf/app_data-abc123/relinked.elf",
+                ".loci-build/turns/turn-A/armv6-m/app/app_data.o"):
+        p = proj / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x7fELF")
+        os.utime(p, (1_790_000_000, 1_790_000_000))   # newer than the real one
+
+    paths = [a["path"] for a in _detect(proj, tmp_path)["loci_artifacts"]]
+    assert not any("/elf/" in p or "/turns/" in p for p in paths), paths
+    assert any(p.endswith(real.name) for p in paths), paths
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_a_staging_directory_a_killed_compile_left_is_not_a_candidate(
+        tmp_path: Path):
+    """`loci build compile` writes into `.loci-stage-<x>/` beside its destination
+    and renames the object out of it (CLI phase 02d). A compile that is killed
+    leaves the directory, and the file inside is called `<stem>.o` and IS a real
+    object — the NEWEST one under `.loci-build`, since the compile that would
+    have superseded it never finished. Unpruned it is advertised as the freshest
+    thing to measure, and then `loci build reap` deletes it out from under the
+    skill that was told to measure it.
+
+    Two placements, because the directory sits beside its destination rather than
+    at a fixed level: under a mirrored target directory (an ordinary compile) and
+    inside a turn tree's `obj/` (a `--baseline` reconstruction). The second is
+    already covered by the `turns/` prune; it is here so that widening one prune
+    cannot quietly come to rely on the other.
+    """
+    proj = tmp_path / "proj"
+    real = _mirrored_tree(proj)
+    for rel in (".loci-build/armv6-m/app/.loci-stage-ab12cd34/app_data.o",
+                ".loci-build/turns/tA/obj/9-x/armv6-m/.loci-stage-ff00ff00/app_data.o"):
+        p = proj / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x7fELF")
+        os.utime(p, (1_790_000_000, 1_790_000_000))   # newer than the real one
+
+    # And the same object in the place `--output build/app.o` puts one, which is
+    # the user's own build tree — where `loci build reap` never reaches, so a
+    # leftover there is permanent rather than collected within the hour.
+    build = proj / "build"
+    (build / ".loci-stage-99887766").mkdir(parents=True)
+    (build / ".loci-stage-99887766" / "app.o").write_bytes(b"\x7fELF")
+    (build / "app.o").write_bytes(b"\x7fELF")
+
+    ctx = _detect(proj, tmp_path)
+    paths = [a["path"] for a in ctx["loci_artifacts"]]
+    assert not any(".loci-stage-" in p for p in paths), (
+        f"a killed compile's staging object is offered as measurable: {paths}")
+    assert any(p.endswith(real.name) for p in paths), (
+        f"the real object went with the prune: {paths}")
+    # `elf_files` is a candidate list too — `detect_architecture`'s last fallback
+    # reads its first entry and `/bug-report` check 7 reads the whole thing — and
+    # a staged path sorts BEFORE the real one, so it would head the list.
+    assert not any(".loci-stage-" in p for p in ctx["elf_files"]), (
+        f"the staged object reached elf_files: {ctx['elf_files']}")
+    assert any(p.endswith("build/app.o") for p in ctx["elf_files"]), (
+        f"the project's own object went with the prune: {ctx['elf_files']}")
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_a_source_directory_named_elf_is_still_walked(tmp_path: Path):
+    """The prune is by PATH, not by name. `-name elf` would also prune a mirrored
+    source directory called `elf` — which is a perfectly ordinary thing to call
+    one — and silently drop every object compiled from it."""
+    proj = tmp_path / "proj"
+    d = proj / ".loci-build" / "armv6-m" / "src" / "elf"
+    d.mkdir(parents=True)
+    obj = d / "reader.o"
+    obj.write_bytes(b"\x7fELF")
+
+    paths = [a["path"] for a in _detect(proj, tmp_path)["loci_artifacts"]]
+    assert any(p.endswith("reader.o") for p in paths), (
+        f"a source directory named `elf` was pruned as if it were LOCI's: {paths}")
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_the_prune_survives_a_glob_metacharacter_in_the_project_path(tmp_path: Path):
+    """`-path` takes an fnmatch PATTERN, not a literal.
+
+    A project at `C:\\work\\proj[v2]\\` — legal on Windows, and `[`, `*` and `?` are
+    all legal on POSIX — turns `[v2]` into a character class, so the pattern matches
+    nothing and the prune silently does nothing. Survivable while this walked to
+    depth 4; at the depth it walks now it is exactly the failure the prune exists to
+    prevent, with the cargo cache filling the list.
+
+    The project path is passed as an ARGUMENT here on purpose. `_detect` runs the
+    script with none, so `CWD` defaults to `.` — no metacharacters, and the bug is
+    unreachable. Production passes `"$(pwd)"` (`lib/setup-steps.sh`), so the
+    argument is the faithful call.
+    """
+    proj = tmp_path / "proj[v2]"
+    real = _mirrored_tree(proj)
+    cache = proj / ".loci-build" / "cargo" / "rel" / "build"
+    cache.mkdir(parents=True)
+    for i in range(20):
+        p = cache / f"build_script_build-{i:03d}.o"
+        p.write_bytes(b"\x7fELF")
+        os.utime(p, (1_790_000_000 + i, 1_790_000_000 + i))
+
+    env = {**os.environ, "LOCI_STATE_DIR": (tmp_path / "state").as_posix()}
+    res = subprocess.run(
+        [_find_bash(), DETECT.as_posix(), proj.as_posix()],
+        cwd=proj, capture_output=True, text=True, timeout=180, env=env,
+    )
+    assert res.returncode == 0, res.stderr[-2000:]
+    paths = [a["path"] for a in json.loads(res.stdout)["loci_artifacts"]]
+
+    assert not any("/cargo/" in p for p in paths), (
+        f"the prune matched nothing — the pattern was not escaped: {paths[:5]}")
+    assert any(p.endswith(real.name) for p in paths), paths
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_the_bsd_stat_loop_stops_at_its_bound_and_still_answers(tmp_path: Path):
+    """The BSD branch's `stat`-per-file loop runs OUTSIDE the find's `timeout`, so
+    it carries its own deadline. Deleting that deadline, and making it unable to
+    fire, both survived a mutation campaign: nothing reached it, because at the
+    shipped 6 s a fixture would need thousands of files.
+
+    The clock starts at the first record, not at function entry — set up front it
+    is shared with the concurrent `find`, and a first record arriving after it
+    expires breaks the loop with nothing collected and publishes `[]`. So this
+    asserts BOTH halves: the walk is bounded, and the answer is still non-empty.
+    """
+    proj = tmp_path / "proj"
+    d = proj / ".loci-build" / "armv6-m"
+    d.mkdir(parents=True)
+    for i in range(12):
+        p = d / f"mod{i:02d}.o"
+        p.write_bytes(b"\x7fELF")
+        os.utime(p, (1_748_000_000 + i, 1_748_000_000 + i))
+
+    shim = _bsd_shims(tmp_path / "bsdshim")
+    # …and make each `stat` cost a second, so 12 files cannot fit in a 3 s budget.
+    (shim / "stat").write_text(
+        "#!/bin/bash\nsleep 1\n"
+        'if [ "$1" = "-c" ]; then echo "stat: illegal option -- c" >&2; exit 1; fi\n'
+        'if [ "$1" = "-f" ] && [ "$2" = "%m" ]; then shift 2; '
+        'exec /usr/bin/stat -c %Y "$@"; fi\n'
+        'exec /usr/bin/stat "$@"\n', encoding="utf-8")
+    (shim / "stat").chmod(0o755)
+
+    arts = _detect(proj, tmp_path, {
+        "PATH": f"{shim.as_posix()}:{os.environ.get('PATH', '')}",
+        "LOCI_STAT_BUDGET_SECONDS": "3",
+    })["loci_artifacts"]
+
+    assert arts, "the loop broke before collecting anything and published []"
+    assert len(arts) < 12, (
+        f"the deadline never fired — all {len(arts)} files were stat'd")
+
+
+@pytest.mark.skipif(_find_bash() is None, reason="bash not available")
+def test_the_bsd_branch_prunes_and_walks_the_same_way(tmp_path: Path):
+    """Every property above, on the branch that exists because macOS is not GNU.
+
+    Three consecutive rounds of repair to this function broke that platform, each
+    time invisibly — the detector runs under `2>/dev/null`. Pruning and depth are
+    written twice, once per branch, so they are exactly the kind of thing that
+    lands in one of them.
+    """
+    proj = tmp_path / "proj"
+    real = _mirrored_tree(proj)
+    cache = proj / ".loci-build" / "cargo" / "release" / "build"
+    cache.mkdir(parents=True)
+    for i in range(20):
+        p = cache / f"build_script_build-{i:03d}.o"
+        p.write_bytes(b"\x7fELF")
+        os.utime(p, (1_790_000_000 + i, 1_790_000_000 + i))
+
+    gnu = _detect(proj, tmp_path)["loci_artifacts"]
+    shim = _bsd_shims(tmp_path / "bsdshim")
+    bsd = _detect(proj, tmp_path,
+                  {"PATH": f"{shim.as_posix()}:{os.environ.get('PATH', '')}"})["loci_artifacts"]
+
+    assert bsd, "the BSD branch published nothing"
+    assert not any("/cargo/" in a["path"] for a in bsd)
+    assert any(a["path"].endswith(real.name) for a in bsd)
+    assert bsd == gnu, "the two branches disagree about the mirrored layout"

@@ -13,6 +13,15 @@ when_to_use: >
 Show the user their environment status, available skills, and a contextual
 next step. Adapt the output based on what is actually working vs missing.
 
+## Fast path
+
+1. SessionStart already has Target / Compiler / LOCI target. Do **not**
+   `find`, Glob, or `ls` the project for ELF files.
+2. **One Bash** covering auth, quota, and stats:
+   `loci auth status; loci usage; loci stats global-summary`
+   (skip `usage` / `global-summary` only if `auth status` is `auth_required`).
+3. Render the status block + skill list + one next step. Stop.
+
 ## Step 0: Diagnose Environment
 
 Read the LOCI session context from the `system-reminder` block emitted at
@@ -132,10 +141,10 @@ should know what's possible even if their setup isn't complete yet.
 
   loci-preflight   Runs in /plan — checks call graph, timing, energy, execution fit
                    Escalates to /stack-depth or /memory-report when needed
-                   Verdict: GOOD / ADJUST PLAN / STOP
+                   Verdict: PASS / CAUTION / FAIL
 
   loci-post-edit   Runs after edits — diffs binary, reports timing/energy % delta
-                   Verdict: OK / CAUTION / FLAG (proposes fix on FLAG)
+                   Verdict: PASS / CAUTION / FAIL (proposes fix on FAIL)
 ```
 
 ## Step 3: Contextual Next Step
@@ -152,13 +161,9 @@ then build environment setup.
 
 ## Stats Footer
 
-After rendering all help output, run via Bash:
-```
-loci stats global-summary
-```
-
-If `data.report` is non-empty, append it as the last line — no heading, just
-the stats line. If empty (first-time user), show nothing.
+If you already ran `loci stats global-summary` in the Fast path Bash, do **not**
+run it again. If `data.report` is non-empty, append it as the last line — no
+heading. If empty (first-time user), show nothing.
 
 Do NOT record stats for this skill — help is informational only.
 

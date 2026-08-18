@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # LOCI plugin — shared bash logger. Appends to $LOCI_STATE_DIR/loci.log, using
 # Claude Code's debug-log line shape so timestamps correlate against
 # ~/.claude/debug/<session>.txt:

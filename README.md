@@ -27,7 +27,7 @@ Without running code. No instrumentation. No code changes.
 | TI ARM | `tiarmclang` or `armcl` |
 | x86/x64 | `g++` or `clang++` |
 
-Skills that work without a cross-compiler or MCP: `stack-depth`, `memory-report`, `control-flow`
+Skills that work without a cross-compiler or MCP: `stack-depth`, `memory-report`, `control-flow`, `contract`
 
 ## Install
 
@@ -45,6 +45,7 @@ Coding agents write code. LOCI thinks ahead.
 2. **Memory budget** — ask: *"How much ROM/RAM does my build use?"*
 3. **Stack safety** — ask: *"Is my stack safe for TaskMain?"*
 4. **Control-flow safety** — ask: *"What does the call graph for process_data() look like?"*
+5. **Bounds** — say: *"TaskMain must not exceed 4 kB of stack"* — LOCI drafts the bound, you apply it.
 
 LOCI also runs automatically:
 - **loci-preflight** fires during `/plan` - analyzes callees at the binary level before code is written.
@@ -63,6 +64,7 @@ Guardian — human-on-the-loop. LOCI predicts, warns, and guides; you review the
 | **memory-report** | User-invoked | ROM/RAM section breakdown and top consumers from compiled ELF binaries. No runtime instrumentation. No code modifications. |
 | **control-flow** | User-invoked | Annotated control-flow graphs optimized for LLM analysis |
 | **trends** | User-invoked | Per-function measurement history and optimization progress on the current branch. |
+| **contract** | User-invoked | Authors and inspects `.loci/contract.yaml` — the stack, timing, energy, memory and structural bounds every measurement is judged against. LOCI drafts, you apply. |
 
 ## Hooks
 
@@ -70,6 +72,27 @@ Guardian — human-on-the-loop. LOCI predicts, warns, and guides; you review the
 |------|---------|--------|
 | `SessionStart` | startup | project detection, venv setup, context injection |
 | `PreToolUse` | Edit, Write | call-graph safety check, `.o` snapshot for delta analysis |
+
+## Cockpit
+
+`loci cockpit` is a live terminal view of this machine's LOCI data — no browser, no sign-in.
+It reads the same measurement store the skills write to, so what it shows is what the session reported.
+
+```
+loci cockpit                      # live TUI
+loci cockpit --once               # one snapshot as a JSON envelope
+loci cockpit --altitude contract  # open on the contract panel
+loci cockpit --catches-only       # event feed filtered to non-OK verdicts
+```
+
+| View | Shows |
+|------|-------|
+| **hotspots** | The functions costing the most time, energy and stack on this branch |
+| **prevented** | Regressions the Guardian caught before they merged |
+| **time-saved** | Analysis time LOCI spent vs. runtime measurement it replaced |
+| **contract** | Every bound in `.loci/contract.yaml` and the latest measurement judged against it |
+
+`--project` / `--branch` select what to look at; both default to the most recent.
 
 ## Powered by AI Physics
 
@@ -103,7 +126,7 @@ the CLI still gates them behind a session. If a skill reports `auth_required`:
 1. Run `! loci login` in your terminal, then retry.
 2. Confirm `loci auth status` shows `signed_in`.
 
-Skills that work signed-out: `/help`, `/loci:setup`, `/bug-report`  
+Skills that work signed-out: `/help`, `/loci:setup`, `/bug-report`, `contract`  
 Skills that need sign-in: `exec-trace`, `stack-depth`, `memory-report`, `control-flow`, `trends`, `loci-preflight`, `loci-post-edit`
 
 ### LOCI was not called / skills didn't trigger

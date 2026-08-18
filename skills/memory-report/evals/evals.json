@@ -90,13 +90,17 @@
     {
       "id": "mr-4",
       "category": "object-file-report",
-      "prompt": "I have a compiled object file at $LOCI_TEST_BLE_ROOT/.loci-build/armv7e-m/app_data.o. Analyze its memory usage. Session says Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
-      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to .loci-build/armv7e-m/app_data.o. Recognizes it as a relocatable object file (not a linked executable). Reports section sizes and types but notes that addresses are zero-based (no linker placement). Reports ROM and RAM estimates. Notes that memory regions are not available for object files (memory_regions is null). Does not attempt to use a map file.",
+      "prompt": "Compile $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/app/app_data.c for armv7e-m and analyze the memory usage of the object file that compile produces, using the object path the compile reports back. Session says Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
+      "expected_output": "Compiles the source and then runs asm-analyze memmap with --elf-path set to the object path the compile REPORTED, whatever that path turns out to be, rather than one it assembled from the basename. Recognizes it as a relocatable object file (not a linked executable). Reports section sizes and types but notes that addresses are zero-based (no linker placement). Reports ROM and RAM estimates. Notes that memory regions are not available for object files (memory_regions is null). Does not attempt to use a map file.",
       "files": [],
       "assertions": [
         {
           "text": "Response runs asm-analyze memmap with --elf-path pointing to the .o file",
           "description": "The memmap subcommand handles both linked ELFs and relocatable .o files"
+        },
+        {
+          "text": "Response measures the object path the compile reported back, not one it constructed from the source's basename",
+          "description": "Graded on PROVENANCE, not on the path's shape — the shape depends on which CLI is installed. The pinned CLI still writes a flat .loci-build/<target>/<stem>.o; a newer one keys the path on the source's own directories (phase 02c). An assertion naming either shape fails the correct behaviour on the other generation. What is always wrong is assembling the path: the earlier version of this eval handed the model a flat .loci-build/armv7e-m/app_data.o for a source six directories down, and the harness never built it, so the eval either failed for a bogus reason or silently measured a pre-upgrade leftover and PASSED."
         },
         {
           "text": "Response identifies the file as relocatable and notes that addresses are zero-based or that memory regions are not available",

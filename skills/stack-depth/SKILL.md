@@ -15,17 +15,45 @@ when_to_use: >
 
 # LOCI Stack Depth Analysis
 
+## Fast path (mandatory when the user named a binary and a function)
+
+When the prompt already names an ELF (`.elf`/`.out`/`.axf`/`.o`) **and** an
+entry function (e.g. `kernel.elf` + `kernel_main`):
+
+1. Do **not** Read `loci-runtime-contract.md`. Session context has `LOCI target`.
+2. Do **not** Glob, `find`, `ls`, Read source, or Read `CODEBASE.md`.
+3. Do **not** `loci build fresh`. Do **not** `loci contract show` unless
+   `[ -f .loci/contract.yaml ]`.
+4. **One Bash** for analysis:
+   `loci elf stack --elf <named> --entry-functions <fn> --arch <loci_target> [--stack-budget N]`
+5. **One Bash** for stats (`record` then `measure` in that same command).
+6. Report: **verdict first**, then the table, then the compact footer. No extra
+   exploration turns.
+
+If the named file is missing or `.ok` is false, stop in that turn.
+
+Otherwise follow the rest of this skill.
+
 **Shared runtime contract.** Before running this skill, read
 `<plugin-dir>/skills/_shared/loci-runtime-contract.md` and apply its
 **Session context placeholders**, **Tool boundary: `loci elf` only**, **Output:
-the JSON envelope**, **Supported architectures (gate)**, and **Step 0 — Pattern
-B: analyze an existing binary** sections. The sections below add only this
-skill's specifics.
+the JSON envelope**, **Supported architectures (gate)**, **Step 0 — Pattern B:
+analyze an existing binary**, **Step 0 — Pattern A: compile the source** and
+**Compile a change and read the artifact paths back** sections. The sections below
+add only this skill's specifics.
+
+The last two of those are what the **Incremental Path** below runs on: it compiles
+through the plugin's script rather than a compiler line, and Pattern A is where the
+`compiler_not_found` recovery that compile can hit is written down.
+
+**Verdict vocabulary.** This skill closes on `PASS` / `CAUTION` / `FAIL` and
+no other words — see `<plugin-dir>/skills/_shared/verdicts.md`.
 
 **Bounds.** This skill judges its findings against the repository's Contract
 Envelope, so also apply the shared **The Contract Envelope is input only**, **One
-fact, one row: the entry decides the status**, **Structural invariants: which
-measurement answers which signal**, and **When there is no contract** sections. The
+fact, one row: the entry decides the status**, **Every row says where its bound
+came from**, **Structural invariants: which measurement answers which signal**, and
+**When there is no contract** sections. The
 contract is read-only to you: report a breach with its numbers, and never resolve
 one by moving the bound.
 
@@ -84,21 +112,54 @@ it "own frame", and never present the `.o`'s `worst_case_depth` or a budget
 verdict: a 4144-byte real depth reads as 8 bytes and PASS here. A budget question
 means the Full ELF Path.
 
-1. If a previous `.o` exists, save it as `.o.prev`
-2. Compile only the changed source with `-c`.
-   Always include `-g` to emit DWARF debug info (required by `loci elf`):
+1. **Do NOT create, refresh, or go looking for a `.o.prev` yourself.** It is the
+   post-edit pipeline's turn baseline — the state from before this turn's first edit
+   — captured by the pre-edit hook and stamped with the turn it belongs to. Copying
+   the current object over it replaces that baseline, and every later edit of the
+   turn then reports its delta against your copy instead of against the turn's
+   start. This matters here in particular: post-edit escalates into this skill
+   mid-turn, so a hand-made copy lands squarely between two of its measurements.
+   Item 2 below tells you whether a usable baseline exists; that answer is the
+   only one to act on.
+2. Compile the changed source and read the paths back — one command, per
+   **Compile a change and read the artifact paths back** in the shared runtime
+   contract. Not a raw `<compiler> -g <flags> -c` line: that writes no
+   `.meta.json` sidecar, so the next `loci build snapshot` refuses and the turn
+   loses its baseline entirely.
    ```
-   <compiler> -g <flags> -c <source> -o .loci-build/<loci_target>/<basename>.o
+   bash "<plugin-dir>/lib/compile-and-read-back.sh" \
+       --source "<source>" --loci-target <loci_target> \
+       --context "<project-context>" --project-root "<project_root>" \
+       --phase post-edit
    ```
-3. Run stack depth on the new object file:
+   It prints one `key<TAB>value` per line:
    ```
-   loci elf stack --elf .loci-build/<loci_target>/<basename>.o --entry-functions <func> --arch <loci_target>
+   OBJ        the object just compiled
+   META       its build record
+   PREV       the turn's baseline — an empty value means there is none
+   PREV_META  that baseline's build record
+   NOTE       zero or more; why a baseline was withheld, or how it was established
    ```
-4. Compare frame sizes before and after. If `.o.prev` exists, also run:
+   **Never assemble a `.loci-build/…` path** — telling you where the object
+   actually is, is the script's whole job. If it prints `FAILED` instead, stop the
+   Incremental Path: on code `compiler_not_found` take Pattern A's recovery
+   (alternate driver name, then ask the user for a path), and on anything else
+   surface the message verbatim. `--loci-target` takes only `aarch64`, `armv7e-m`,
+   `armv6-m` or `tc399`, verbatim from the session context — a raw architecture
+   name such as `cortexm` is rejected and you get no paths at all.
+3. Run stack depth on the object just compiled:
    ```
-   loci elf stack --elf .loci-build/<loci_target>/<basename>.o.prev --entry-functions <func> --arch <loci_target>
+   loci elf stack --elf <OBJ> --entry-functions <func> --arch <loci_target>
    ```
-   Report the per-function frame size delta.
+   Substitute the value item 2 printed; nothing it set survives into this block,
+   which is a separate Bash call.
+4. Compare frame sizes before and after — **only when `PREV` is non-empty:**
+   ```
+   loci elf stack --elf <PREV> --entry-functions <func> --arch <loci_target>
+   ```
+   Report the per-function frame size delta. An **empty `PREV` means there is no
+   before side**: report the current frame sizes only, with no delta, and surface
+   any `NOTE` that explains why there is none.
 
 This gives fast feedback on whether a change grew the stack without needing a full link.
 
@@ -198,7 +259,7 @@ or `warnings` is non-empty, the computed depth is a **lower bound**, not a worst
 case — the real depth can only be larger. So:
 
 - **Never render a bare `PASS`** while any of those is set. Render
-  `PASS (lower bound)` in the body and `⚠️ CAUTION` in the Conclusion table, with
+  `PASS (lower bound)` in the body and `🔶 CAUTION` in the Conclusion table, with
   the flag that caused it named in the Note column.
 - `unknown_callee_size` (default 64 B) silently substitutes for any callee with no
   disassembled body. One under-sized substitution is all it takes to invert a
@@ -209,7 +270,7 @@ case — the real depth can only be larger. So:
   — see the Incremental Path warning above. Scope, not soundness flags, is what
   limits that case, which is why B4's label is mandatory.
 
-### Incremental comparison (when .o.prev available)
+### Incremental comparison (when a baseline was reported)
 
 ```
 ## Stack Frame Delta: <FunctionName>
@@ -222,10 +283,10 @@ Delta:  +48 bytes (+100%)
 ## Conclusion table
 
 After all per-function reports, emit a single aggregate conclusion table.
-Include only rows that apply this run. Every ⚠️ / ❌ row MUST cite a concrete
+Include only rows that apply this run. Every 🔶 / ❌ row MUST cite a concrete
 reason in the Note column — no icon without a cause.
 
-Icon vocabulary: ✅ PASS · ⚠️ WARNING · ❌ FAIL. 
+Icon vocabulary: ✅ PASS · 🔶 CAUTION · ❌ FAIL. 
 
 ### Row catalogue (order when present)
 
@@ -233,7 +294,7 @@ Icon vocabulary: ✅ PASS · ⚠️ WARNING · ❌ FAIL.
    analyzed. Report the maximum `worst_case_depth` across all entry
    functions + absolute bytes. Status by budget:
    - ✅ `usage_pct < 50%` (or no budget and the number looks safe)
-   - ⚠️ `50% ≤ usage_pct ≤ 80%`
+   - 🔶 `50% ≤ usage_pct ≤ 80%`
    - ❌ `usage_pct > 80%`
    Note cites the entry function whose path produced the maximum.
 2. **Worst-case path** — always, when worst-case depth row is present.
@@ -242,11 +303,11 @@ Icon vocabulary: ✅ PASS · ⚠️ WARNING · ❌ FAIL.
 3. **Largest frame** — only when a single frame is ≥ 25% of the total
    worst-case depth. Note cites function name + frame size in bytes.
    Status: ✅ unless the frame size itself is unusually large in absolute
-   terms (e.g., >512 B on a small-MCU stack), in which case ⚠️.
+   terms (e.g., >512 B on a small-MCU stack), in which case 🔶.
 4. **Recursion** — only if `has_recursion = true` for any entry function.
-   Status: ⚠️ (bounded recursion, `--max-recursion-depth` applied) or ❌
+   Status: 🔶 (bounded recursion, `--max-recursion-depth` applied) or ❌
    (unbounded — no exit condition visible). Note cites which function.
-5. **Indirect calls** — only if `has_indirect_calls = true`. Status: ⚠️
+5. **Indirect calls** — only if `has_indirect_calls = true`. Status: 🔶
    if the depth estimate is confident despite them, ❌ if an unknown
    callee could dominate the depth. Note cites the call site.
 6. **Unknown callees** — only if `has_unknown_callees = true`. Status
@@ -262,7 +323,7 @@ worth stating, because both invert a status:
 - **An entry fires the row that would otherwise be omitted.** A clean run has no
   Recursion row today; with `recursion_cycles` enabled it gets one, at `0` and ✅ —
   that is the whole point of reporting the zero.
-- **`fail` outranks your ⚠️.** A bounded-recursion cycle is ⚠️ on your own
+- **`fail` outranks your 🔶.** A bounded-recursion cycle is 🔶 on your own
   thresholds and ❌ against `unbounded_recursion`'s sibling entry
   `recursion_cycles: {max: 0}` when its severity says `fail`. The user asked for
   none; you found one.
@@ -299,11 +360,11 @@ recover the qualifier once it is dropped.
 Artifact: build/app.elf (linked 2026-07-28 09:14:02, sources current)
 
 ### Conclusion
-| Gate              | Status | Note                                               |
-|-------------------|:------:|----------------------------------------------------|
-| Worst-case depth  |   ✅   | 312 B (15.2% of 2048 B budget)                      |
-| Worst-case path   |   ✅   | TaskMain → process_data → decode → crypto_verify    |
-| Largest frame     |   ⚠️   | decode: 128 B (41% of total)                        |
+| Gate              | Status | Basis    | Note                                    |
+|-------------------|:------:|----------|-----------------------------------------|
+| Worst-case depth  |   ✅   | contract | 312 B (15.2% of 2048 B budget)           |
+| Worst-case path   |   ✅   | LOCI     | TaskMain → process_data → decode → crypto_verify |
+| Largest frame     |   🔶   | LOCI     | decode: 128 B (41% of total)             |
 
 Verdict: **PASS** 15.2%
 ```
@@ -316,11 +377,11 @@ Artifact: .loci-build/armv6-m/kernel.elf (relinked 2026-07-29 12:03:11 by this r
          contain build_pattern or render_frame; it was rebuilt before measuring.
 
 ### Conclusion
-| Gate              | Status | Note                                               |
-|-------------------|:------:|----------------------------------------------------|
-| Worst-case depth  |   ❌   | 4144 B (202.3% of 2048 B budget)                    |
-| Worst-case path   |   ❌   | kernel_main → build_pattern → render_frame          |
-| Largest frame     |   ⚠️   | build_pattern: 4112 B (99% of total)                |
+| Gate              | Status | Basis    | Note                                    |
+|-------------------|:------:|----------|-----------------------------------------|
+| Worst-case depth  |   ❌   | contract | 4144 B (202.3% of 2048 B budget)         |
+| Worst-case path   |   ❌   | LOCI     | kernel_main → build_pattern → render_frame |
+| Largest frame     |   🔶   | LOCI     | build_pattern: 4112 B (99% of total)     |
 
 Verdict: **FAIL** 202.3%
 ```
@@ -334,12 +395,12 @@ can be answered by copying the other.
 Artifact: build/sensor.elf (linked 2026-08-13 10:41:55, sources current)
 
 ### Conclusion
-| Gate              | Status | Note                                               |
-|-------------------|:------:|----------------------------------------------------|
-| Worst-case depth  |   ⚠️   | ≥1880 B (≥91.8% of 2048 B budget) — lower bound     |
-| Worst-case path   |   ⚠️   | sample_task → filter_iir → filter_iir (depth 2 cap) |
-| Largest frame     |   ⚠️   | filter_iir: 912 B (49% of total)                    |
-| Soundness         |   ⚠️   | has_recursion — recursion capped at depth 2         |
+| Gate              | Status | Basis    | Note                                    |
+|-------------------|:------:|----------|-----------------------------------------|
+| Worst-case depth  |   🔶   | contract | ≥1880 B (≥91.8% of 2048 B budget) — lower bound |
+| Worst-case path   |   🔶   | LOCI     | sample_task → filter_iir → filter_iir (depth 2 cap) |
+| Largest frame     |   🔶   | LOCI     | filter_iir: 912 B (49% of total)         |
+| Soundness         |   🔶   | LOCI     | has_recursion — recursion capped at depth 2 |
 
 Verdict: **CAUTION** ≥91.8% — lower bound: recursion capped at depth 2
 ```
@@ -432,7 +493,7 @@ One line. Icon-led, no surrounding bars, middle-dot separators:
 ```
 
 - `<icon>` — mirrors the body's conclusion-table verdict: `✅` PASS,
-  `⚠️` WARNING, `❌` FAIL.
+  `🔶` CAUTION, `❌` FAIL.
 - `<entry-fn>` — the single entry function when `N = 1`. When `N > 1`
   the compact form is `<N> fn, worst <max> B` (drops the usage % since
   budgets may differ per entry).
@@ -445,8 +506,8 @@ Worked examples:
 ```
 ✅ LOCI stack-depth · BLEAppUtil_Task · 312 B (30% budget)
 ✅ LOCI stack-depth · main · 288 B
-⚠️ LOCI stack-depth · sensor_task · 1620 B (79% budget)
-⚠️ LOCI stack-depth · sensor_task · ≥3152 B (≥77% budget)
+🔶 LOCI stack-depth · sensor_task · 1620 B (79% budget)
+🔶 LOCI stack-depth · sensor_task · ≥3152 B (≥77% budget)
 ```
 
 The one-line form has no room for the cause; the `≥` is what carries the
@@ -491,7 +552,7 @@ stack series, any future surface — still sees only the 3152.
 
 Replace the compact form with the expanded multi-line form if **any**
 of the following is true:
-- Verdict is `⚠️ WARNING` or `❌ FAIL`.
+- Verdict is `🔶 CAUTION` or `❌ FAIL`.
 - Recursion or unknown-callee warnings make the reported depth a
   lower bound rather than a worst case (the engineer needs the
   inline warnings list).

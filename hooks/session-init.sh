@@ -92,6 +92,11 @@ loci_log INFO session-init "start: project detection"
 detect_and_write_context
 loci_log INFO session-init "end: project detection (status=$_CTX_STATUS target=$_CTX_TARGET compiler=$_CTX_COMPILER build=$_CTX_BUILD)"
 
+# Reclaiming `.loci-build` is NOT done here. It is `hooks/turn-reap.sh`, which
+# hooks.json registers on both `Stop` and `SessionStart`. This file is registered
+# with `"matcher": "startup"` and therefore does not run on `resume`, `clear` or
+# `compact` — a user living in `claude --continue` would never reclaim anything.
+
 # AUTH_PLUGIN_DIR is the highest-semver version in the cache root, not
 # necessarily $0's location — see _resolve_authoritative_plugin_dir.
 AUTH_PLUGIN_DIR=$(_resolve_authoritative_plugin_dir)
@@ -112,6 +117,10 @@ _VERSION_LINE="loci version: ${_LOCI_VER} — LOCI's only user-facing version; w
 _LOCI_STATUS_LINE=$(printf 'loci: installing in background — usable shortly. Install-on-miss: if a LOCI skill or analysis is requested (or a C/C++/Rust edit needs it) while `loci` is still absent, run `bash %s/hooks/ensure-loci-cli.sh` (waits for the in-flight install or performs it, self-locking), then retry the loci call.' \
     "$AUTH_PLUGIN_DIR")
 _INSTALL_FAIL_MSG=""
+# What the ready context says about the CLI. The healthy line, until the stale
+# check below has something to add — the ready branch of the context builder
+# never emitted _LOCI_STATUS_LINE, which is why a stale CLI reached nobody.
+_LOCI_READY_LINE="loci command: loci (on PATH)"
 if ! $_DETECTION_READY && ! have_uv; then
     _LOCI_STATUS_LINE=$(printf 'loci: NOT installed — its prerequisite `uv` is missing and the plugin does not install it. If the user requests a LOCI skill/analysis, determine the uv install command for their OS/package manager, tell them to run it (e.g. `! <install command>`), then run /loci:setup (or `bash %s/hooks/ensure-loci-cli.sh`) to install the loci CLI. Execution-aware analysis is unavailable until then.' \
         "$AUTH_PLUGIN_DIR")
@@ -134,6 +143,39 @@ elif ! $_DETECTION_READY; then
             _LOCI_STATUS_LINE="loci: install skipped (bootstrap/test mode)"
             ;;
     esac
+else
+    # Present but behind the pin. Every branch above tests ABSENCE, so a CLI that
+    # exists and never upgrades used to report nothing at all — the failure was
+    # invisible across releases. Resolve the spec the same way the installer does
+    # (it also adopts a newer pin from the authoritative plugin dir); dev
+    # checkouts float by design and leave _loci_cli_pinned empty.
+    _loci_resolve_install_spec
+    _CLI_VER=$(loci_cli_version) || _CLI_VER=""
+    if [ -n "$_loci_cli_pinned" ] && [ -n "$_CLI_VER" ] \
+       && _semver_gt "$LOCI_CLI_VERSION" "$_CLI_VER"; then
+        _CLI_PATH=$(command -v loci 2>/dev/null)
+        _UV_BIN=$(loci_uv_bin_dir)
+        _SHADOW=""
+        # The installer writes into the uv shim dir; if the `loci` that answers
+        # lives elsewhere, reinstalling will never change the version.
+        case "$_CLI_PATH" in
+            "${_UV_BIN}/"*) ;;
+            *) [ -x "${_UV_BIN}/loci" ] && _SHADOW=1 ;;
+        esac
+        _LOCI_STATUS_LINE=$(printf 'loci: CLI is %s but this plugin pins %s — the automatic upgrade is not taking effect%s. A retry runs in the background this session; if the user hits stale behaviour or asks about the version, invoke the loci:setup skill and read `%s` for the cause.' \
+            "$_CLI_VER" "$LOCI_CLI_VERSION" \
+            "${_SHADOW:+ (the \`loci\` on PATH is ${_CLI_PATH}, but the installer writes ${_UV_BIN}/loci — a shadowing binary)}" \
+            "${STATE_DIR}/loci-cli-install.log")
+        if [ -n "$_SHADOW" ]; then
+            _INSTALL_FAIL_MSG=$(printf '⚠ LOCI: the loci CLI on your PATH is %s, but LOCI pins %s.\n%s shadows the installed %s/loci, so upgrades never take effect.\nRemove or rename the shadowing binary, then start a new session.' \
+                "$_CLI_VER" "$LOCI_CLI_VERSION" "$_CLI_PATH" "$_UV_BIN")
+        else
+            _INSTALL_FAIL_MSG=$(printf '⚠ LOCI: the loci CLI is %s but this version pins %s — the upgrade is not taking effect.\nA retry is running in the background. If it persists, run /loci:setup or check %s.' \
+                "$_CLI_VER" "$LOCI_CLI_VERSION" "${STATE_DIR}/loci-cli-install.log")
+        fi
+        _LOCI_READY_LINE=$(printf 'loci command: loci (on PATH)\n%s' "$_LOCI_STATUS_LINE")
+        loci_log WARN session-init "stale loci CLI: have=${_CLI_VER} pinned=${LOCI_CLI_VERSION} path=${_CLI_PATH} shadowed=${_SHADOW:-0}"
+    fi
 fi
 
 # additionalContext — injected into the session, invisible to the user.
@@ -166,9 +208,9 @@ if [ "$_CTX_STATUS" = "no_project" ] || [ "$_CTX_STATUS" = "multi_project" ]; th
     CONTEXT=$(printf '%s\nBranch: %s\nplugin dir: %s\nproject context: %s\nLOCI: inactive (detection: %s) — %s\nThe loci-preflight and loci-post-edit auto-run rules do NOT apply in this session; do not invoke LOCI skills automatically. /help and /bug-report remain available. If the user explicitly requests LOCI analysis, suggest starting a session in the relevant project directory.' \
         "$_VERSION_LINE" "$_CTX_BRANCH" "$AUTH_PLUGIN_DIR" "$_CTX_PROJECT_CONTEXT" "$_CTX_STATUS" "$_INACTIVE_REASON")
 elif $_DETECTION_READY; then
-    CONTEXT=$(printf '%s\nTarget: %s, Compiler: %s, Build: %s\nLOCI target: %s\nBranch: %s\nloci command: loci (on PATH)\nplugin dir: %s\nproject context: %s\nAvailable: /help, /exec-trace, /stack-depth, /memory-report, /control-flow, /contract, /bug-report\nAuto-runs: loci-preflight (in /plan), loci-post-edit (after edits)\nLOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to C/C++/Rust source files (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs), you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.\nLOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); parse it with `jq` and branch on `.ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252; `jq` is faster and ships with the plugin). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory — Claude Code prompts the user for permission on every out-of-project access, halting automated preflight/post-edit/eval runs. Always write inside the project (e.g. `.loci-build/`) so every tool sees the same path.\n%s' \
+    CONTEXT=$(printf '%s\nTarget: %s, Compiler: %s, Build: %s\nLOCI target: %s\nBranch: %s\n%s\nplugin dir: %s\nproject context: %s\nAvailable: /help, /exec-trace, /stack-depth, /memory-report, /control-flow, /contract, /bug-report\nAuto-runs: loci-preflight (in /plan), loci-post-edit (after edits)\nLOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to C/C++/Rust source files (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs), you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.\nLOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); parse it with `jq` and branch on `.ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252; `jq` is faster and ships with the plugin). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory — Claude Code prompts the user for permission on every out-of-project access, halting automated preflight/post-edit/eval runs. Always write inside the project (e.g. `.loci-build/`) so every tool sees the same path.\n%s' \
         "$_VERSION_LINE" "$_CTX_TARGET" "$_CTX_COMPILER" "$_CTX_BUILD" "$_CTX_TARGET" "$_CTX_BRANCH" \
-        "$AUTH_PLUGIN_DIR" "$_CTX_PROJECT_CONTEXT" "$LOCI_VOICE")
+        "$_LOCI_READY_LINE" "$AUTH_PLUGIN_DIR" "$_CTX_PROJECT_CONTEXT" "$LOCI_VOICE")
 else
     CONTEXT=$(printf '%s\nTarget: %s, Compiler: %s, Build: %s\nLOCI target: %s\nBranch: %s\n%s\nplugin dir: %s\nproject context: %s\nAvailable: /help, /exec-trace, /stack-depth, /memory-report, /control-flow, /contract, /bug-report\nAuto-runs: loci-preflight (in /plan), loci-post-edit (after edits)\nLOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to C/C++/Rust source files (.c,.cc,.cpp,.cxx,.h,.hpp,.hxx,.rs), you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.\n%s' \
         "$_VERSION_LINE" "$_CTX_TARGET" "$_CTX_COMPILER" "$_CTX_BUILD" "$_CTX_TARGET" "$_CTX_BRANCH" \

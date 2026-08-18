@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Detect C++ project context: compiler, build system, binaries, ASM files.
 # Outputs JSON for session initialization.
 
@@ -197,9 +197,6 @@ detect_compiler() {
   echo "unknown"
 }
 
-# Detect build system (including vendor IDEs). Emits "ccs+make" when a
-# projectspec and a makefile coexist in the same tree — common for TI
-# SimpleLink gmake builds that also ship CCS IDE metadata.
 # Run a command under `timeout N` when the timeout binary exists (absent on
 # stock macOS) and bare otherwise — a missing timeout must degrade to "run
 # it", never to "silently skip the probe".
@@ -212,6 +209,9 @@ _maybe_timeout() {
   fi
 }
 
+# Detect build system (including vendor IDEs). Emits "ccs+make" when a
+# projectspec and a makefile coexist in the same tree — common for TI
+# SimpleLink gmake builds that also ship CCS IDE metadata.
 detect_build_system() {
   # A root Cargo.toml is decisive: loci compiles these through cargo, so the
   # signal must win over an incidental Makefile at the root.
@@ -235,13 +235,13 @@ detect_build_system() {
 
   # Subdir detection — deep scan, bounded by timeout.
   local has_projectspec=false has_makefile=false
-  if timeout 4 find "$CWD" -maxdepth 10 \
+  if _maybe_timeout 4 find "$CWD" -maxdepth 10 \
       -type d \( -name .git -o -name node_modules -o -name .venv \
       -o -name target -o -name vendor -o -name third_party \) -prune -o \
       -name "*.projectspec" -type f -print -quit 2>/dev/null | grep -q .; then
     has_projectspec=true
   fi
-  if timeout 4 find "$CWD" -maxdepth 10 \
+  if _maybe_timeout 4 find "$CWD" -maxdepth 10 \
       -type d \( -name .git -o -name node_modules -o -name .venv \
       -o -name target -o -name vendor -o -name third_party \) -prune -o \
       \( -name "Makefile" -o -name "makefile" -o -name "GNUmakefile" \) \
@@ -299,7 +299,7 @@ _scan_linked_bins() {
   local prune='-type d ( -name .git -o -name node_modules -o -name .venv -o -name target -o -name vendor -o -name third_party -o -name cmake-build-debug -o -name cmake-build-release -o -name __pycache__ -o -name .pytest_cache )'
   # shellcheck disable=SC2086
   _LINKED_BINS=$(
-    timeout 6 find "$CWD" -maxdepth 10 $prune -prune -o \
+    _maybe_timeout 6 find "$CWD" -maxdepth 10 $prune -prune -o \
       \( -name "*.elf" -o -name "*.out" -o -name "*.axf" \) -type f -print \
       2>/dev/null | head -60
   )
@@ -320,12 +320,24 @@ find_elf_files() {
   # so cmake-build-debug, build-arm, Release-cortexm all qualify; unmatched globs
   # stay literal and fail the -d test. Separate finds so a flood of .o objects
   # can't starve .so libs under the shared head cap.
+  #
+  # ⚠ The `.o` sweep prunes `.loci-stage-*` for the same reason `find_loci_artifacts`
+  # does, and it is NOT the same directories: `loci build compile --output
+  # build/app.o` stages inside the user's own build tree — exactly where this
+  # looks — and `loci build reap` only ever reaches inside `.loci-build`, so a
+  # compile killed there leaves an `app.o` here **for ever**. It sorts before the
+  # real object under `sort -u`, so it heads `elf_files`, which is what
+  # `detect_architecture`'s `.[0]` fallback and `/bug-report` check 7 read. The
+  # `.so` sweep needs no prune: a staging directory only ever holds a compile's
+  # own output, and LOCI compiles objects.
   for d in "$CWD"/*[Bb]uild* "$CWD"/*[Dd]ebug* "$CWD"/*[Rr]elease* \
            "$CWD"/out "$CWD"/output "$CWD"/bin "$CWD"/obj "$CWD"/artifacts; do
     [ -d "$d" ] || continue
     while IFS= read -r f; do
       [ -n "$f" ] && found+=("$f")
-    done < <(find "$d" -maxdepth 3 -name "*.o" -type f 2>/dev/null | head -10)
+    done < <(find "$d" -maxdepth 3 \
+               \( -type d -name '.loci-stage-*' -prune \) -o \
+               -name "*.o" -type f -print 2>/dev/null | head -10)
     while IFS= read -r f; do
       [ -n "$f" ] && found+=("$f")
     done < <(find "$d" -maxdepth 3 \( -name "*.so" -o -name "*.so.*" \) -type f 2>/dev/null | head -10)
@@ -393,6 +405,23 @@ _loci_artifacts_json() {
   jq -Rs "$_LOCI_ARTIFACTS_JQ" 2>/dev/null || echo '[]'
 }
 
+# How deep `find_loci_artifacts` walks under `.loci-build`, and how many seconds
+# the BSD branch's stat loop may spend. Both are named rather than inline because
+# both are bounds a test has to be able to reach: at the shipped 6 s a fixture
+# would need thousands of files to exercise the deadline at all, and d7/d8 (delete
+# the bound; make it never fire) both survived a mutation campaign for exactly
+# that reason. `LOCI_STAT_BUDGET_SECONDS` exists for those tests and for nothing
+# else.
+#
+# Depth 20 covers a source ~18 directories under the project root, since the
+# object's path mirrors the source's. It is not the CLI's own limit — that one is
+# on path LENGTH (see `_MAX_OBJECT_PATH` in `build.py`), so a source deeper than
+# this still compiles, still snapshots and is still measurable through the
+# envelope; it just stops being ADVERTISED in `loci_artifacts`. Deeper is cheap
+# here only because the three subtrees below are pruned first.
+_LOCI_ARTIFACT_DEPTH=20
+_LOCI_STAT_BUDGET="${LOCI_STAT_BUDGET_SECONDS:-6}"
+
 find_loci_artifacts() {
   local dir="$CWD/.loci-build"
   [ -d "$dir" ] || { echo '[]'; return 0; }
@@ -410,26 +439,102 @@ find_loci_artifacts() {
   # pipes straight into the jq above.
   local prune_names=( -name "*.elf" -o -name "*.out" -o -name "*.axf" -o -name "*.o" )
 
+  # Objects are no longer flat. `loci build compile` keys the object path on the
+  # SOURCE's path (phase 02c), so a translation unit six directories down lands at
+  # `.loci-build/<target>/<those six directories>/<stem>.o` — well past the depth 4
+  # this used to walk, i.e. invisible to every skill that reads `loci_artifacts`.
+  #
+  # Depth alone is the wrong instrument, and raising it was measured doing harm:
+  # at depth 8 the cargo dependency cache contributed **201 build-script objects**
+  # to a 30-entry list and evicted the crate's own object — the same invisibility,
+  # arrived at from the other side. So prune first, then go deep. The three pruned
+  # subtrees are LOCI's own bookkeeping, never a measurement candidate:
+  #   cargo/  the private CARGO_TARGET_DIR (the crate's real object is published
+  #           up at `<target>/<stem>.o`, so nothing measurable is lost)
+  #   elf/    text dumps — assembly, CFG, timing CSV
+  #   turns/  per-turn baselines: a Before is by definition not "measure this now"
+  # Pruned by -path, not -name: `-name elf` would also prune a mirrored source
+  # directory called `elf`, which is a real thing to call a directory.
+  #
+  # ⚠ `-path` takes an fnmatch PATTERN, not a literal, so `$dir` has to be escaped.
+  # A project at `C:\work\proj[v2]\` — legal on Windows, and `[` `*` `?` are all
+  # legal on POSIX — turns `[v2]` into a character class, the pattern matches
+  # nothing, and the prune silently does nothing. That was survivable at depth 4;
+  # at the depth below it IS the failure this prune exists to prevent, with the
+  # cargo cache filling the 30-entry list. Reproduced, then fixed and reproduced
+  # again with the fix in place.
+  # Two bash details, both of which produced a fix that looked right and escaped
+  # nothing: the replacement text must be QUOTED (`${v//\[/\\[}` inserts no
+  # backslash at all), and the backslash pass has to come first or it re-escapes
+  # what the later passes add. `]` needs no pass — once `[` is escaped, nothing
+  # opens a class for it to close.
+  #
+  # A fourth prune, and the only one by NAME, because it is the only one whose
+  # position is not fixed: `loci build compile` stages into `.loci-stage-<x>/`
+  # beside wherever the object is going and renames the result out of it, so a
+  # directory a killed compile orphaned can be under any target, at any mirrored
+  # depth, and inside a turn tree's `obj/` too. The file in it is called
+  # `<stem>.o` and IS a real object — the NEWEST one under `.loci-build`, in fact
+  # — so without this it is offered as the freshest thing to measure, and then
+  # disappears when `loci build reap` collects it. `-name` is safe here where it
+  # was not for `elf`: `.loci-stage-<8 random>` is not a thing anyone calls a
+  # source directory, and the CLI spells the same prefix in `turns.STAGE_PREFIX`.
+  # No escaping pass: this pattern is a literal of ours, not user path text.
+  local skip="$dir"
+  skip=${skip//\\/'\\'}
+  skip=${skip//\[/'\['}
+  skip=${skip//\*/'\*'}
+  skip=${skip//\?/'\?'}
+  local skip_dirs=( -path "$skip/cargo" -o -path "$skip/elf" -o -path "$skip/turns" \
+                    -o -name '.loci-stage-*' )
+
   # `-printf` gets every mtime from ONE process; without it this needs a `stat` spawn
   # per file (~19 ms each on Git Bash). Probe for it rather than inferring from the
   # output, so an empty tree cannot be mistaken for a missing feature.
   if find "$dir" -maxdepth 0 -printf '' >/dev/null 2>&1; then
-    timeout 6 find "$dir" -maxdepth 4 -type f \( "${prune_names[@]}" \) \
-      -printf '%T@|%p\0' 2>/dev/null \
+    _maybe_timeout 6 find "$dir" -maxdepth "$_LOCI_ARTIFACT_DEPTH" \
+      \( -type d \( "${skip_dirs[@]}" \) -prune \) -o \
+      -type f \( "${prune_names[@]}" \) -printf '%T@|%p\0' 2>/dev/null \
       | _loci_artifacts_json
     return 0
   fi
 
   # BSD/macOS: no -printf. One `stat` per file, GNU-first split as in _freshest_elf.
-  local rows=() f mt
+  #
+  # That spawn is OUTSIDE the find's `timeout`, so on a large tree this loop — not
+  # the walk — is the entire latency: measured at 4.8 s over 6.2k files, 33x the
+  # GNU branch. Walking deeper can only make it worse, so the loop carries its own
+  # deadline. `SECONDS` is a bash builtin, so the check costs no process.
+  #
+  # The clock starts at the FIRST RECORD, not here. The find runs concurrently in
+  # the process substitution, so a deadline set before it does is shared between
+  # the walk and the loop: a walk that takes 4 s leaves the loop 2, and a first
+  # record arriving after the deadline breaks the loop with `rows` empty and
+  # publishes `[]` — the silent-empty answer this one function has already been
+  # repaired for three rounds running, under `2>/dev/null` where nobody sees it.
+  #
+  # ⚠ What is dropped is `find`'s TRAVERSAL PREFIX, not the oldest files, so a
+  # truncated list can be missing the newest artifact — the one thing the list
+  # exists to advertise. `loci_log` writes to a file and only in dev mode, so this
+  # is a breadcrumb for a developer, NOT a signal to the user. It is the same
+  # bargain the GNU branch already makes with `timeout 6`; both prefer a partial
+  # answer to a stalled SessionStart.
+  local rows=() f mt deadline=0
   while IFS= read -r -d '' f; do
     [ -n "$f" ] || continue
+    [ "$deadline" -eq 0 ] && deadline=$((SECONDS + _LOCI_STAT_BUDGET))
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      loci_log WARN detect-project \
+        "find_loci_artifacts: stat loop hit its ${_LOCI_STAT_BUDGET}s bound after ${#rows[@]} files — the candidate list may be missing newer artifacts"
+      break
+    fi
     mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
     [ -n "$mt" ] || continue
     rows+=("$mt|$f")
   done < <(
-    timeout 6 find "$dir" -maxdepth 4 -type f \( "${prune_names[@]}" \) \
-      -print0 2>/dev/null
+    _maybe_timeout 6 find "$dir" -maxdepth "$_LOCI_ARTIFACT_DEPTH" \
+      \( -type d \( "${skip_dirs[@]}" \) -prune \) -o \
+      -type f \( "${prune_names[@]}" \) -print0 2>/dev/null
   )
   # `${rows[@]}` on an empty array is an unbound-variable error under `set -u` on
   # bash <= 4.3 (macOS /bin/bash, our shebang) — guarded as at the three other array
@@ -460,7 +565,7 @@ find_build_dirs() {
   while IFS= read -r f; do
     [ -n "$f" ] && dirs+=("${f%/*}")
   done < <(
-    timeout 6 find "$CWD" -maxdepth 10 $prune -prune -o \
+    _maybe_timeout 6 find "$CWD" -maxdepth 10 $prune -prune -o \
       -name "*.projectspec" -type f -print \
       2>/dev/null | head -40
   )
@@ -890,7 +995,7 @@ detect_build_compiler() {
         [ -n "$f" ] && config_files+=("$f")
       done < <(
         # shellcheck disable=SC2086
-        timeout 4 find "$CWD" -maxdepth 10 $prune -prune -o \
+        _maybe_timeout 4 find "$CWD" -maxdepth 10 $prune -prune -o \
           \( -name "*.projectspec" -o -name "Makefile" -o -name "makefile" \) \
           -type f -print 2>/dev/null | head -50
       )

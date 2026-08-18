@@ -84,14 +84,26 @@ Rules, in order of how often they are got wrong:
   | `stack_depth`, `rom_size`, `ram_size` | `B` |
   | `exec_time` | `ns` |
   | `energy` | `uWs` |
+- **A timing bound is always response time — say so when you draft one.**
+  `exec_time` means worst-case latency from entry to exit *including callees* —
+  the metric preflight and post-edit record. Tell the user that in the draft, so
+  they know the budget covers the whole call and not the function's own code.
+  Never draft `exec_time` against exec-trace's throughput time (self-time,
+  callees excluded); it is a different metric and a bound written against it
+  judges the wrong number. If the user's sentence is about a function's own code
+  in isolation, say so and confirm the limit they mean is still end-to-end.
+  `energy` shares that basis — exec-trace's `energy_uws` is self-scoped too — so
+  an energy bound off an exec-trace figure is wrong the same way. The memory and
+  stack signals have no such split and need no such heads-up.
 - **Pick `kind` from the intent** — **required on every entry that has a
   `bound`**, and rejected without one: "must stay under / must never exceed" →
   `budget`; "must not regress more than" → `regression` (with
   `bound.max_delta`, e.g. `"+10 %"` — always against the previous version, and
   write the space so drafted entries match what `contract init` wrote);
-  a structural property held at zero → `invariant`. It is what tells a `max: 0`
-  invariant from a budget whose limit is genuinely zero, and it is part of the
-  entry's identity, so an entry without it is a second bound on the same thing.
+  a structural property with zero tolerance (budget 0) → `invariant`. It is what
+  tells a `max: 0` invariant from a budget whose limit is genuinely zero, and it
+  is part of the entry's identity, so an entry without it is a second bound on
+  the same thing.
   A text-only entry has no bound and takes no `kind`.
 - **A `bound` needs a limit** — `max`, `min`, or `max_delta`. A `bound` carrying
   only a `unit` is rejected: it reads as enforceable and can never be judged.

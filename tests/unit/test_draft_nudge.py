@@ -54,10 +54,25 @@ def _to_bash_path(p: Path) -> str:
     return f"/{m.group(1).lower()}/{m.group(2)}" if m else s
 
 
+def _base_path() -> str:
+    """A PATH the hook can actually work on.
+
+    The nudge gates on `jq` before it does anything, and jq is not in /usr/bin on a
+    Windows checkout (chocolatey, scoop and winget all put it elsewhere). A
+    hardcoded jq-less PATH made the hook exit early, so the "reaches the user"
+    assertions failed while every silence assertion passed for the wrong reason.
+    """
+    base = "/usr/bin:/bin:/usr/local/bin"
+    jq = shutil.which("jq")
+    if jq:
+        base = f"{_to_bash_path(Path(jq).parent)}:{base}"
+    return base
+
+
 def _run(project_dir: Path, *, fake_loci: str | None = None) -> tuple[int, dict | None]:
     """Run the hook; return (exit code, its JSON output or None if silent)."""
     env = {
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "PATH": _base_path(),
         "HOME": str(Path.home()),
         "CLAUDE_PROJECT_DIR": _to_bash_path(project_dir),
     }

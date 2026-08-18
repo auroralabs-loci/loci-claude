@@ -1,16 +1,17 @@
 {
   "skill_name": "loci-post-edit",
-  "note": "Set --ble-root to your local BLE project root before running. These evals test the REAL post-edit flow: a client-style change request is given (NO pre-staged .o artifacts, NO 'analyze the change' prompt), the harness runs ONE acceptEdits turn with the loci plugin loaded (flow='edit'), the pre-edit hook captures <basename>.o.prev BEFORE the Edit, Claude edits the real source, and the SessionStart auto-run rule fires loci-post-edit on its own — which is the behavior under test. The harness backs up and restores source_file so runs are hermetic. Each eval is a distinct, plausible field/customer request on a DIFFERENT function. All five target functions are confirmed present (NOT inlined) in CC2340R5/basic_ble.out, and all source files compile to a non-empty per-file .o: build-metadata discovers each file's real compile command via gmake-dry-run (confidence 'exact'), expanding build_components.opt so HOST_CONFIG/CENTRAL_CFG/PERIPHERAL_CFG are defined — verified by test-compiling app_connection.c (Connection_* symbols present) and hci.c (HCI_SendDataPkt present), so the #if(HOST_CONFIG…) guards in app_connection.c are NOT a blocker and no flags.json seeding is needed. Graded by grade_bash_post_edit: a '## Post-Edit:' header + 'Verdict: OK|CAUTION|FLAG' line + a % diff (the pre-edit hook always captures a baseline in this flow).",
+  "note": "Set --ble-root to your local BLE project root before running. These evals test the REAL post-edit flow: a client-style change request is given (NO pre-staged .o artifacts, NO 'analyze the change' prompt), the harness runs ONE acceptEdits turn with the loci plugin loaded (flow='edit'), the pre-edit hook captures <basename>.o.prev BEFORE the Edit, Claude edits the real source, and the SessionStart auto-run rule fires loci-post-edit on its own — which is the behavior under test. The harness backs up and restores source_file so runs are hermetic. Each eval is a distinct, plausible field/customer request on a DIFFERENT function. All five target functions are confirmed present (NOT inlined) in CC2340R5/basic_ble.out, and all source files compile to a non-empty per-file .o: build-metadata discovers each file's real compile command via gmake-dry-run (confidence 'exact'), expanding build_components.opt so HOST_CONFIG/CENTRAL_CFG/PERIPHERAL_CFG are defined — verified by test-compiling app_connection.c (Connection_* symbols present) and hci.c (HCI_SendDataPkt present), so the #if(HOST_CONFIG…) guards in app_connection.c are NOT a blocker and no flags.json seeding is needed. Graded by grade_bash_post_edit: a '## Post-Edit:' header + 'Verdict: PASS|CAUTION|FAIL' line + a % diff (the pre-edit hook always captures a baseline in this flow). Two fields carry the claims this file used to make in prose only: `expect_baseline` fails a run whose report says it had no Before — which the note above asserts can never happen in this flow, and which the grader used to accept as a PASS — and `expect_no_change` (pe-13) fails a run that invents a delta for an edit-and-revert turn whose net effect on the object is nothing. FIXTURE: every eval here names `examples/rtos/LP_EM_CC2340R53/.../basic_ble_profiles/...` and `$LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out`. That is one particular BLE checkout — a tree laid out as `LP_EM_CC2340R5/.../basic_ble/` with no top-level `CC2340R5/` image will ERROR with `source_file missing or not found` before the model is ever asked anything. Repointing the paths is not a rename: the note above records that each target function was verified PRESENT and not inlined in that image, and that each file compiles to a non-empty per-file object, so a new tree has to be re-verified the same way before its paths go in here.",
   "evals": [
     {
       "id": "pe-7",
       "should_trigger": true,
       "flow": "edit",
+      "expect_baseline": true,
       "grading_mode": "bash",
       "category": "post-edit-autofires-mtu-update-telemetry",
       "source_file": "examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c",
       "prompt": "A field customer reports their peripheral keeps renegotiating its connection MTU and they want to quantify how often it happens. In $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c, update GATT_EventHandler so it keeps a running count of ATT MTU update events and includes that cumulative count in the status message it already prints on an MTU update. The data module is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-      "expected_output": "No pre-staged artifacts and no 'analyze' instruction are given — Claude edits app_data.c directly to add the MTU-update counter. The pre-edit hook captures app_data.o.prev before the Edit; after the edit lands, loci-post-edit auto-fires WITHOUT being asked: it runs diff-elfs on app_data.o.prev vs app_data.o, identifies GATT_EventHandler as modified, extracts pre/post assembly, calls the LOCI MCP for pre and post timing, and emits the Step 6 conclusion table headed '## Post-Edit: GATT_EventHandler' with a Performance row (Before/After execution_time_ns and ±% in the Note) and an Energy row, closing with a 'Verdict: **OK|CAUTION|FLAG**' line and the 'LOCI post-edit · …' footer.",
+      "expected_output": "No pre-staged artifacts and no 'analyze' instruction are given — Claude edits app_data.c directly to add the MTU-update counter. The pre-edit hook captures app_data.o.prev before the Edit; after the edit lands, loci-post-edit auto-fires WITHOUT being asked: it runs diff-elfs on app_data.o.prev vs app_data.o, identifies GATT_EventHandler as modified, extracts pre/post assembly, calls the LOCI MCP for pre and post timing, and emits the Step 6 conclusion table headed '## Post-Edit: GATT_EventHandler' with a Performance row (Before/After execution_time_ns and ±% in the Note) and an Energy row, closing with a 'Verdict: **PASS|CAUTION|FAIL**' line and the 'LOCI post-edit · …' footer.",
       "files": [],
       "assertions": [
         {
@@ -26,7 +27,7 @@
           "description": "The pre-edit hook captured app_data.o.prev as a baseline, so the % diff must be computed and shown"
         },
         {
-          "text": "The report ends with a 'Verdict: **OK|CAUTION|FLAG**' line",
+          "text": "The report ends with a 'Verdict: **PASS|CAUTION|FAIL**' line",
           "description": "Every post-edit report closes with the bolded verdict line per SKILL.md Step 6"
         }
       ]
@@ -35,11 +36,12 @@
       "id": "pe-8",
       "should_trigger": true,
       "flow": "edit",
+      "expect_baseline": true,
       "grading_mode": "bash",
       "category": "post-edit-autofires-connhandle-bounds-guard",
       "source_file": "examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_connection.c",
       "prompt": "A code review flagged that Connection_getConnhandle can be called with an index past the end of the connection table, returning whatever garbage is in memory. In $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_connection.c, add a bounds guard at the top of Connection_getConnhandle that returns 0xFFFF (an invalid connection handle) when the index is greater than or equal to MAX_NUM_BLE_CONNS, so callers can detect the bad index instead of reading past the table. The function is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-      "expected_output": "Claude edits app_connection.c directly to add the index bounds guard in Connection_getConnhandle. The pre-edit hook captures app_connection.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs identifies Connection_getConnhandle as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: Connection_getConnhandle' is emitted with Performance and Energy rows (Before/After + ±% in the Note reflecting the added compare/early-return), closing with a 'Verdict: **OK|CAUTION|FLAG**' line and the LOCI post-edit footer.",
+      "expected_output": "Claude edits app_connection.c directly to add the index bounds guard in Connection_getConnhandle. The pre-edit hook captures app_connection.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs identifies Connection_getConnhandle as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: Connection_getConnhandle' is emitted with Performance and Energy rows (Before/After + ±% in the Note reflecting the added compare/early-return), closing with a 'Verdict: **PASS|CAUTION|FAIL**' line and the LOCI post-edit footer.",
       "files": [],
       "assertions": [
         {
@@ -55,7 +57,7 @@
           "description": "With the pre-edit baseline captured by the hook, the % diff must be computed and shown"
         },
         {
-          "text": "The report ends with a 'Verdict: **OK|CAUTION|FLAG**' line",
+          "text": "The report ends with a 'Verdict: **PASS|CAUTION|FAIL**' line",
           "description": "The bolded verdict line is mandatory in the Step 6 output"
         }
       ]
@@ -64,11 +66,12 @@
       "id": "pe-9",
       "should_trigger": true,
       "flow": "edit",
+      "expect_baseline": true,
       "grading_mode": "bash",
       "category": "post-edit-autofires-peak-connections",
       "source_file": "examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_connection.c",
       "prompt": "Product wants to know the highest number of simultaneous connections a device actually reaches in the field, to right-size the connection pool. In $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_connection.c, update Connection_ConnEventHandler so that when a link is established it tracks the peak concurrent connection count (using linkDB_NumActive) and prints that peak alongside the current connection count. The handler is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-      "expected_output": "Claude edits app_connection.c directly to add peak-connection tracking in Connection_ConnEventHandler's link-established case. The pre-edit hook captures app_connection.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs flags Connection_ConnEventHandler as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: Connection_ConnEventHandler' is emitted with Performance and Energy rows (Before/After + ±% in the Note), closing with a 'Verdict: **OK|CAUTION|FLAG**' line and the LOCI post-edit footer.",
+      "expected_output": "Claude edits app_connection.c directly to add peak-connection tracking in Connection_ConnEventHandler's link-established case. The pre-edit hook captures app_connection.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs flags Connection_ConnEventHandler as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: Connection_ConnEventHandler' is emitted with Performance and Energy rows (Before/After + ±% in the Note), closing with a 'Verdict: **PASS|CAUTION|FAIL**' line and the LOCI post-edit footer.",
       "files": [],
       "assertions": [
         {
@@ -84,7 +87,7 @@
           "description": "With the pre-edit baseline captured by the hook, the % diff must be shown"
         },
         {
-          "text": "The report ends with a 'Verdict: **OK|CAUTION|FLAG**' line",
+          "text": "The report ends with a 'Verdict: **PASS|CAUTION|FAIL**' line",
           "description": "The bolded verdict line is mandatory in the Step 6 output"
         }
       ]
@@ -93,11 +96,12 @@
       "id": "pe-10",
       "should_trigger": true,
       "flow": "edit",
+      "expect_baseline": true,
       "grading_mode": "bash",
       "category": "post-edit-autofires-hci-tx-byte-counter",
       "source_file": "simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c",
       "prompt": "For a throughput-debugging build, the team wants the controller to keep a cumulative count of bytes transmitted on the data path. In $LOCI_TEST_BLE_ROOT/simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c, add a static uint32_t TX byte counter to HCI_SendDataPkt that accumulates the dataLen parameter on each successful send and is allowed to wrap silently. The function is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-      "expected_output": "Claude edits hci.c directly to add the TX byte counter in HCI_SendDataPkt. The pre-edit hook captures hci.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs identifies HCI_SendDataPkt as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: HCI_SendDataPkt' is emitted with Performance and Energy rows (Before/After + ±% in the Note), closing with a 'Verdict: **OK|CAUTION|FLAG**' line and the LOCI post-edit footer. HCI_SendDataPkt is a hot data-path function, so timing impact is the headline metric.",
+      "expected_output": "Claude edits hci.c directly to add the TX byte counter in HCI_SendDataPkt. The pre-edit hook captures hci.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs identifies HCI_SendDataPkt as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: HCI_SendDataPkt' is emitted with Performance and Energy rows (Before/After + ±% in the Note), closing with a 'Verdict: **PASS|CAUTION|FAIL**' line and the LOCI post-edit footer. HCI_SendDataPkt is a hot data-path function, so timing impact is the headline metric.",
       "files": [],
       "assertions": [
         {
@@ -113,7 +117,7 @@
           "description": "With the pre-edit baseline captured by the hook, the % diff must be shown"
         },
         {
-          "text": "The report ends with a 'Verdict: **OK|CAUTION|FLAG**' line",
+          "text": "The report ends with a 'Verdict: **PASS|CAUTION|FAIL**' line",
           "description": "The bolded verdict line is mandatory in the Step 6 output"
         }
       ]
@@ -122,11 +126,12 @@
       "id": "pe-11",
       "should_trigger": true,
       "flow": "edit",
+      "expect_baseline": true,
       "grading_mode": "bash",
       "category": "post-edit-autofires-datastart-boot-status",
       "source_file": "examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c",
       "prompt": "After a bring-up issue where the data module silently failed to start, the team wants boot-time confirmation that its event handler registered. In $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c, update Data_start so that after it registers the data handler it prints a status line reporting whether registration succeeded or, if it failed, the returned error code. Data_start is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-      "expected_output": "Claude edits app_data.c directly to add the registration-status log in Data_start. The pre-edit hook captures app_data.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs identifies Data_start as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: Data_start' is emitted with Performance and Energy rows (Before/After + ±% in the Note), closing with a 'Verdict: **OK|CAUTION|FLAG**' line and the LOCI post-edit footer.",
+      "expected_output": "Claude edits app_data.c directly to add the registration-status log in Data_start. The pre-edit hook captures app_data.o.prev; after the edit, loci-post-edit auto-fires without being asked: diff-elfs identifies Data_start as modified, assembly is extracted pre/post, the LOCI MCP returns pre and post timing, and the conclusion table headed '## Post-Edit: Data_start' is emitted with Performance and Energy rows (Before/After + ±% in the Note), closing with a 'Verdict: **PASS|CAUTION|FAIL**' line and the LOCI post-edit footer.",
       "files": [],
       "assertions": [
         {
@@ -142,8 +147,35 @@
           "description": "With the pre-edit baseline captured by the hook, the % diff must be shown"
         },
         {
-          "text": "The report ends with a 'Verdict: **OK|CAUTION|FLAG**' line",
+          "text": "The report ends with a 'Verdict: **PASS|CAUTION|FAIL**' line",
           "description": "The bolded verdict line is mandatory in the Step 6 output"
+        }
+      ]
+    },
+    {
+      "id": "pe-13",
+      "should_trigger": true,
+      "flow": "edit",
+      "expect_baseline": true,
+      "expect_no_change": true,
+      "grading_mode": "bash",
+      "category": "post-edit-edit-then-revert-reports-no-net-change",
+      "source_file": "examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c",
+      "prompt": "In $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c, change the ATT MTU status message in GATT_EventHandler to read \"MTU updated\" instead of whatever it says now. Then reconsider: the original wording is the one the field team greps for, so put it back exactly as it was. Use the Edit tool for both changes.",
+      "expected_output": "Two edits land in ONE turn and their net effect on the compiled object is nothing. The pre-edit hook captures app_data.o.prev before the FIRST edit and keeps it for the second (first-write-wins per turn), so the Before side is the state of the file before either change — not the state after the first. loci-post-edit therefore compares the rebuilt object against a baseline it is identical to, `loci elf diff` reports no changed functions, and the report SAYS the object is unchanged rather than reporting a timing delta. A report carrying a signed % change here is wrong twice over: the number is fabricated, and it can only have come from a baseline that moved with the first edit.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Response includes a '## Post-Edit:' section header (line-start markdown, not prose)"
+        },
+        {
+          "text": "The report states the compiled functions are unchanged / there is no net change"
+        },
+        {
+          "text": "The report does NOT present a signed percentage timing or energy delta"
+        },
+        {
+          "text": "The report does NOT claim it had no pre-edit baseline"
         }
       ]
     }

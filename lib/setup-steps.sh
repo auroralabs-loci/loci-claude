@@ -23,11 +23,36 @@ _LOCI_SETUP_STEPS_SOURCED=1
 
 # Pinned loci CLI (prod), from the PyPI wheel. Dev installs float — see
 # ensure_loci. This is the ONLY copy of these constants in the plugin.
-LOCI_CLI_VERSION="0.1.117"
+LOCI_CLI_VERSION="0.1.122"
 LOCI_CLI_PACKAGE="loci-tools"
 
 loci_is_windows() {
     case "$(uname -s)" in MINGW*|MSYS*) return 0 ;; *) return 1 ;; esac
+}
+
+# Where `uv tool install` puts console-script shims, per uv's own resolution
+# order. NOT probed with `uv tool dir --bin`: sourcing this file must never run
+# uv (the pin-resolution tests assert that every uv invocation is an install).
+loci_uv_bin_dir() {
+    if [ -n "${UV_TOOL_BIN_DIR:-}" ]; then
+        printf '%s' "$UV_TOOL_BIN_DIR"
+    elif [ -n "${XDG_BIN_HOME:-}" ]; then
+        printf '%s' "$XDG_BIN_HOME"
+    elif loci_is_windows; then
+        printf '%s' "${LOCALAPPDATA:-$HOME/AppData/Local}/uv/bin"
+    else
+        printf '%s' "$HOME/.local/bin"
+    fi
+}
+
+# Move $1 to the front of PATH, dropping any existing occurrence.
+_path_prepend_unique() {
+    local _d="$1" _out="" _p
+    local IFS=:
+    for _p in $PATH; do
+        [ "$_p" = "$_d" ] || _out="${_out:+$_out:}$_p"
+    done
+    PATH="$_d${_out:+:$_out}"
 }
 
 # Hook subprocesses don't inherit the login-shell PATH; prepend the common
@@ -49,7 +74,21 @@ augment_path() {
             [ -d "$_d" ] && case ":$PATH:" in *":$_d:"*) ;; *) PATH="$_d:$PATH" ;; esac
         done
     fi
+    # The uv shim dir outranks everything, unconditionally: the loop above
+    # prepends in ascending order, so /opt/homebrew/bin and /usr/local/bin ended
+    # up ahead of it, and a dir already in the inherited PATH was never moved.
+    # Any other `loci` winning the lookup makes the pin check read a binary the
+    # installer never writes — it reinstalls every session and nothing changes.
+    _d=$(loci_uv_bin_dir)
+    [ -n "$_d" ] && [ -d "$_d" ] && _path_prepend_unique "$_d"
     export PATH
+}
+
+# `loci --version` as bare digits/dots. head -1 first: multi-line output would
+# otherwise concatenate into a bogus version that compares as newer than the pin.
+loci_cli_version() {
+    command -v loci >/dev/null 2>&1 || return 1
+    loci --version 2>/dev/null | head -1 | tr -cd '0-9.'
 }
 
 find_jq() {
@@ -165,7 +204,7 @@ _loci_cli_ready() {
     fi
     # Editable/floating installs float — accept presence.
     [ -n "$_loci_cli_pinned" ] || return 0
-    local v; v=$(loci --version 2>/dev/null | tr -cd '0-9.')
+    local v; v=$(loci_cli_version)
     [ "$v" = "$LOCI_CLI_VERSION" ] || _semver_gt "$v" "$LOCI_CLI_VERSION"
 }
 
@@ -173,11 +212,14 @@ _loci_write_status() {
     local st="$1" f="${STATE_DIR}/loci-cli-status.json" tmp
     tmp="${STATE_DIR}/loci-cli-status.json.tmp.$$"
     local ver=""
-    command -v loci >/dev/null 2>&1 && ver=$(loci --version 2>/dev/null | tr -cd '0-9.')
+    ver=$(loci_cli_version) || ver=""
     command -v jq >/dev/null 2>&1 || return 0
+    # `path` is here for diagnosis: a version that never moves while the install
+    # keeps succeeding means a different `loci` is winning the PATH lookup.
     jq -n --arg s "$st" --arg spec "$_loci_install_spec" --arg ver "$ver" \
+          --arg path "$(command -v loci 2>/dev/null)" \
           --arg log "${STATE_DIR}/loci-cli-install.log" --arg ts "$(date -u +%FT%TZ 2>/dev/null)" \
-          '{status:$s, spec:$spec, version:$ver, log:$log, ts:$ts}' > "$tmp" 2>/dev/null \
+          '{status:$s, spec:$spec, version:$ver, path:$path, log:$log, ts:$ts}' > "$tmp" 2>/dev/null \
         && mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
@@ -225,17 +267,33 @@ ensure_loci() {
 # sibling's state). So a ":0" inode is rejected and we fall back to a path key,
 # lowercased on Windows to keep the case-insensitive collapsing. NTFS inodes are
 # non-zero, so the healthy case is unaffected.
+#
+# Takes an optional directory, defaulting to the process's own. Every writer here
+# means "this session's project" and passes nothing; `hooks/pre-edit-hook.sh` passes
+# the hook payload's `cwd`, which is the root it is snapshotting FOR rather than the
+# directory it happens to be running in. Both spellings reach the same key because
+# `stat` resolves them to one inode — which is the point of keying on the inode, and
+# is what lets a reader name the file this function named without reimplementing any
+# part of the rule. A second implementation, anywhere, is a state directory that two
+# components disagree about.
 _canonical_cwd_key() {
+    local dir="${1:-.}"
     local key
     # macOS/BSD: -f is the format flag (errors out on GNU, so falls through).
     # GNU/MSYS: -c is the format flag.
-    if key=$(stat -f '%d:%i' . 2>/dev/null) && [ -n "$key" ]; then
+    if key=$(stat -f '%d:%i' "$dir" 2>/dev/null) && [ -n "$key" ]; then
         case "$key" in *:0) ;; *) printf '%s' "$key"; return 0 ;; esac
     fi
-    if key=$(stat -c '%d:%i' . 2>/dev/null) && [ -n "$key" ]; then
+    if key=$(stat -c '%d:%i' "$dir" 2>/dev/null) && [ -n "$key" ]; then
         case "$key" in *:0) ;; *) printf '%s' "$key"; return 0 ;; esac
     fi
-    local path; path=$(realpath . 2>/dev/null || pwd)
+    # `pwd` is the fallback's fallback and is only right for the default case; a
+    # named directory that cannot be resolved has no key rather than the caller's.
+    local path
+    if ! path=$(realpath "$dir" 2>/dev/null); then
+        [ "$dir" = "." ] || return 1
+        path=$(pwd)
+    fi
     if loci_is_windows; then
         printf '%s' "$path" | tr '[:upper:]' '[:lower:]'
     else
@@ -245,7 +303,8 @@ _canonical_cwd_key() {
 
 hash_cwd() {
     local key h
-    key=$(_canonical_cwd_key)
+    key=$(_canonical_cwd_key "${1:-.}") || return 1
+    [ -n "$key" ] || return 1
     h=$(printf '%s' "$key" | sha256sum 2>/dev/null | cut -c1-12)
     [ -n "$h" ] && { echo "$h"; return 0; }
     h=$(printf '%s' "$key" | shasum -a 256 2>/dev/null | cut -c1-12)

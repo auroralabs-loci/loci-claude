@@ -74,7 +74,7 @@ exists it stays a skill-side sub-finding, and it may only *worsen* the
 Performance row, never soften a contract breach — a heuristic must not overturn
 a bound the project wrote down.
 
-## Why agent-judged entries are capped at ⚠️
+## Why agent-judged entries are capped at 🔶
 
 Entries LOCI cannot compute (prose, or an unknown signal) come back in
 `agent_judged` for the model to decide. The CLI stores whatever severity the

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Revert BLE source file changes made by eval test runs.
 #
 # Usage:

@@ -26,10 +26,15 @@ supported, the skill stops and tells the user why.
 **Shared runtime contract.** Before running this skill, read
 `<plugin-dir>/skills/_shared/loci-runtime-contract.md` and apply its
 **Tool boundary: `loci elf` only**, **Output: the JSON envelope**, **Supported
-architectures (gate)**, and **Step 0 — Pattern A: compile the source** sections
+architectures (gate)**, **[Loop cost: a block on the hot path does not run
+once](../_shared/loci-runtime-contract.md#loop-cost)**, and **Step 0 — Pattern A:
+compile the source** sections
 — plus, when the analyzed source is Rust (`.rs`), the **Rust / Cargo projects**
 section, which overrides the artifact-path convention below.
 The sections below add only this skill's specifics.
+
+**Verdict vocabulary.** This skill closes on `PASS` / `CAUTION` / `FAIL` and
+no other words — see `<plugin-dir>/skills/_shared/verdicts.md`.
 
 **Why the contract step is shaped as it is:** see
 `<plugin-dir>/skills/_shared/contract-rationale.md`. It is reference for
@@ -38,8 +43,9 @@ skill.
 
 **Bounds.** This skill judges its findings against the repository's Contract
 Envelope, so also apply the shared **The Contract Envelope is input only**, **One
-fact, one row: the entry decides the status**, **Structural invariants: which
-measurement answers which signal**, and **When there is no contract** sections. The
+fact, one row: the entry decides the status**, **Every row says where its bound
+came from**, **Structural invariants: which measurement answers which signal**, and
+**When there is no contract** sections. The
 contract is read-only to you: report a breach with its numbers, and never resolve
 one by moving the bound.
 
@@ -111,12 +117,22 @@ Read `plugin dir:` and `project context:` from the SessionStart context. For
 each source:
 
 ```
-loci build compile \
-    --source <path/to/src.cpp> \
+env=$(loci build compile \
+    --source "<path/to/src.cpp>" \
     --loci-target <loci_target> \
     --context "<project-context>" \
-    --phase preflight
+    --project-root "<project_root>" \
+    --phase preflight)
+
+jq -r '.data.output'                <<<"$env"   # the object just compiled
+jq -r '.data.meta_file'             <<<"$env"   # its build record
+jq -r '.data.output_prev // empty'  <<<"$env"   # a comparable pre-edit baseline, if one exists
+jq -r '.data.meta_prev   // empty'  <<<"$env"   # that baseline's build record
+jq -r '.data.baseline_withheld // empty | "\(.code)\t\(.reason)"' <<<"$env"  # why there is none, when there is none
 ```
+
+Read the printed values into the steps below — this is a separate Bash call from
+every fence that follows, so `$env` does not exist in them.
 
 `loci build compile` resolves flags through a typed cascade — each step is
 recorded in the `.meta.json` sidecar under `flag_source_v2.attempts`:
@@ -131,19 +147,42 @@ recorded in the `.meta.json` sidecar under `flag_source_v2.attempts`:
 8. Makefile regex scan — augmenter only (low, partial)
 9. Hardcoded defaults — last resort with a warning
 
-It guarantees `-g` and `-c`, and writes `.loci-build/<loci_target>/<basename>.o`
-plus `.loci-build/<loci_target>/<basename>.o.meta.json`. **For Rust sources the
-flag cascade above does not run** — the crate is built through cargo and the
-artifact is `.loci-build/<loci_target>/<crate_target>.o` (named after the
-crate, not the source file); take the actual paths from the envelope's
-`data.output` / `data.meta_file` instead of constructing them. The compiler /
-flags / version / discovery tier are recorded in the sidecar; post-edit
-calls `loci build diff` to verify parity. If you need a field from the envelope,
-capture it in a shell variable (`out=$(loci build compile …); jq … <<<"$out"`) —
-do **not** redirect it to a `.loci-build/*.json` file; the `.meta.json` sidecar is
-the durable record, so a captured copy of stdout is pure litter. **Do not print
-the build block to the user** — the sidecar is the source of truth, and the block
-is intentionally suppressed to keep the skill output focused on the analysis.
+It guarantees `-g` and `-c`, and writes the object somewhere under
+`.loci-build/<loci_target>/` — not necessarily directly in it — plus a
+`<output>.meta.json` sidecar beside it.
+**Take every path from the envelope — never assemble one from the basename.** The
+layout is the CLI's to choose, and a hand-built path breaks silently the next time
+it changes. That is not a Rust-only caveat, though Rust makes it obvious: **for Rust
+sources the flag cascade above does not run** — the crate is built through cargo and
+the object is named after the *crate target*, not the source file. The compiler /
+flags / version / discovery tier are recorded in the sidecar; post-edit calls
+`loci build diff` to verify parity.
+
+**`data.output_prev` is how you know whether a pre-edit baseline exists.** Where a
+step below says "if a baseline exists", that field — not a `.o.prev` file you went
+looking for — is the test. Present means the CLI checked the pair and found it
+comparable to what it just built; absent means there is no usable Before, and
+reaching around it re-creates exactly the mismatched pair the check exists to
+withhold. Preflight normally runs *before* any edit, so absent is the common case —
+and `data.baseline_withheld` says which absence this is. Branch on its `code`, not on
+its prose: `not_captured` is preflight's ordinary state and is not worth a line in
+your answer, while **every other code describes a candidate that was examined and
+rejected** — built from another file (`other_source`), built with other flags
+(`build_differs`, whose reason carries a command that shows you exactly what moved), or
+a capture that has since been deleted or overwritten. Say so, because the user can see a
+`.o.prev` sitting on disk and has no other way to learn why it was not used. An envelope
+with neither field is a CLI too old to say; that is not evidence the baseline was fine.
+
+Do **not** redirect the envelope to a `.loci-build/*.json` file; the `.meta.json`
+sidecar is the durable record, so a captured copy of stdout is pure litter. **Do
+not print the build block to the user** — the sidecar is the source of truth, and
+the block is intentionally suppressed to keep the skill output focused on the
+analysis.
+
+Preflight deliberately does **not** use the contract's compile-and-read-back script:
+that script inherits the baseline's flags, and preflight is the run that
+*establishes* the flags a later post-edit inherits. Re-running the cascade above is
+the point, not a cost. Do not "fix" this into inheriting.
 
 **Validate the .o** — a standalone `-c` compile can exit 0 yet produce an
 empty object file when the source is wrapped in `#if` / `#ifdef` guards whose
@@ -151,11 +190,13 @@ defines (`-D`) were not on the command line. After `loci build compile`
 succeeds, run:
 
 ```
-loci elf symbols --elf .loci-build/<loci_target>/<basename>.o --arch <loci_target>
+loci elf symbols --elf <data.output> --arch <loci_target>
 ```
 
-(For Rust, `--elf` is the compile envelope's `data.output` — the crate-named
-`.o`. Symbol rows come back demangled with the raw name under `mangled`.)
+Substitute the path the compile envelope printed above — this is a separate Bash
+call, so `$env` from that block no longer exists. (For Rust, `data.output` is the
+crate-named `.o`; symbol rows come back demangled with the raw name under
+`mangled`.)
 
 Read everything from **this one envelope** — never re-run it to "peek". `data.count`
 is the symbol count (the validation gate); `data.payload` tells you where the table
@@ -233,7 +274,15 @@ env=$(loci elf asm --elf <…> --functions <…> --arch <loci_target>)
 jq -r '.data.control_flow'        <<<"$env"   # path to annotated CFG file
 jq -r '.data.timing_architecture' <<<"$env"   # arch string for loci timing
 jq -r '.data.timing_csv'          <<<"$env"   # path to consolidated timing CSV
+jq -c '.data.loops'               <<<"$env"   # loop roll-up (triage, not permission)
 ```
+
+`data.loops` is the loop-annotation roll-up
+(`{total, with_trip_count, unknown_trip_count, recursion, uncounted_cycles}`). Read it
+now, before any timing: a non-zero `unknown_trip_count` or `uncounted_cycles` is advance
+warning that some total below is a lower bound. It grants no permission and gates
+nothing — you multiply by the `iters` the CFG carries either way. See the shared
+**[Loop cost](../_shared/loci-runtime-contract.md#loop-cost)** section.
 
 
 ### Timing and energy via `loci timing`
@@ -249,9 +298,14 @@ loci timing --architecture <data.timing_architecture> --csv-file <data.timing_cs
 It returns `data.rows` (one row per block); use those rows to compute
 per-callee metrics.
 
-Compute per-callee:
-- **Worst path** = `execution_time_ns` + `std_dev_ns`
-- **Energy** = `energy_ws` (report in uWs; convert from Ws by multiplying by 1e6)
+Compute per-callee, **per hot-path block, multiplied by that block's `iters`**:
+- **Worst path** = Σ (`execution_time_ns` + `std_dev_ns`) × `iters`
+- **Energy** = Σ `energy_ws` × `iters` (report in uWs; convert from Ws by 1e6)
+
+`iters` is the annotation on the block's line in the CFG file — absent means once
+per call, `iters=?` makes the total a `≥` lower bound. The four cases and the
+`≥` convention are in **[Loop cost](../_shared/loci-runtime-contract.md#loop-cost)**;
+do not restate them here, apply them.
 
 `loci timing` row fields are exactly: `function_name`, `std_dev_ns`,
 `execution_time_ns`, `energy_ws`. Reference those field names literally
@@ -259,7 +313,10 @@ when reading rows — there is no bare `std_dev` field.
 
 Sum worst-case timings and energy across the hot-path call chain — but
 **not** by adding the bare `execution_time_ns` of every hot-path
-block. Hot-path blocks that end in `bl` / `blx` are *call sites*: the
+block, and **not** before multiplying each block by its `iters`. Expand the
+call sites first, then multiply: a callee reached from inside a loop costs
+`iters × (bl_cost + callee_body)`, and multiplying before expanding counts its
+body once. Hot-path blocks that end in `bl` / `blx` are *call sites*: the
 `loci timing` cost for that single block reflects only the branch-only /
 single-instruction call-site cost, NOT the cost of the callee's body.
 You MUST expand every such block first (see next sub-step) before summing.
@@ -283,9 +340,13 @@ For every block on the hot path whose disassembly ends in `bl` / `blx`
    callee's hot path through its CFG, then compute:
 
    ```
-   callee_worst_ns  = Σ over callee hot-path blocks of (execution_time_ns + std_dev_ns)
-   callee_energy_ws = Σ over callee hot-path blocks of  energy_ws
+   callee_worst_ns  = Σ over callee hot-path blocks of (execution_time_ns + std_dev_ns) × iters
+   callee_energy_ws = Σ over callee hot-path blocks of  energy_ws × iters
    ```
+
+   The callee's own loops are already accounted for by its blocks' `iters`, which
+   count laps per call **of the callee** — so the call site's own `iters` multiplies
+   the expanded total, never the callee's blocks a second time.
 
    Replace the call-site cost with `bl_cost + callee_worst_ns` (and
    energy with `bl_energy + callee_energy_ws`). If the callee itself
@@ -300,24 +361,22 @@ For every block on the hot path whose disassembly ends in `bl` / `blx`
    `bl_cost` as a **lower bound** for this site. Do NOT silently
    accept it as the call-site cost. You MUST:
 
-   - Add a CFG-Analysis line: `⚠️ external callee body unmeasured —
+   - Add a CFG-Analysis line: `🔶 external callee body unmeasured —
      <callee> figure is a lower bound`.
    - Append `(≥ <total> ns — external callees unmeasured)` to the
      Latency row's Note in the conclusion table.
    - Where reasonable, suggest re-extracting with the callee's
      `.o` added so the next pass measures the body.
 
-The hot-path total is the sum over all hot-path blocks where every
-`bl`-terminated block's cost has been replaced by its expanded form
-per the rules above. Treating a bare `bl` row as the full call-site
-cost (instead of expanding an in-binary callee's hot-path cost, or
-marking an external callee as an explicit lower bound when its body
-is unavailable) silently understates timing for any function whose
-hot path traverses an in-binary callee, and silently understates
-external-callee cost without flagging it as a lower bound.
+The hot-path total is the sum over all hot-path blocks of (expanded cost ×
+`iters`), where every `bl`-terminated block's cost has been replaced by its
+expanded form per the rules above. Two ways to understate it silently, and both
+have shipped: treating a bare `bl` row as the full call-site cost, and counting a
+looped block once. The first misses a callee body; the second misses a factor of
+the trip count, which is usually the larger of the two.
 
-If modifying an existing function and a `.o.prev` exists, also extract timing
-and energy for the baseline (pre-edit) function. Compute delta:
+If modifying an existing function and `data.output_prev` was reported, also extract
+timing and energy for that baseline (pre-edit) object. Compute delta:
 ```
 diff_pct = ((post_value - pre_value) / pre_value) * 100
 ```
@@ -342,7 +401,7 @@ Show it verbatim. Then end the skill.
 
 If the `loci timing` call returns any other error (not quota, not auth), treat it
 as timing-unavailable for the affected callees: skip timing, flag each affected
-callee with `⚠️ RISK: timing data unavailable for <callee>` in CFG Analysis,
+callee with `🔶 RISK: timing data unavailable for <callee>` in CFG Analysis,
 and continue with CFG-only analysis.
 
 ### Analyze the CFG output
@@ -373,9 +432,9 @@ counter) by 1 now.
 - What is this function's role in the system — is it on a hot path, ISR,
   periodic task, or called once? This determines whether any timing delta
   is critical, advisory, or irrelevant.
-- If `.o.prev` exists: is `|delta| < std_dev_ns`? If yes — change is within measurement
+- If a baseline was reported: is `|delta| < std_dev_ns`? If yes — change is within measurement
   noise, treat as stable. If `|delta| > std_dev_ns` — change is real; flag it.
-  If no `.o.prev`: this is the first measurement — record these numbers as the
+  If none was: this is the first measurement — record these numbers as the
   baseline and note no prior exists for comparison.
 - Does `std_dev_ns` indicate a stable path or high hardware variance — and why
   (cache sensitivity, branch misprediction, pipeline stalls visible in CFG)?
@@ -385,6 +444,11 @@ counter) by 1 now.
   answer in the same report.
 - What does the CFG structure explain about the timing — which blocks
   dominate, are there expensive paths the new code will always hit?
+- Is every hot-path block's cost multiplied by its `iters`, and were the `bl`
+  sites expanded **before** that multiplication? A hot path through a loop whose
+  total equals the sum of bare block costs has counted every lap as one. If any
+  block on the path carries `iters=?`, is the figure prefixed `≥` and is the
+  reason from the `loops:` line in the Note?
 - Has every hot-path `bl` / `blx` site been expanded per the
   "Expand `bl` / `blx` call-site rows" step? If a callee's body rows
   are present in the `loci timing` rows but its bare `bl` cost is still
@@ -402,9 +466,9 @@ counter) by 1 now.
   and dominance under Performance), the row's Status is the worst of the
   contributors and the Note lists them comma-separated, worst-first.
 - **Verdict cause comes from sub-findings, not Gate names**: the
-  ADJUST PLAN / STOP one-sentence cause lifts the lead item from the
-  driving row's Note (e.g. "STOP — unbounded recursion blocks plan", not
-  "STOP — Safety row is ❌"). Gate names are for the table; the verdict
+  CAUTION / FAIL one-sentence cause lifts the lead item from the
+  driving row's Note (e.g. "FAIL — unbounded recursion blocks plan", not
+  "FAIL — Safety row is ❌"). Gate names are for the table; the verdict
   speaks in concrete findings.
 
 
@@ -456,7 +520,7 @@ After stack-depth returns, reason over its results — increment R by 1:
 by 1 at trigger:
 - The plan introduces significant new static allocations (large buffers,
   global arrays, static structs) visible from reading the source, OR
-- `.o.prev` exists and the plan grows or restructures existing data sections.
+- a baseline was reported and the plan grows or restructures existing data sections.
 
 After memory-report returns, reason over its results — increment R by 1:
 - Does the new allocation fit within available ROM/RAM headroom?
@@ -486,10 +550,14 @@ printf '%s\n' \
 | loci contract check --project-root "<project_root>" --verbose
 ```
 
-- **`curr` is the bl-expanded hot-path total**, never the entry-block value.
+- **`curr` is the bl-expanded, `iters`-multiplied hot-path total** — never the
+  entry-block value, and never a sum that counted a loop once. When any block on
+  the path carries `iters=?` the value is a lower bound: still send it (a lower
+  bound that already breaches a ceiling is a real breach), and carry the `≥` into
+  the row's Note so a ✅ is never claimed on a number that can only grow.
 - **Omit `prev`.** Preflight usually has no baseline, and a regression bound
   then comes back `unjudged` — the correct state. Include `prev` only in the
-  modifying-an-existing-function case where `.o.prev` was traced this run.
+  modifying-an-existing-function case where the baseline was traced this run.
 - **Structural signals** (`unbounded_recursion`, `recursion_cycles`,
   `unresolved_indirect_calls`, `unknown_callees`) — send a row **only for a
   hazard you actually determined** from the CFG. **Never send `"curr":0` for a
@@ -497,7 +565,7 @@ printf '%s\n' \
   honest, while a fabricated zero paints Safety ✅ on nothing.
 
 Read back `data.rows` (the table), `data.verdict`, `data.agent_judged` (entries
-LOCI cannot compute — you judge those, capped at ⚠️), and `data.unjudged`
+LOCI cannot compute — you judge those, capped at 🔶), and `data.unjudged`
 (nothing measured them — not passes). The structural invariants are whole-binary
 while the CFG is per-function, so a hazard breaches the entry but a clean CFG
 does not satisfy it: omit the row rather than render ✅ against an entry this run
@@ -584,14 +652,14 @@ Header:
 ## Preflight: <FunctionName>
 ```
 
-Followed by the conclusion table. Icon vocabulary: ✅ PASS · ⚠️ WARNING ·
+Followed by the conclusion table. Icon vocabulary: ✅ PASS · 🔶 CAUTION ·
 ❌ FAIL.
 
 **Row-inclusion rules:**
 - Include a row only if the gate actually executed this run.
 - Include a row only if there is something to report (skip "Recursion ✅
   none" noise rows).
-- Every ⚠️ / ❌ row MUST cite a reason in the Note column — no icon
+- Every 🔶 / ❌ row MUST cite a reason in the Note column — no icon
   without a cause. The Note is the one-line synthesis of the "Reason
   over results" pass for that gate.
 - Skipped gates are omitted (no fourth "N/A" icon).
@@ -604,7 +672,7 @@ carries both, worst-first.
 
 Each row is `{fn, gate, status, before, after, note, entries}`:
 
-- **`status`** — ✅ / ⚠️ / ❌, ready to paste. Worsen it for a skill-side
+- **`status`** — ✅ / 🔶 / ❌, ready to paste. Worsen it for a skill-side
   sub-finding (hot-path dominance >60%, a CFG hazard the contract has no signal
   for); never soften it.
 - **`before`** — `null` in the usual preflight case (no baseline). When every
@@ -618,14 +686,14 @@ Add a row yourself only for a gate the contract could not judge but this run
 determined anyway:
 
 - **Safety** — a CFG hazard with no contract signal (missing declaration,
-  weak-symbol miss). ❌ for a BLOCK-level missing declaration, ⚠️ for
+  weak-symbol miss). ❌ for a BLOCK-level missing declaration, 🔶 for
   benign-but-noteworthy (function-pointer dispatch, bounded recursion).
 - **Performance / Energy** with no contract bound — report the measured number
   with no Status icon rather than inventing a threshold to judge it against.
 - **Stack / Memory** — the one-line summary from an escalated skill:
   `stack: <N> B (<usage>%) — <verdict>`, `memory: ROM <X>% / RAM <Y>%`.
 
-An `agent_judged` entry you decided is a row too, capped at ⚠️, on the gate the
+An `agent_judged` entry you decided is a row too, capped at 🔶, on the gate the
 entry names.
 
 Build success and symbol-resolution are NOT table rows. The
@@ -641,8 +709,10 @@ appears automatically when the engineer needs it. Render a "Hot-path
 breakdown" block between the table and the verdict line WHEN any of
 these triggers match:
 
-- The **Performance** row's status is ⚠️ or ❌, OR
-- The **Performance** Note names a dominant callee (>60% of hot-path worst)
+- The **Performance** row's status is 🔶 or ❌, OR
+- The **Performance** Note names a dominant callee (>60% of hot-path worst), OR
+- Any hot-path block carries `iters=?` — the engineer needs to see which loop is
+  unbounded, since that is what makes the total a lower bound
 
 Show top-5 callees along the hot path, sorted by
 `worst_ns_summed_across_callee_hot_path` desc. The per-callee
@@ -656,56 +726,64 @@ Hot-path breakdown (top-5 by worst):
   <in_binary_callee_2>   ...
   <external_callee>      ≥ <bl_cost_ns> (<pct>%)      ≥ <bl_energy_uWs>   (body unmeasured)
   ...
+
+Loops on the hot path (top-3 by cost x iters):
+  <L#>  x<iters> <exact|max|unknown>   <summed_worst_ns>   <one-line reason when unknown>
+  ...
+  <k> further loops folded in
 ```
+
+Omit the loops sub-block when no hot-path block carries an `iters` annotation.
 
 Omit this block when neither trigger matches (clean runs stay short).
 When fewer than 5 callees contributed to the hot path, show what's
 there — don't pad.
 
 **Table footer** (always): bolded single-line verdict, mapped from
-`data.verdict` — this skill's vocabulary is not post-edit's:
+`data.verdict`. The three status words are the shared ones; only the
+`Execution fit` prefix and the imperative in the cause are preflight's own:
 
 | `data.verdict` | Footer |
 |---|---|
-| `pass` | `Execution fit: **GOOD** — proceed with plan` |
-| `warn` | `Execution fit: **ADJUST PLAN** — <one-sentence change>` |
-| `fail` | `Execution fit: **STOP** — <one-sentence reason>` |
+| `pass` | `Execution fit: **PASS** — proceed with plan` |
+| `warn` | `Execution fit: **CAUTION** — adjust the plan: <one-sentence change>` |
+| `fail` | `Execution fit: **FAIL** — stop: <one-sentence reason>` |
 | `null` | decide on your own sub-findings alone and add `(no contract bound applied)` |
 
 Worsen the mapped verdict for a skill-side sub-finding; never soften it. The
-one-sentence cause names the finding, not the gate — "STOP — hot path 3100 ns
-against a 2000 ns budget", not "STOP — Performance row is ❌".
+one-sentence cause names the finding, not the gate — "FAIL — stop: hot path 3100 ns
+against a 2000 ns budget", not "FAIL — Performance row is ❌".
 
 ### Template
 
 ```
 ## Preflight: <FunctionName>
 
-| Gate                     | Status | Note                              |
-|--------------------------|:------:|-----------------------------------|
-| <row 1 when applicable>  |   ?   | <cited reason>                     |
-| ...                      |   ?   | ...                                |
+| Gate                     | Status | Basis    | Note                   |
+|--------------------------|:------:|----------|------------------------|
+| <row 1 when applicable>  |   ?   | <basis>  | <cited reason>          |
+| ...                      |   ?   | ...      | ...                     |
 
-<Hot-path breakdown block — only if Performance ⚠️/❌ or its Note names a dominant callee>
+<Hot-path breakdown block — only if Performance 🔶/❌ or its Note names a dominant callee>
 
-Execution fit: **<GOOD|ADJUST PLAN|STOP>** — <one sentence>
+Execution fit: **<PASS|CAUTION|FAIL>** — <one sentence>
 ```
 
-### Example (typical clean run, ~10 lines)
+### Example (~10 lines)
 
 ```
 ## Preflight: process_message
 
-| Gate         | Status | Note                              |
-|--------------|:------:|-----------------------------------|
-| Safety       |   ⚠️   | dispatch via function pointer — benign |
-| Performance  |   ✅   | hot-path worst 1.8 µs              |
-| Energy       |   ✅   | 0.05 µWs                           |
+| Gate         | Status | Basis    | Note                        |
+|--------------|:------:|----------|-----------------------------|
+| Safety       |   🔶   | LOCI     | dispatch via function pointer — benign |
+| Performance  |   ✅   | contract | hot-path worst 1.8 µs        |
+| Energy       |   ✅   | contract | 0.05 µWs                     |
 
-Execution fit: **GOOD** — proceed with plan
+Execution fit: **CAUTION** — adjust the plan: confirm the dispatch target set is bounded
 ```
 
-For modifying an existing function with `.o.prev` available, the
+For modifying an existing function with a baseline available, the
 **Performance** row's Note carries the noise-margin sub-finding
 (`|delta| vs std_dev_ns`). The Before/After comparison lives inside
 that Note, not as a separate Delta block.
@@ -722,13 +800,14 @@ the first-pass draft.
 | Row pattern | Trigger |
 |---|---|
 | **Performance** Note shows dominance > 80% | Re-query `loci timing` on the dominant callee's per-block timings (not just the entry block). One extra `loci timing` call. Often reveals a specific block as the leverage point, which the hot-path-summary hid. |
-| **Safety** ❌ with missing-decl sub-finding | Before STOP: re-read the source to check for alternate callees that share the name (macro redefinition, weak symbol, LTO-inlined). Don't STOP on the first miss; verify. |
+| **Safety** ❌ with missing-decl sub-finding | Before rendering FAIL: re-read the source to check for alternate callees that share the name (macro redefinition, weak symbol, LTO-inlined). Don't fail on the first miss; verify. |
 | **Safety** with indirect-call sub-finding AND function is on an ISR path | Escalate to stack-depth even if usual triggers don't match — indirect dispatch can hide call-graph depth from static analysis. |
 | **Safety** with recursion sub-finding | Escalate to stack-depth (already the existing rule, restated here for table-completeness). |
-| **Performance** Note shows `|delta|` within `std_dev` | Say so in the Note (`within noise, ±<std_dev> ns`). Downgrade to ✅ **only** if the ⚠️ was a skill-side sub-finding. A ⚠️/❌ that came from `data.rows` stands: the project declared that bound, and a measurement too noisy to resolve is not evidence the bound held. |
+| A hot-path block carries `iters=?` and the Performance row reads ✅ | A ✅ on a lower bound is a claim the run cannot make. Re-check whether the unbounded loop is actually on the worst path; if it is, the row keeps its number but the Note carries `≥` and the status caps at 🔶 unless the contract's ceiling is breached even by the lower bound (then ❌ stands). |
+| **Performance** Note shows `|delta|` within `std_dev` | Say so in the Note (`within noise, ±<std_dev> ns`). Downgrade to ✅ **only** if the 🔶 was a skill-side sub-finding. A 🔶/❌ that came from `data.rows` stands: the project declared that bound, and a measurement too noisy to resolve is not evidence the bound held. |
 
 Per-callee timing detail appears in the conditional "Hot-path breakdown"
-block above, but only when the Performance row is ⚠️/❌ or its Note names
+block above, but only when the Performance row is 🔶/❌ or its Note names
 a dominant callee — clean runs skip it to stay short. If the engineer
 needs per-block breakdown beyond top-5 callees, re-extract via
 `loci elf asm` directly.
@@ -766,13 +845,13 @@ unavailable or no functions to measure), do NOT emit the footer.
 **Record cumulative stats** (run via Bash before rendering the footer).
 Pass `--verdict "<verbatim-verdict-line>"` so the verdict ride-along
 ships alongside the per-function trends payload — the line is the same
-string already rendered to chat (`Execution fit: GOOD — proceed with plan`,
-`Execution fit: ADJUST PLAN — <reason>`, or `Execution fit: STOP — <reason>`),
+string already rendered to chat (`Execution fit: PASS — proceed with plan`,
+`Execution fit: CAUTION — <reason>`, or `Execution fit: FAIL — <reason>`),
 unbolded, no surrounding asterisks.
 
 Also pass `--gates '<gates-json>'` — a compact JSON object capturing
 the per-row Status from the conclusion table just rendered. Map the
-icons: `✅→pass · ⚠️→warn · ❌→fail`. Only include gates that fired
+icons: `✅→pass · 🔶→warn · ❌→fail`. Only include gates that fired
 this run (omitted gates were not part of the table). Allowed gate
 names: `Safety` · `Performance` · `Energy` · `Stack` · `Memory`.
 Example for the clean-run preflight example:
@@ -789,9 +868,12 @@ echo '<jsonl_records>' | loci stats measure --context-file "<project-context>" -
 ```
 Where each line is one function. Tag every row with `"metric":"response_time"` —
 preflight measures **response time** (worst-case latency including callees: the
-longest acyclic path + bl-expanded callee), the same metric post-edit records, so
-`loci stats` treats the two as one comparable series (and keeps exec-trace's
-throughput time separate):
+longest acyclic path, bl-expanded callees, each block multiplied by its `iters`),
+the same metric post-edit records, so `loci stats` treats the two as one
+comparable series (and keeps exec-trace's throughput time separate). Records
+written before loop annotation existed counted every loop once and are not
+comparable — see the trend note in
+**[Loop cost](../_shared/loci-runtime-contract.md#loop-cost)**:
 ```
 {"fn":"<func1>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"metric":"response_time"}
 {"fn":"<func2>","worst_ns":<execution_time_ns>,"energy_uws":<E>,"metric":"response_time"}
@@ -807,15 +889,15 @@ One line. Icon-led, no surrounding bars, middle-dot separators, spaces
 around any `→` arrow:
 
 ```
-<icon> LOCI preflight · <N> functions · fit <GOOD|ADJUST|STOP>
+<icon> LOCI preflight · <N> functions · fit <PASS|CAUTION|FAIL>
 ```
 
-- `<icon>` — mirrors the body's Execution-fit verdict: `✅` for GOOD,
-  `⚠️` for ADJUST, `❌` for STOP.
+- `<icon>` — mirrors the body's Execution-fit verdict: `✅` for PASS,
+  `🔶` for CAUTION, `❌` for FAIL.
 
 Worked example (clean run):
 ```
-✅ LOCI preflight · 2 functions · fit GOOD
+✅ LOCI preflight · 2 functions · fit PASS
 ```
 
 ### Clean-escalation suffix
@@ -826,12 +908,12 @@ marker to the primary scalar so the compact line still surfaces that
 the deeper check ran:
 
 ```
-✅ LOCI preflight · 2 functions · fit GOOD  +stack-depth
-✅ LOCI preflight · 5 functions · fit GOOD  +stack-depth +memory-report
+✅ LOCI preflight · 2 functions · fit PASS  +stack-depth
+✅ LOCI preflight · 5 functions · fit PASS  +stack-depth +memory-report
 ```
 
 A non-clean escalated result already flips a Stack/Memory row in the
-preflight conclusion table to ⚠️/❌ and the verdict to ADJUST/STOP, so
+preflight conclusion table to 🔶/❌ and the verdict to CAUTION/FAIL, so
 `+<skill>` only ever appears next to a green icon. The conclusion
 table itself carries the bad news — the footer stays compact regardless
 of verdict, and the cumulative branch-stats line is not included.

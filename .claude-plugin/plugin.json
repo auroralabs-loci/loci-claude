@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "loci",
   "displayName": "LOCI",
-  "version": "0.1.117",
+  "version": "0.1.123",
   "description": "LOCI predicts what AI-generated code will do — time, power, memory, and system behavior — during planning and code writing, before it runs.",
   "author": {
     "name": "AuroraLabs Ltd",

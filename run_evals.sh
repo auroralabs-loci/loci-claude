@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run the LOCI plugin skill eval suite.
 #
 # Usage:
@@ -412,160 +412,12 @@ print_error_detail() {
 }
 
 # ---------------------------------------------------------------------------
-# grade_bash — deterministic Bash-based grader for should_trigger tests
-#   $1: response text
-#   $2: should_trigger ("true" | "false")
-#   Writes "PASS|reason" or "FAIL|reason" to stdout
+# Graders (deterministic). Defined in lib/eval-graders.sh so they can be sourced
+# by a unit test — this file cd's into the fixture root at the top level, so it
+# cannot be sourced itself.
 # ---------------------------------------------------------------------------
-grade_bash() {
-  local RESPONSE="$1"
-  local SHOULD_TRIGGER="$2"
-
-  # Three DISTINCT preflight output states must be told apart — loose substring
-  # matching conflated them and produced false positives (e.g. prose like "I'll
-  # run the preflight analysis" or "report the execution fit" were scored as a
-  # real header / verdict). We anchor on the actual SKILL.md output format:
-  #
-  #   HAS_HEADER  — a genuine markdown header at line start: "## Preflight: ..."
-  #                 (NOT the prose word "preflight"). Proof the skill emitted a
-  #                 report block of SOME kind.
-  #   IS_BLOCKED  — the header is "## Preflight: STOPPED" or "## Preflight:
-  #                 BLOCKED ...". The skill invoked but COULD NOT analyze
-  #                 (missing/empty .o, unresolved flags, artifacts unavailable).
-  #                 This is NOT a completed analysis and carries no verdict.
-  #   HAS_VERDICT — a genuine verdict LINE: "Execution fit: **GOOD|ADJUST PLAN|
-  #                 STOP**". Requires the verdict token right after "fit:", so a
-  #                 sentence merely containing "execution fit" does not match.
-  #
-  # A clean PASS for should_trigger=true needs a real header AND a real verdict.
-  # A STOPPED/BLOCKED run is reported as BLOCKED — an environment/setup gap
-  # (no build flags, function compiled out), NOT a skill pass or fail.
-  local HAS_HEADER=false IS_BLOCKED=false HAS_VERDICT=false
-  echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:' && HAS_HEADER=true
-  echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:[[:space:]]*(stopped|blocked)' && IS_BLOCKED=true
-  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*\**[[:space:]]*(good|adjust plan|stop)\b' && HAS_VERDICT=true
-
-  if [[ "$SHOULD_TRIGGER" == "true" ]]; then
-    if $IS_BLOCKED; then
-      echo "BLOCKED|preflight invoked but could not analyze (## Preflight: STOPPED/BLOCKED) — missing build artifacts/flags; environment gap, not a skill failure"; return
-    fi
-    if ! $HAS_HEADER; then
-      echo "FAIL|skill did not invoke — no '## Preflight:' header (prose mentions don't count)"; return
-    fi
-    if ! $HAS_VERDICT; then
-      echo "FAIL|invoked but produced no real 'Execution fit: GOOD|ADJUST PLAN|STOP' verdict line"; return
-    fi
-    echo "PASS|preflight invoked and completed — header + Execution fit verdict present"
-  else
-    if $IS_BLOCKED; then
-      echo "FAIL|should NOT invoke (not /plan mode) but ran preflight anyway (## Preflight: STOPPED/BLOCKED)"; return
-    fi
-    if $HAS_HEADER; then
-      echo "FAIL|should NOT invoke (not /plan mode) but emitted a '## Preflight:' header"; return
-    fi
-    if $HAS_VERDICT; then
-      echo "FAIL|should NOT invoke (not /plan mode) but emitted an 'Execution fit:' verdict"; return
-    fi
-    echo "PASS|correctly stayed silent — no preflight invocation outside /plan mode"
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# grade_bash_post_edit — deterministic Bash-based grader for post-edit tests
-#   $1: response text
-#   $2: should_trigger ("true" | "false")
-#   Writes "PASS|reason" or "FAIL|reason" to stdout
-# ---------------------------------------------------------------------------
-grade_bash_post_edit() {
-  local RESPONSE="$1"
-  local SHOULD_TRIGGER="$2"
-
-  # Anchored on the CURRENT loci-post-edit SKILL.md output (Step 6), NOT the
-  # obsolete "Happy path / Worst path / ### Control Flow" prose the skill no
-  # longer emits. The skill now renders a Gate conclusion table headed
-  # "## Post-Edit: <fn>" with Performance/Energy rows (Before/After +(±%) in the
-  # Note) and a "Verdict: **OK|CAUTION|FLAG**" footer line, plus a one-line
-  # "<icon> LOCI post-edit · …" footer. CFG no longer surfaces as its own
-  # section — it feeds the Note column (e.g. "new hot-path block bb_0x1ea").
-  # Three structural states are told apart:
-  #
-  #   HAS_HEADER   — a real markdown header "## Post-Edit:" at line start, OR the
-  #                  "LOCI post-edit" footer line. Proof the report was emitted;
-  #                  prose like "I'll run the post-edit analysis" does NOT count.
-  #   HAS_VERDICT  — a real verdict LINE "Verdict: **OK|CAUTION|FLAG**", OR the
-  #                  footer scalar "… LOCI post-edit ·".
-  #   HAS_DIFF     — a "%" appears (the ±X% timing/energy diff in the Note column
-  #                  or the footer "(-17%, …)"). Required ONLY when a baseline
-  #                  exists (a pre-edit .o.prev).
-  #   NO_BASELINE  — the report states it has no pre-edit baseline (SKILL.md emits
-  #                  "(no pre-edit artifact — …)" / "no preflight baseline" and
-  #                  reports absolute values only, so there is no % diff to assert).
-  local HAS_HEADER=false HAS_VERDICT=false HAS_DIFF=false NO_BASELINE=false
-  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*#{2,}[[:space:]]*post-edit|loci[[:space:]]+post-edit)' && HAS_HEADER=true
-  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*verdict:[[:space:]]*\**[[:space:]]*(ok|caution|flag)\b|loci[[:space:]]+post-edit[[:space:]]*·)' && HAS_VERDICT=true
-  echo "$RESPONSE" | grep -qE '%' && HAS_DIFF=true
-  echo "$RESPONSE" | grep -qiE 'no pre-edit artifact|no preflight baseline|first[ -]?edit measurement|first measurement|absolute values only' && NO_BASELINE=true
-
-  if [[ "$SHOULD_TRIGGER" == "true" ]]; then
-    if ! $HAS_HEADER; then
-      echo "FAIL|skill did not invoke — no '## Post-Edit:' header or 'LOCI post-edit' footer (prose mentions don't count)"; return
-    fi
-    if ! $HAS_VERDICT; then
-      echo "FAIL|invoked but produced no 'Verdict: OK|CAUTION|FLAG' line or footer scalar"; return
-    fi
-    if $NO_BASELINE; then
-      echo "PASS|post-edit invoked (no baseline) — header + verdict present, absolute values only"; return
-    fi
-    if ! $HAS_DIFF; then
-      echo "FAIL|baseline run but no % diff present in the report"; return
-    fi
-    echo "PASS|post-edit invoked and completed — header + verdict + % diff present"
-  else
-    if $HAS_HEADER; then
-      echo "FAIL|should NOT invoke but emitted a '## Post-Edit:' header/footer"; return
-    fi
-    echo "PASS|correctly did not invoke post-edit"
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# grade_bash_combined — deterministic grader for the end-to-end combined flow
-#   (loci-preflight in plan mode → resume+edit → loci-post-edit). Graded on the
-#   JOINED transcript of BOTH turns. A clean PASS needs all four:
-#     • preflight ran    — a real '## Preflight:' header (line-start, not prose)
-#     • preflight verdict — an 'Execution fit: GOOD|ADJUST PLAN|STOP' line
-#     • post-edit ran    — a real '## Post-Edit' header OR the 'LOCI post-edit' footer
-#     • post-edit verdict — a 'Verdict: OK|CAUTION|FLAG' line OR the footer scalar
-#   Numbers are NOT asserted — the model writes the code, so timing/energy values
-#   are non-deterministic. This grades that the WHOLE pipeline fired and emitted
-#   well-formed reports, which is the behavior under test.
-#   $1: joined response text   →   writes "PASS|reason" or "FAIL|reason" to stdout
-# ---------------------------------------------------------------------------
-grade_bash_combined() {
-  local RESPONSE="$1"
-  local HAS_PF_HEADER=false HAS_PF_VERDICT=false
-  local HAS_PE_HEADER=false HAS_PE_VERDICT=false
-
-  echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:' && HAS_PF_HEADER=true
-  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*\**[[:space:]]*(good|adjust plan|stop)\b' && HAS_PF_VERDICT=true
-  # Post-edit presence: a markdown header OR the LOCI post-edit footer line.
-  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*#{2,}[[:space:]]*post-edit|loci[[:space:]]+post-edit)' && HAS_PE_HEADER=true
-  # Post-edit verdict: the body 'Verdict: **OK|CAUTION|FLAG**' line OR the footer scalar.
-  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*verdict:[[:space:]]*\**[[:space:]]*(ok|caution|flag)\b|loci[[:space:]]+post-edit[[:space:]]*·)' && HAS_PE_VERDICT=true
-
-  local MISSING=""
-  $HAS_PF_HEADER  || MISSING="$MISSING preflight-header"
-  $HAS_PF_VERDICT || MISSING="$MISSING preflight-verdict"
-  $HAS_PE_HEADER  || MISSING="$MISSING post-edit-header"
-  $HAS_PE_VERDICT || MISSING="$MISSING post-edit-verdict"
-
-  if [[ -n "$MISSING" ]]; then
-    echo "FAIL|pipeline incomplete — missing:${MISSING}"
-  else
-    echo "PASS|full pipeline fired — preflight report+verdict AND post-edit report+verdict present in joined transcript"
-  fi
-}
-
+# shellcheck source=lib/eval-graders.sh
+source "$SCRIPT_DIR/lib/eval-graders.sh"
 # ---------------------------------------------------------------------------
 # run_one_eval — runs a single eval (prompt + grade) and writes result files
 #   Called either inline (sequential) or as a background job (parallel).
@@ -589,6 +441,10 @@ run_one_eval() {
   local FLOW="${15:-single}"
   local SOURCE_FILE="${16:-}"
   local APPROVE_PROMPT="${17:-Approved. Implement the plan exactly as described now. Edit the source file directly.}"
+  # Only the literal "true" turns these on — see lib/eval-graders.sh for why an
+  # absent value must not be read as "a baseline is required".
+  local EXPECT_BASELINE="${18:-false}"
+  local EXPECT_NO_CHANGE="${19:-false}"
 
   local TAG="${EVAL_FILE_NAME} > ${EVAL_ID}"
   local PROG_PFX="[${JOB_NUM}/${TOTAL}]"
@@ -814,7 +670,7 @@ $R2"
     fi
 
     local PV VERDICT REASON
-    PV=$(grade_bash_post_edit "$RESPONSE" "$SHOULD_TRIGGER")
+    PV=$(grade_bash_post_edit "$RESPONSE" "$SHOULD_TRIGGER" "$EXPECT_BASELINE" "$EXPECT_NO_CHANGE")
     echo "$PV" > "$GRADE_FILE"
     VERDICT="${PV%%|*}"; REASON="${PV#*|}"
     echo "${VERDICT}|${REASON}" > "$VERDICT_FILE"
@@ -1001,7 +857,7 @@ $R2"
     log_eval "Grading (bash — should_trigger=$SHOULD_TRIGGER)"
     local BASH_VERDICT
     if [[ "$SKILL_NAME" == "loci-post-edit" ]]; then
-      BASH_VERDICT=$(grade_bash_post_edit "$RESPONSE" "$SHOULD_TRIGGER")
+      BASH_VERDICT=$(grade_bash_post_edit "$RESPONSE" "$SHOULD_TRIGGER" "$EXPECT_BASELINE" "$EXPECT_NO_CHANGE")
     else
       BASH_VERDICT=$(grade_bash "$RESPONSE" "$SHOULD_TRIGGER")
     fi
@@ -1119,6 +975,8 @@ declare -a JOB_SYSPROMPTS=()
 declare -a JOB_GRADINGMODES=()
 declare -a JOB_SHOULDTRIGGER=()
 declare -a JOB_FLOWS=()
+declare -a JOB_EXPECTBASELINE=()
+declare -a JOB_EXPECTNOCHANGE=()
 declare -a JOB_SOURCEFILES=()
 declare -a JOB_APPROVE=()
 # Evals the host could not run. Surfaced in the summary and report.md, so a run
@@ -1176,6 +1034,8 @@ $(cat "$SKILL_MD")
     SHOULD_TRIGGER=$(jq -r ".evals[$i].should_trigger | if . == null then true else . end" "$EVAL_FILE")
     # Combined two-turn flow fields (single-turn evals leave these at defaults).
     FLOW=$(jq -r ".evals[$i].flow // \"single\"" "$EVAL_FILE")
+    EXPECT_BASELINE=$(jq -r ".evals[$i].expect_baseline // false | tostring" "$EVAL_FILE")
+    EXPECT_NO_CHANGE=$(jq -r ".evals[$i].expect_no_change // false | tostring" "$EVAL_FILE")
     SOURCE_FILE=$(jq -r ".evals[$i].source_file // \"\"" "$EVAL_FILE")
     APPROVE_PROMPT=$(jq -r ".evals[$i].approve_prompt // \"Approved. Implement the plan exactly as described now. Edit the source file directly.\"" "$EVAL_FILE")
 
@@ -1231,6 +1091,8 @@ $(cat "$SKILL_MD")
     JOB_GRADINGMODES+=("$GRADING_MODE")
     JOB_SHOULDTRIGGER+=("$SHOULD_TRIGGER")
     JOB_FLOWS+=("$FLOW")
+    JOB_EXPECTBASELINE+=("$EXPECT_BASELINE")
+    JOB_EXPECTNOCHANGE+=("$EXPECT_NO_CHANGE")
     JOB_SOURCEFILES+=("$SOURCE_FILE")
     JOB_APPROVE+=("$APPROVE_PROMPT")
   done
@@ -1333,7 +1195,9 @@ for (( j=0; j<TOTAL; j++ )); do
     "${JOB_SHOULDTRIGGER[$j]}" \
     "${JOB_FLOWS[$j]}" \
     "${JOB_SOURCEFILES[$j]}" \
-    "${JOB_APPROVE[$j]}" &
+    "${JOB_APPROVE[$j]}" \
+    "${JOB_EXPECTBASELINE[$j]}" \
+    "${JOB_EXPECTNOCHANGE[$j]}" &
 
   PIDS[$j]=$!
   RUNNING=$((RUNNING + 1))

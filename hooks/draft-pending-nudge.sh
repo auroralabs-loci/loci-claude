@@ -34,7 +34,10 @@ fi
 # A hook's PATH does not always carry the pip user-scripts dir where `loci`
 # installs. Appended, not prepended: a `loci` already on PATH is a deliberate one
 # (an editable dev checkout, a venv) and must win over the pip-installed copy.
-export PATH="$PATH:$HOME/.local/bin"
+# ${HOME:-} — a bare $HOME under `set -u` (line 15) aborts this hook where HOME is
+# unset: Windows sets USERPROFILE, and hooks run non-interactive so no profile is
+# sourced. Same defect the edge hooks had.
+export PATH="$PATH:${HOME:-}/.local/bin"
 export PYTHONIOENCODING=utf-8
 command -v loci >/dev/null 2>&1 || exit 0
 out=$(cd "$root" && loci contract draft show 2>/dev/null) || exit 0

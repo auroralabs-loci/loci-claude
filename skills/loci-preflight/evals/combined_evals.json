@@ -12,15 +12,15 @@
       "source_file": "examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c",
       "approve_prompt": "Approved. Implement the plan exactly as described now. Edit the source file directly.",
       "prompt": "/plan Modify GATT_EventHandler in $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c so it keeps a static uint32_t mtuUpdateCount that increments on every ATT_MTU_UPDATED_EVENT, and include that running count in the existing MenuModule_printf output for the MTU-updated case. The function is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-      "expected_output": "TWO turns. Turn 1 is /plan mode + a described modification to existing logic, so preflight is MANDATORY: the response contains a '## Preflight: GATT_EventHandler' (or similar) header and a bolded 'Execution fit: GOOD|ADJUST PLAN|STOP' verdict, and NO edit is made (plan mode is read-only). Turn 2 resumes with approval, the model edits app_data.c, and loci-post-edit fires: a '## Post-Edit:' report with a conclusion table and a 'Verdict: OK|CAUTION|FLAG' line appears. The joined transcript of both turns must show BOTH reports.",
+      "expected_output": "TWO turns. Turn 1 is /plan mode + a described modification to existing logic, so preflight is MANDATORY: the response contains a '## Preflight: GATT_EventHandler' (or similar) header and a bolded 'Execution fit: PASS|CAUTION|FAIL' verdict, and NO edit is made (plan mode is read-only). Turn 2 resumes with approval, the model edits app_data.c, and loci-post-edit fires: a '## Post-Edit:' report with a conclusion table and a 'Verdict: PASS|CAUTION|FAIL' line appears. The joined transcript of both turns must show BOTH reports.",
       "files": [],
       "assertions": [
         {
-          "text": "The transcript contains a '## Preflight:' header AND an 'Execution fit: GOOD|ADJUST PLAN|STOP' verdict (turn 1, /plan mode)",
+          "text": "The transcript contains a '## Preflight:' header AND an 'Execution fit: PASS|CAUTION|FAIL' verdict (turn 1, /plan mode)",
           "description": "Preflight is mandatory in plan mode when modifying existing logic"
         },
         {
-          "text": "The transcript contains a '## Post-Edit:' header AND a 'Verdict: OK|CAUTION|FLAG' line (turn 2, after the edit)",
+          "text": "The transcript contains a '## Post-Edit:' header AND a 'Verdict: PASS|CAUTION|FAIL' line (turn 2, after the edit)",
           "description": "Post-edit is mandatory after the source edit lands"
         }
       ]
@@ -34,15 +34,15 @@
       "source_file": "examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c",
       "approve_prompt": "Approved. Implement the plan exactly as described now. Edit the source file directly.",
       "prompt": "/plan Implement a new feature in $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_data.c: add a new function 'void Data_recordMtu(uint16 mtu)' that stores the value into a static ring buffer holding the last 8 MTU sizes, computes the rolling average, and reports it via MenuModule_printf. Then call Data_recordMtu from GATT_EventHandler on the ATT_MTU_UPDATED_EVENT case, passing gattMsg->msg.mtuEvt.MTU. The surrounding code is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-      "expected_output": "TWO turns. Turn 1 is /plan mode + a NEW feature/implementation (new function plus a callee added on an existing path), so preflight is MANDATORY: the response contains a '## Preflight:' header analyzing the touched function / new callees and a bolded 'Execution fit: GOOD|ADJUST PLAN|STOP' verdict, with NO edit made. Turn 2 resumes with approval, the model adds Data_recordMtu and wires it into GATT_EventHandler, and loci-post-edit fires: a '## Post-Edit:' report (the new function will likely be a NEW/added-function measurement) with a 'Verdict: OK|CAUTION|FLAG' line. The joined transcript must show BOTH reports.",
+      "expected_output": "TWO turns. Turn 1 is /plan mode + a NEW feature/implementation (new function plus a callee added on an existing path), so preflight is MANDATORY: the response contains a '## Preflight:' header analyzing the touched function / new callees and a bolded 'Execution fit: PASS|CAUTION|FAIL' verdict, with NO edit made. Turn 2 resumes with approval, the model adds Data_recordMtu and wires it into GATT_EventHandler, and loci-post-edit fires: a '## Post-Edit:' report (the new function will likely be a NEW/added-function measurement) with a 'Verdict: PASS|CAUTION|FAIL' line. The joined transcript must show BOTH reports.",
       "files": [],
       "assertions": [
         {
-          "text": "The transcript contains a '## Preflight:' header AND an 'Execution fit: GOOD|ADJUST PLAN|STOP' verdict (turn 1, /plan mode)",
+          "text": "The transcript contains a '## Preflight:' header AND an 'Execution fit: PASS|CAUTION|FAIL' verdict (turn 1, /plan mode)",
           "description": "Preflight is mandatory in plan mode when implementing a new feature / new logic"
         },
         {
-          "text": "The transcript contains a '## Post-Edit:' header AND a 'Verdict: OK|CAUTION|FLAG' line (turn 2, after the edit)",
+          "text": "The transcript contains a '## Post-Edit:' header AND a 'Verdict: PASS|CAUTION|FAIL' line (turn 2, after the edit)",
           "description": "Post-edit is mandatory after the new function is added and the file is edited"
         }
       ]

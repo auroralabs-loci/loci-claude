@@ -90,7 +90,48 @@ Run these in parallel where possible via Bash and Read:
 10. **CLI auth** — run `loci auth status` and record signed-in / signed-out.
     (The plugin no longer registers an MCP server; all backend calls go through
     the `loci` CLI and authenticate on demand via `! loci login`.)
-11. **Rust toolchain** (only when the project context shows
+11. **Turn baselines** — the per-turn trees `loci build snapshot --turn` writes,
+    which are what a post-edit "Before" is read from. Substitute the
+    `project_root` you read in step 6 for `<project-root>` before running this;
+    the fence sets it itself so nothing depends on an exported variable:
+
+    ```bash
+    ROOT='<project-root>'
+    for t in "$ROOT"/.loci-build/turns/*/; do
+      [ -d "$t" ] || continue
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -r "$t" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo '?')" \
+        "$(jq -r '.turn // "?"' "$t/turn.json" 2>/dev/null || echo '?')" \
+        "$(find "$t/orig" -type f 2>/dev/null | wc -l)" \
+        "$(find "$t/obj" -name '*.o' 2>/dev/null | wc -l)" \
+        "$t"
+    done | sort | tail -10
+    ```
+
+    Each row is `mtime, turn id, captured sources, reconstructed objects, path`.
+    Record all of it, or "none" when there are no rows. Sorting is on the
+    **timestamp** because the directory name is a one-way digest of the turn id —
+    lexical order is uncorrelated with time, and `turn.json` is the only place the
+    id itself survives. Also record whether `uncaptured.jsonl` exists in the tree
+    with the newest mtime and its last line: that file is where an edit the CLI
+    could not capture records why.
+
+    **Reading the two counts.** They answer *"there was no Before"*, but only in
+    one direction each:
+
+    - **`orig/` empty** — the pre-edit hook never captured for that turn. That is
+      a real finding: it means no `--turn` reached `build snapshot` (an older CLI,
+      the hook killed on its 8 s budget, or `loci` briefly absent).
+    - **A turn id the report mentions that matches no row** — the compile was
+      asked to verify a turn that was never stamped.
+    - **`obj/` empty is NORMAL and is not a finding on its own.** That directory
+      is written only when a *header* edit is measured through the translation
+      units that include it. An ordinary `.c` edit is measured from the `.o.prev`
+      beside the object and puts nothing there, and `--baseline` refuses Rust
+      outright, so a cargo project always shows `0`. Only treat it as a
+      reconstruction failure when the report is about a header edit.
+
+12. **Rust toolchain** (only when the project context shows
     `build_system: "cargo"`) — record `cargo --version`, `rustc --version`,
     and `rustup target list --installed 2>/dev/null | head -10` (each falling
     back to "not found"). Rust compile failures usually trace to a missing
@@ -108,19 +149,54 @@ For each check, record status (PASS / FAIL) and a detail string.
 | 4 | Architecture detected | `architecture` field in `<project-context>` is not `unknown` or empty | Has a value |
 | 5 | LOCI target supported | `loci_target` in `<project-context>` is one of: `aarch64`, `armv7e-m`, `armv6-m`, `tc399` | Value in set |
 | 6 | loci CLI healthy | `loci doctor` exits 0 and `data.healthy` is true (covers Python 3.12, asmslicer, analysis deps, c++filt, cross-compilers, credential store, state dir) | Exit 0 / healthy |
-| 7 | Build artifacts exist | Read `loci_artifacts` and `elf_files` from `<project-context>`; fall back to a glob for `.loci-build/**/*.o` or any `.elf`/`.o`/`.axf` in the project root | At least one found |
-| 8 | Analysed artifact is not stale | For each candidate from check 7 (cap at 5, newest first) run `loci build fresh --elf <path>` and read `.data.stale` + `.data.sources_newer` | No candidate reports `stale: true` |
+| 7 | Build artifacts exist | Read `loci_artifacts` and `elf_files` from `<project-context>`; fall back to a glob for `.loci-build/**/*.o` **that skips `.loci-build/turns/`, `.loci-build/cargo/`, `.loci-build/elf/` and every `.loci-stage-*/` directory at any depth**, or any `.elf`/`.o`/`.axf` in the project root | At least one found |
+| 8 | Analysed artifact is not stale | For each candidate from check 7 (cap at 5, newest first) run `loci build fresh --elf <path>` and read `.data.role` **before** `.data.stale` + `.data.sources_newer` | No candidate reports `stale: true`, **unless** its `role` is exactly `"baseline"` |
 | 9 | session-init executable | `test -x <plugin-dir>/hooks/session-init.sh` | Exit code 0 |
 | 10 | hooks.json valid | `<plugin-dir>/hooks/hooks.json` parses with `jq .` | Valid JSON |
 | 11 | Quota not exceeded | If check 1 passed (signed in), run `loci usage` and read `data.eligible` / `data.daily` (`{used, limit}`). | `data.eligible` is true |
 
 Check 8 is here because **"the results are wrong" is most often "the results
 describe a different binary"** — that is the defect behind the report this check
-was added for. Record, per candidate, the artifact path, its `elf_mtime`, `stale`,
-and the first entry of `sources_newer` (path + `newer_by_s`), so a "results are
-wrong" report arrives with the artifact/source delta already computed instead of
-needing a round trip. A `stale: null` is **not** a FAIL — record it with its
-`reason` (usually no `-g`, or built on another machine).
+was added for. Record, per candidate, the artifact path, its `elf_mtime`, `role`,
+`stale`, and the first entry of `sources_newer` (path + `newer_by_s`), so a
+"results are wrong" report arrives with the artifact/source delta already computed
+instead of needing a round trip. A `stale: null` is **not** a FAIL — record it with
+its `reason` (usually no `-g`, or built on another machine).
+
+**`role` decides what `stale: true` means, so read it first.** A baseline is older
+than its sources *by construction* — that is what makes it the "before" side — so
+`role: "baseline"` with `stale: true` is the healthy state and never a FAIL. Record
+it as `baseline (expected)`. Two kinds of artifact answer `baseline`: a `.prev`
+written by `loci build snapshot`, and anything under `.loci-build/turns/`, which is
+where `loci build compile --baseline` reconstructs a header edit's Before. The
+envelope's own `recommendation` says the same thing in a sentence — and note its
+advice for a stale baseline is *not* "rebuild", because rebuilding one destroys the
+very state it is the baseline of.
+
+**A MISSING `role` is a FAIL, not an exemption.** The field postdates the CLI
+version the plugin currently pins, so on an un-upgraded install `.data.role` is
+absent on every artifact. Phrasing the criterion as "no candidate whose `role` is
+`measured` reports `stale: true`" would therefore be satisfied *vacuously* on
+exactly the installs most likely to have the problem — a demonstrably stale object
+recorded as PASS. Only the literal string `"baseline"` exempts a candidate; absent,
+null, or anything else is treated as `measured` and a `stale: true` FAILs.
+
+That is also why check 7's fallback glob skips `turns/`: everything under it is a
+Before, and a Before is never the answer to "which artifact is being measured".
+
+**And why it skips `.loci-stage-*/`.** `loci build compile` writes its object into
+a private `.loci-stage-<x>/` beside the destination and renames it out, so nothing
+partial is ever visible at the object's real path. A compile that is *killed*
+leaves that directory behind, holding a file called `<stem>.o` that is the newest
+object under `.loci-build` — so an unpruned glob reports it as the artifact being
+measured, and `loci build reap` deletes it out from under the next check. Prune it
+at every depth: it sits beside its destination, not at a fixed level.
+`loci_artifacts` in `<project-context>` already prunes those three subtrees
+(`find_loci_artifacts` in `lib/detect-project.sh`), so the fallback exists to agree
+with it — a glob that reaches wider than the list it stands in for reports a
+different project than every other check does. `cargo/` is LOCI's private
+`CARGO_TARGET_DIR` (hundreds of build-script objects, and the crate's real object is
+published above it) and `elf/` holds text dumps, not artifacts.
 
 If `loci` is not on PATH, checks 6, 8 and 11 automatically FAIL (the analysis
 stack lives inside the CLI; `loci doctor` reports the specific missing piece).
@@ -215,9 +291,23 @@ used, investigate:
    `loci elf asm`) or `execution_time_ns` (from `loci timing`) present? If `loci`
    returned data but Claude didn't use it, note the gap.
 
-5. **Delta comparison** — for post-edit: did `.o.prev` exist before the
-   recompile? Did `loci elf diff` return 0 changed functions (meaning the binary
-   didn't actually change)?
+5. **Delta comparison** — for post-edit: did the compile report a baseline, i.e.
+   was `data.output_prev` present (equivalently, did the compile-and-read-back
+   script print a non-empty `PREV`)? Ask it that way round, not "does a `.o.prev`
+   file exist": a `.prev` can sit on disk and still be **correctly withheld** —
+   built from a different source, or with different flags, or captured for another
+   turn — and any accompanying `NOTE` says which, as does the compile envelope's own
+   `data.baseline_withheld` (`{code, reason}`) on a CLI new enough to report one.
+   Record the `code` when you have it: it is the CLI's verdict on the candidate it
+   actually examined, and it is what separates a deliberate refusal from a capture
+   that never happened (`not_captured`). Finding the file and concluding a
+   baseline existed turns a working refusal into a filed defect. Then: did
+   `loci elf diff` return 0 changed functions? That is **not** the same as "the
+   binary didn't change" — the differ hashes masked instructions, so a constant-only
+   edit produces an empty diff, and `data.summary.removed` can be non-zero while the
+   changed-function list is empty. Read `data.summary`, and see
+   [Diffing the pair](../_shared/loci-runtime-contract.md#elf-diff) before recording
+   an empty diff as either a defect or a clean run.
 
 6. **Output suppression** — did Claude generate analysis but fail to present
    it? (Context window pressure, interrupted response, tool call error.)

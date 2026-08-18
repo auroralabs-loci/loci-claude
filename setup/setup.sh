@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # LOCI Plugin — setup / repair entry point. Orders the steps and reports; the
 # step logic lives in lib/setup-steps.sh and hooks/ensure-loci-cli.sh.
 #

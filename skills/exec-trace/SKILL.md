@@ -13,8 +13,16 @@ when_to_use: >
 `<plugin-dir>/skills/_shared/loci-runtime-contract.md` and apply its
 **Session context placeholders**, **Tool boundary: `loci elf` only**, **Output:
 the JSON envelope**, **Cross-compilation defaults**, and **Step 0 — Pattern B:
-analyze an existing binary** sections. The sections below add only this skill's
-specifics.
+analyze an existing binary**, **Step 0 — Pattern A: compile the source** and
+**Compile a change and read the artifact paths back** sections. The sections below
+add only this skill's specifics.
+
+The last two of those are what the **Incremental Path** below runs on: it compiles
+through the plugin's script rather than a compiler line, and Pattern A is where the
+`compiler_not_found` recovery that compile can hit is written down.
+
+**Verdict vocabulary.** This skill closes on `PASS` / `CAUTION` / `FAIL` and
+no other words — see `<plugin-dir>/skills/_shared/verdicts.md`.
 
 **Bounds.** This skill judges its findings against the repository's Contract
 Envelope, so also apply the shared **The Contract Envelope is input only** and
@@ -71,21 +79,74 @@ as an end-to-end figure.
 
 Then, with those conditions met:
 
-1. Save the existing `.o` as `.o.prev`
-2. Compile only the changed source with `-c`.
-   Always include `-g` to emit DWARF debug info (required by `loci elf`):
+1. **Do NOT create, refresh, or go looking for a `.o.prev` yourself.** It is the
+   post-edit pipeline's turn baseline — the state from before this turn's first edit
+   — captured by the pre-edit hook and stamped with the turn it belongs to. Copying
+   the current object over it replaces that baseline, and every later edit of the
+   turn then reports its delta against your copy instead of against the turn's
+   start. Item 2 below tells you whether a usable baseline exists; that answer
+   is the only one to act on.
+2. Compile the changed source and read the paths back — one command, per
+   **Compile a change and read the artifact paths back** in the shared runtime
+   contract. Not a raw `<compiler> -g <flags> -c` line: that writes no
+   `.meta.json` sidecar, so the next `loci build snapshot` refuses and the turn
+   loses its baseline entirely.
    ```
-   <compiler> -g <flags> -c <source> -o .loci-build/<loci_target>/<basename>.o
+   bash "<plugin-dir>/lib/compile-and-read-back.sh" \
+       --source "<source>" --loci-target <loci_target> \
+       --context "<project-context>" --project-root "<project_root>" \
+       --phase post-edit
    ```
-3. Diff `.o.prev` vs `.o` to find changed functions:
+   It prints one `key<TAB>value` per line:
    ```
-   loci elf diff --elf .o.prev --comparing-elf .o --arch <loci_target>
+   OBJ        the object just compiled
+   META       its build record
+   PREV       the turn's baseline — an empty value means there is none
+   PREV_META  that baseline's build record
+   NOTE       zero or more; why a baseline was withheld, or how it was established
    ```
-4. Extract assembly for only `modified`/`added` functions:
+   **Never assemble a `.loci-build/…` path** — telling you where the object
+   actually is, is the script's whole job. If it prints `FAILED` instead, stop the
+   Incremental Path: on code `compiler_not_found` take Pattern A's recovery
+   (alternate driver name, then ask the user for a path), and on anything else
+   surface the message verbatim.
+3. Diff the pair to find changed functions — **only when `PREV` is non-empty.**
    ```
-   loci elf asm --elf .o --functions <changed_funcs> --arch <loci_target>
+   env=$(loci elf diff --elf "<PREV>" --comparing-elf "<OBJ>" --arch <loci_target>)
+   jq -c '.data.summary' <<<"$env"
+   jq -r '.[] | select(.stt_type == "STT_FUNC")
+              | select(.status == "modified" or .status == "added") | .symbol' \
+       "$(jq -r '.data.diff_file' <<<"$env")"
    ```
-5. Skip to step 3 (the `loci timing` call) below.
+   Substitute the values item 2 printed; nothing it set survives into this block,
+   which is a separate Bash call. The counts come back first, then one changed
+   function per line: the per-symbol list is a **file**, there is no
+   `data.modified` or `data.added`, and the name in an entry is under `symbol`.
+   Both filters matter — the file also carries `removed` symbols, which have no
+   assembly in the object you are about to extract from, and **data symbols**,
+   which come back from `elf asm` as `ok:true` with empty assembly and
+   `timing_csv: null`. Branch on `.ok` as always. See
+   **[Diffing the pair](../_shared/loci-runtime-contract.md#elf-diff)** in the
+   shared runtime contract for the entry shape and for the symbols that cannot be
+   requested at all. An **empty `PREV` means there is no before side**: skip this
+   step and measure only the function(s) the request names, reporting absolute
+   values with no delta. Do not widen to every function in the object — each one
+   costs a metered `loci timing` call.
+4. Extract assembly for only those changed functions — `<changed_funcs>` is what
+   item 3 printed, comma-separated. Keep it quoted: a Rust generic contains `<`
+   and `>`, which bash reads as redirections.
+   ```
+   loci elf asm --elf "<OBJ>" --functions "<changed_funcs>" --arch <loci_target>
+   ```
+   **Item 3 printing nothing does not mean the edit had no effect** — the differ
+   masks immediate values, so an edit that only changes a constant (a loop bound,
+   a threshold) produces no entry at all. Read `data.summary`: a non-zero
+   `removed` means functions were deleted, and all-zero means no change the differ
+   can see. Report that *with the caveat*, and if the request named a function,
+   measure that function anyway rather than reporting nothing — but do not spend a
+   metered call per function on the whole object.
+5. Report any `NOTE` that explains a missing or caveated before side, then skip
+   to step 3 (the `loci timing` call) below.
 
 If no `.o` exists yet, fall through to full compilation.
 
@@ -97,7 +158,7 @@ If no `.o` exists yet, fall through to full compilation.
    ```
 2. Extract assembly with per-block granularity:
    ```
-   loci elf asm --elf <binary> --functions <func> --blocks blocks.csv --arch <loci_target>
+   loci elf asm --elf "<binary>" --functions "<func>" --blocks blocks.csv --arch <loci_target>
    ```
    The envelope's `data.timing_csv` is the consolidated per-block timing-CSV
    **file path** and `data.timing_architecture` is the architecture to predict against.
@@ -156,11 +217,11 @@ If no `.o` exists yet, fall through to full compilation.
    empty stdin to `jq`, which would print a parse error to stderr.
 
 8. **Synthesise the verdict line** using the regression-based taxonomy in §Verdict semantics below. Render the line as the final line of the report body (just before the voice remark) so the user sees the same string that gets passed to `record --verdict`:
-   - All-baseline (zero functions with priors): `Verdict: OK — baseline established for N functions (measurement milestone set, no prior data).`
-   - K of N have priors and all `delta_pct ≤ +10%`: `Verdict: OK — K of N within ±10% vs last run (max delta <signed-pct>% on <fn>); <N-K> baselined.` Drop the `; <N-K> baselined` clause when K == N.
+   - All-baseline (zero functions with priors): `Verdict: PASS — baseline established for N functions (measurement milestone set, no prior data).`
+   - K of N have priors and all `delta_pct ≤ +10%`: `Verdict: PASS — K of N within ±10% vs last run (max delta <signed-pct>% on <fn>); <N-K> baselined.` Drop the `; <N-K> baselined` clause when K == N.
    - Any function with priors has `delta_pct > +10%`: `Verdict: CAUTION — <fn> regressed +<pct>% (<prev_ns>→<curr_ns> ns, last run <prev_ts>); <K-1> others stable, <N-K> baselined.` Cite the worst-regressing function. Drop the `, <N-K> baselined` clause when K == N.
 
-   Note: the §LOCI footer skips both record commands when N == 0, so a "FLAG"
+   Note: the §LOCI footer skips both record commands when N == 0, so a "FAIL"
    verdict is never persisted. If you want a no-resolved-functions state to
    show up in the dashboard, that's a separate behavior change — for now,
    N == 0 runs exit silently (no footer, no record calls).
@@ -175,18 +236,18 @@ delta_pct(fn) = (current_worst_ns - prev_worst_ns) / prev_worst_ns × 100
 
 | verdict | trigger |
 |---|---|
-| **OK (baseline)** | No prior `worst_ns` exists for ANY analyzed function (zero functions had priors). |
-| **OK** | At least one function has prior data and every prior-bearing function has `delta_pct ≤ +10%` (improvements + stable both qualify). Functions without priors are silently treated as baselines and don't contribute to the verdict — they're counted in the line as `<N-K> baselined`. |
+| **PASS (baseline)** | No prior `worst_ns` exists for ANY analyzed function (zero functions had priors). |
+| **PASS** | At least one function has prior data and every prior-bearing function has `delta_pct ≤ +10%` (improvements + stable both qualify). Functions without priors are silently treated as baselines and don't contribute to the verdict — they're counted in the line as `<N-K> baselined`. |
 | **CAUTION** | At least one function with prior data has `delta_pct > +10%`. Cite the worst-regressing function in the cause. |
 
-`FLAG` is reserved (no functions resolved / total `loci timing` failure) but is not
+`FAIL` is reserved (no functions resolved / total `loci timing` failure) but is not
 currently shipped — the §LOCI footer skips record calls when N == 0, so
 the verdict path isn't reached. Quota errors are handled by §4's
 early-exit, also without recording.
 
 Verdict line format matches `loci-post-edit`'s exactly:
 ```
-Verdict: <OK|CAUTION> — <one-sentence cause grounded in numbers>
+Verdict: <PASS|CAUTION> — <one-sentence cause grounded in numbers>
 ```
 
 ## Artifact provenance (mandatory)
@@ -226,8 +287,8 @@ processed, do NOT emit the footer.
 **Record cumulative stats + verdict** (run via Bash before rendering the footer).
 Pass `--verdict "<verbatim-verdict-line>"` so the verdict ride-along ships
 alongside the per-function trends payload — the line is the same string
-already rendered to chat (`Verdict: OK — <cause>`, `Verdict: CAUTION — <cause>`,
-or `Verdict: FLAG — <cause>`), unbolded, no surrounding asterisks.
+already rendered to chat (`Verdict: PASS — <cause>`, `Verdict: CAUTION — <cause>`,
+or `Verdict: FAIL — <cause>`), unbolded, no surrounding asterisks.
 ```
 loci stats record --context-file "<project-context>" --skill exec-trace --functions <N> --mcp-calls <M> --co-reasoning 0 --verdict "<verbatim-verdict-line>"
 ```
@@ -266,7 +327,7 @@ One line. Icon-led, no surrounding bars, middle-dot separators:
 <icon> LOCI exec-trace · <N> fn · throughput <T>
 ```
 
-- `<icon>` — `✅` when the run completed with full `loci timing` data; `⚠️` when
+- `<icon>` — `✅` when the run completed with full `loci timing` data; `🔶` when
   some blocks were skipped (partial coverage).
 - `<N>` — unique functions whose assembly was sent to LOCI.
 - `<T>` — worst-case throughput time (self-time, callees excluded), human-readable
@@ -275,7 +336,7 @@ One line. Icon-led, no surrounding bars, middle-dot separators:
 Worked examples:
 ```
 ✅ LOCI exec-trace · 2 fn · throughput 1.4 µs
-⚠️ LOCI exec-trace · 3 fn · throughput 780 ns
+🔶 LOCI exec-trace · 3 fn · throughput 780 ns
 ```
 
 ### Expand when...
