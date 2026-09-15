@@ -1,14 +1,15 @@
 {
   "skill_name": "loci-preflight",
-  "description": "Critical smoke tests for the loci-preflight plan-mode GATE \u2014 the single behavior that matters most: does the skill invoke when (and only when) the user is in /plan mode? Per SKILL.md, preflight is 'MANDATORY in /plan mode' and must 'NOT invoke ... outside plan mode'. The suite is five tests in two controlled groups: (1) three /plan prompts that MUST invoke, (2) two no-/plan prompts whose wording SOUNDS like planning ('how should I modify', 'walk me through the plan') but, lacking the /plan prefix, MUST stay silent. Tests are paired by task so the ONLY difference between an invoke and a no-invoke case is the /plan signal: pf-critical-1 <-> pf-critical-5 (bounds guard on Connection_getConnIndex) and pf-critical-2 <-> pf-critical-4 (TX byte counter in HCI_SendDataPkt). All functions are compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out, so a real /plan run produces a full report (not a STOPPED block).",
+  "description": "Critical smoke tests for the loci-preflight plan-mode GATE \u2014 the single behavior that matters most: does the skill invoke when (and only when) the user is in /plan mode? Per SKILL.md, preflight is 'MANDATORY in /plan mode' and must 'NOT invoke ... outside plan mode'. The suite is five tests in two controlled groups: (1) three /plan prompts that MUST invoke, (2) two no-/plan prompts whose wording SOUNDS like planning ('how should I modify', 'walk me through the plan') but, lacking the /plan prefix, MUST stay silent. Tests are paired by task so the ONLY difference between an invoke and a no-invoke case is the /plan signal: pf-critical-1 <-> pf-critical-5 (bounds guard on Connection_getConnIndex) and pf-critical-2 <-> pf-critical-4 (TX byte counter in HCI_SendDataPkt). All functions are compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out, so a real /plan run produces a full report (not a STOPPED block). Two further evals ride in this file rather than gating invocation: pf-loops-1 (loop-cost reasoning) and pf-recipe-1 (what Step 1 does when the installed CLI predates `--require-recipe`). Both are reasoning-graded and run no tools.",
   "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running. NOTE: run_evals.sh keeps a leading '/plan' verbatim (it strips other slash commands) \u2014 that prefix is the plan-mode signal these tests gate on. Bash grading detects invocation via the '## Preflight:' header plus an 'Execution fit:' verdict line, matching the current SKILL.md output format.",
   "evals": [
     {
       "id": "pf-critical-1",
+      "source_file": "examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble_profiles/app/app_connection.c",
       "should_trigger": true,
       "category": "invoke-plan-mode-implement-bounds-guard",
       "grading_mode": "bash",
-      "prompt": "/plan Implement a bounds guard at the top of Connection_getConnIndex in $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_connection.c that returns -1 immediately if the connection handle is greater than or equal to MAX_NUM_BLE_CONNS, so callers never index past the connection table. The function is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
+      "prompt": "/plan Implement a bounds guard at the top of Connection_getConnIndex in $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble_profiles/app/app_connection.c that returns -1 immediately if the connection handle is greater than or equal to MAX_NUM_BLE_CONNS, so callers never index past the connection table. The function is compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out.",
       "expected_output": "User is in /plan mode and describes new logic, so preflight is MANDATORY. A preflight report appears in the response text (before any plan body): a '## Preflight: Connection_getConnIndex' header, a conclusion table, and a bolded 'Execution fit: PASS|CAUTION|FAIL' verdict.",
       "files": [],
       "assertions": [
@@ -24,10 +25,11 @@
     },
     {
       "id": "pf-critical-2",
+      "source_file": "simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c",
       "should_trigger": true,
       "category": "invoke-plan-mode-how-should-i-modify-counter",
       "grading_mode": "bash",
-      "prompt": "/plan How should I modify HCI_SendDataPkt in $LOCI_TEST_BLE_ROOT/simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c to add a static uint32_t per-connection TX byte counter that accumulates the dataLen parameter on each successful send and wraps silently? The function is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
+      "prompt": "/plan How should I modify HCI_SendDataPkt in $LOCI_TEST_BLE_ROOT/simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c to add a static uint32_t per-connection TX byte counter that accumulates the dataLen parameter on each successful send and wraps silently? The function is compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out.",
       "expected_output": "User is in /plan mode and the wording 'How should I modify' is an explicit SKILL.md trigger, so preflight is MANDATORY. A '## Preflight: HCI_SendDataPkt' report with an 'Execution fit:' verdict appears in the response before the modification plan. (This is the positive twin of pf-critical-4, which is the same task WITHOUT /plan.)",
       "files": [],
       "assertions": [
@@ -43,10 +45,11 @@
     },
     {
       "id": "pf-critical-3",
+      "source_file": "simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c",
       "should_trigger": true,
       "category": "invoke-plan-mode-add-new-callee-timing-budget",
       "grading_mode": "bash",
-      "prompt": "/plan Add a bond check inside HCI_SendDataPkt in $LOCI_TEST_BLE_ROOT/simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c that calls GAPBondMgr_FindAddr to reject packets from unbonded peers before the packet is sent. The HCI data path must complete within 10us at 48 MHz. Both functions are compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
+      "prompt": "/plan Add a bond check inside HCI_SendDataPkt in $LOCI_TEST_BLE_ROOT/simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c that calls GAPBondMgr_FindAddr to reject packets from unbonded peers before the packet is sent. The HCI data path must complete within 10us at 48 MHz. Both functions are compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out.",
       "expected_output": "User is in /plan mode and describes adding a new callee on a timing-constrained hot path, so preflight is MANDATORY. A '## Preflight: HCI_SendDataPkt' report appears with an 'Execution fit:' verdict \u2014 likely CAUTION or FAIL given the NV-reading GAPBondMgr_FindAddr against a sub-10us budget, but any PASS/CAUTION/FAIL verdict satisfies the invocation gate.",
       "files": [],
       "assertions": [
@@ -62,10 +65,11 @@
     },
     {
       "id": "pf-critical-4",
+      "source_file": "simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c",
       "should_trigger": false,
       "category": "no-invoke-no-plan-mode-how-should-i-modify-counter",
       "grading_mode": "bash",
-      "prompt": "How should I modify HCI_SendDataPkt in $LOCI_TEST_BLE_ROOT/simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c to add a static uint32_t per-connection TX byte counter that accumulates the dataLen parameter on each successful send and wraps silently? The function is compiled into $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
+      "prompt": "How should I modify HCI_SendDataPkt in $LOCI_TEST_BLE_ROOT/simplelink-lowpower-f3-sdk/source/ti/ble5stack_flash/hci/cc26xx/hci.c to add a static uint32_t per-connection TX byte counter that accumulates the dataLen parameter on each successful send and wraps silently? The function is compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out.",
       "expected_output": "Identical task to pf-critical-2 but with NO /plan prefix \u2014 the user is NOT in plan mode. The phrase 'How should I modify' is a SKILL.md trigger word, but SKILL.md gates triggers on plan mode ('Do NOT invoke ... outside plan mode'). The skill must stay silent: a direct answer with NO '## Preflight:' header and NO 'Execution fit:' verdict.",
       "files": [],
       "assertions": [
@@ -81,10 +85,11 @@
     },
     {
       "id": "pf-critical-5",
+      "source_file": "examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble_profiles/app/app_connection.c",
       "should_trigger": false,
       "category": "no-invoke-no-plan-mode-walk-me-through-the-plan",
       "grading_mode": "bash",
-      "prompt": "How should I approach adding a bounds guard at the top of Connection_getConnIndex in $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R53/ble5stack/basic_ble_profiles/app/app_connection.c so it returns -1 when the connection handle is greater than or equal to MAX_NUM_BLE_CONNS?",
+      "prompt": "How should I approach adding a bounds guard at the top of Connection_getConnIndex in $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble_profiles/app/app_connection.c so it returns -1 when the connection handle is greater than or equal to MAX_NUM_BLE_CONNS?",
       "expected_output": "Identical task to pf-critical-1 but with NO /plan prefix. The wording ('How should I approach', 'Walk me through the plan before we implement') strongly sounds like planning and could fool the model into thinking it is in plan mode \u2014 but no /plan was entered, so plan mode is NOT active. Per SKILL.md the skill must stay silent: NO '## Preflight:' header and NO 'Execution fit:' verdict. The model may discuss the approach in prose, just without invoking preflight.",
       "files": [],
       "assertions": [
@@ -100,8 +105,90 @@
     },
     {
       "id": "pf-loops-1",
-      "prompt": "I'm planning to call crc16_update() from my 1 ms control ISR. Work out whether it fits. Session context: Target: armv6-m, Compiler: arm-none-eabi-gcc, LOCI target: armv6-m. `loci elf asm` returned data.loops = {\"total\":2,\"with_trip_count\":1,\"unknown_trip_count\":1,\"recursion\":0,\"uncounted_cycles\":0}. The CFG shows `L1 loop ... trips 8 exact` (blocks carry iters=8) and `L2 loop ... trips ? (no constant initialiser for r2 reaching bb_0x40)` (blocks carry iters=?). Hot-path block costs sum to 300 ns if every block is counted once. (Grade only the reasoning; the agent need not execute any loci command.)",
-      "expected_output": "Does NOT report 300 ns as the worst path. Multiplies each in-loop block by its iters, and because L2's trip count is not derivable the figure is reported as a lower bound with a >= prefix and a Note naming loop L2 and the reason from the loops: line. Does not invent a trip count for L2 (no guess from a buffer size, a typical length, or the source), and does not silently treat iters=? as 1. Any Performance status is capped at CAUTION rather than PASS on a lower bound, or FAIL if a bound is breached by the lower bound already; suggests declaring L2's bound in the Contract Envelope rather than assuming one.",
+      "prompt": "I'm planning to call crc16_update() from my 1 ms control ISR. Work out whether it fits. Session context: LOCI target: armv6-m. `loci elf asm` returned data.loops = {\"total\":2,\"with_trip_count\":1,\"unknown_trip_count\":1,\"recursion\":0,\"uncounted_cycles\":0}. The CFG shows `L1 loop ... trips 8 exact` (blocks carry iters=8) and `L2 loop ... trips ? (no constant initialiser for r2 reaching bb_0x40)` (blocks carry iters=?). Hot-path block costs sum to 300 ns if every block is counted once. (Grade only the reasoning; the agent need not execute any loci command.)",
+      "expected_output": "Does NOT report 300 ns as the worst path. Multiplies each in-loop block by its iters, and because the second loop's trip count is not derivable the figure is reported as a lower bound with a >= prefix and a Note identifying that loop by where it is in the source (never by its `L2` id, which is a LOCI-internal counter the reader cannot resolve) and giving the reason from the loops: line. Does not invent a trip count for L2 (no guess from a buffer size, a typical length, or the source), and does not silently treat iters=? as 1. Any Performance status is capped at CAUTION rather than PASS on a lower bound, or FAIL if a bound is breached by the lower bound already; suggests declaring L2's bound in the Contract Envelope rather than assuming one.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Does not report 300 ns as the worst path",
+          "description": "the bare-sum figure is the failure this guards"
+        },
+        {
+          "text": "Multiplies each in-loop block by its iters and reports the figure as a lower bound with a >= prefix",
+          "description": "L2's trip count is not derivable, so the total can only grow"
+        },
+        {
+          "text": "Identifies the uncountable loop by its source location, not by its `L2` id, and gives the reason from the `loops:` line in the Note",
+          "description": "the caveat has to say which loop and why — and `L1`/`L2` are LOCI-internal counters that mean nothing to the reader"
+        },
+        {
+          "text": "Invents no trip count for L2 and does not treat iters=? as 1",
+          "description": "a guessed bound is a fabricated number"
+        },
+        {
+          "text": "Caps the Performance status at CAUTION rather than PASS on a lower bound (or FAIL if the lower bound already breaches)",
+          "description": "a green verdict on a number that can only grow is a claim the run cannot make"
+        }
+      ]
+    },
+    {
+      "id": "pf-recipe-1",
+      "prompt": "Decision question, no tools needed \u2014 reason it out from the loci-preflight skill and answer directly. In /plan mode I asked you to add a callee to an existing function, so preflight is running. Step 1's `loci build compile \u2026 --phase preflight --require-recipe` produced no JSON at all \u2014 stdout was empty and stderr read exactly `usage: loci [-h] [-V] <command> ...` then `loci: error: unrecognized arguments: --require-recipe`, with exit code 2. The project does have a `.loci/build.yaml`. What do you do next, and what does the preflight report have to say about its own numbers?",
+      "expected_output": "Recognises exit 2 with an argparse usage message and no JSON as the installed CLI being older than the flag \u2014 NOT as the user's code failing to compile, and not as one of the nine coded errors (there is no envelope, so there is no `error.code` to branch on). Does not stop and does not emit a '## Preflight: STOPPED' block for it: it re-runs the same command once WITHOUT `--require-recipe` and continues the analysis. Says in the report that these flags came from the old cascade rather than from `.loci/build.yaml`, and does NOT print a recipe provenance line, which would be a false claim about what the numbers rest on. Offers `/loci:setup` as the fix. Does not add `--compiler`, `--compiler-path` or `-D` flags of its own, does not hunt for a compiler, and does not reuse a project-built .o or .elf instead. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Recognises exit 2 with an argparse usage message and empty stdout as the installed CLI being older than the flag, not as the user's code failing to compile",
+          "description": "the misdiagnosis this guards"
+        },
+        {
+          "text": "Re-runs the same command once WITHOUT `--require-recipe` and continues the analysis",
+          "description": "the recovery"
+        },
+        {
+          "text": "Does NOT emit a '## Preflight: STOPPED' block for it",
+          "description": "SKILL-ONLY: the shared contract does not answer this, so it discriminates this task's diff. the STOPPED block is loci-preflight's own; the contract has no such block."
+        },
+        {
+          "text": "Says in the report that these flags came from the old cascade rather than from `.loci/build.yaml`, and offers `/loci:setup`",
+          "description": "the report must not present cascade flags as recipe-backed"
+        },
+        {
+          "text": "Prints no recipe provenance line, and does not treat that as special to this case \u2014 preflight prints one in no case",
+          "description": "SKILL-ONLY: the shared contract does not answer this, so it discriminates this task's diff. the contract scopes the provenance line to the absolute verbs but says nothing about preflight."
+        },
+        {
+          "text": "Does not add `--compiler`, `--compiler-path` or `-D` flags of its own and does not reuse a project-built .o or .elf",
+          "description": "the deleted ladder must not return"
+        },
+        {
+          "text": "Gates the re-run on the usage line naming `--require-recipe` specifically, and treats an envelope-less exit naming any other argument \u2014 or a second envelope-less exit \u2014 as a stop",
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt \u2014 so it discriminates this task's diff. Added in round 2 after a reviewer showed an invalid `--loci-target` produces a byte-identical signature; the contract keys only on the flag."
+        }
+      ]
+    },
+    {
+      "id": "pf-target-1",
+      "prompt": "Decision question, no tools needed \u2014 reason it out from the loci-preflight skill and answer directly. I am in /plan mode describing a new function, so preflight is mandatory. The LOCI session block carries `project context:` and `plugin dir:` but no `LOCI target:` line, and it says this project has no recipe yet and that init should be invoked once when a call reports it. What does preflight do \u2014 concretely, can it produce a report this session?",
+      "expected_output": "Concludes it cannot analyse this session, and says so plainly rather than improvising. Every command in Step 1 needs `<loci_target>`, and `--loci-target` takes exactly one of four values, so with no target line there is nothing to run: it does not invent a value, does not substitute a host architecture, and does not lift a target out of the persisted context file. It may invoke the init skill once where the session block says to \u2014 but recognises that the target init writes arrives at the NEXT session, not the next call, because the session-start line is what the skills read. Emits its own '## Preflight: STOPPED' block carrying what Pattern A gives for this state, and does not restate Pattern A's per-state taxonomy or claim a successful init makes the next call work. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "assertions": [
+        {
+          "text": "Concludes preflight cannot produce a report this session, because every command needs `<loci_target>` and there is none",
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt \u2014 so it discriminates this task's diff. preflight's own Step 0; the contract says not to supply a target but not that the session has nothing to run."
+        },
+        {
+          "text": "Says the target a successful init writes arrives at the NEXT session rather than the next call",
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt \u2014 so it discriminates this task's diff. the correction round 2 made after a reviewer showed the previous sentence was false."
+        },
+        {
+          "text": "Does not invent a target, substitute a host architecture, or read one out of the persisted context file",
+          "description": "the failure mode the whole no-target rule exists to prevent"
+        },
+        {
+          "text": "Emits preflight's own '## Preflight: STOPPED' block rather than an ad-hoc message, and does not restate Pattern A's per-state taxonomy",
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt \u2014 so it discriminates this task's diff. the STOPPED block is preflight's; the contract explicitly forbids copying its taxonomy."
+        }
+      ],
       "files": []
     }
   ]

@@ -1,29 +1,43 @@
-"""Lint: the loop-cost rule exists once, and both mandatory skills apply it.
+"""Lint, inverted: the path-cost arithmetic is the CLI's, and the prose says so.
 
-`loci timing` prices a basic block **once**. A block inside a loop runs once per
-lap, so a worst path summed block-by-block understates a function by a factor of
-its trip count — the same class of error as treating a bare `bl` as a call site's
-full cost, and usually the larger of the two. asmslicer 1.2.0 annotates every
-in-loop block with `iters` (executions per call of the function, already
-multiplied across nested loops) and `loci elf asm` / `loci elf cfg` report
-a `data.loops` roll-up whose counts say whether the numbers can be exact.
+This file used to pin the opposite. It asserted that both reflex skills carried
+the loop-cost arithmetic in prose — multiply each block by its `iters`, expand a
+`bl` before multiplying, send the multiplied value to `contract check` — because
+three copies of that arithmetic lived in prose and drifted, and a regex could at
+least check the prose was still there.
 
-There is deliberately no capability flag: one existed, was derived from the installed
-CLI's version number, compared against a minimum that never matched the release which
-shipped the feature, and so reported the capability as absent on builds that had it —
-switching the whole feature off through the contract line that trusted it.
+The prepare/measure split moved the arithmetic into code. `loci analyse measure`
+runs the path-cost evaluator once, identically on the Before and the After side:
+call-site expansion, recursion through in-binary callees, each block multiplied by
+the laps it runs, external callees tainting the total as a `≥` lower bound. The
+skills read `data.paths.<fn>` and never re-derive a figure. So the assertions flip:
+the failure mode is no longer prose gone missing, it is prose coming *back* — a
+fourth copy of an evaluator that already exists, which would then disagree with the
+run record in the report.
 
-These tests pin the parts a future edit would quietly drop:
+**Where the old invariant is pinned now.** The arithmetic guarantees this file used
+to assert live in the CLI's own tests, against the evaluator rather than against a
+sentence: `loci-cli/tests/unit/test_pathcost.py` and
+`test_pathcost_fixtures.py` (T3) — `iters` multiplication, `bl` expansion order,
+callee recursion, the cycle guard, and the `≥` taint for an unknown trip count.
 
-* the rule lives in the shared contract **once**, not copied into two skills that
-  then drift — which is what happened to the `bl`-expansion prose;
-* both skills link to it and both multiply by `iters` where they compute a total;
-* the value sent to `contract check` is the multiplied one, since that is the
-  number a budget is judged against;
-* `iters=?` is never resolved by guessing, and produces a `>=` lower bound.
+What stays here:
 
-A regex cannot check that a model obeys prose. It can check that the prose is
-still there, which is the failure mode with a track record in this repo.
+* the loop-cost rule still exists **once**, in the shared contract, with its
+  anchor, and both skills still link to it;
+* the contract still forbids inventing a trip count and still states there is no
+  capability check — the gate that was derived from a version number and read
+  false on builds that had the feature;
+* the skills invoke the pair (`analyse prepare` → `analyse measure --prepared`)
+  and patch their judgments through `stats record --run … --agent-judged`;
+* the skills carry no arithmetic: no multiply-by-`iters`, no expansion order, no
+  `bl` pricing.
+
+Two things legitimately survive in the skills and must not be read as arithmetic:
+`iters=?` (a real field value from the lower-bound reporting rule — "`iters=?` is a
+lower bound, never a `1`") and post-edit's "expanded form" (the report layout).
+Both are asserted present below, so an over-broad absence check fails here rather
+than quietly passing.
 """
 
 from __future__ import annotations
@@ -36,6 +50,7 @@ import pytest
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS = PLUGIN_ROOT / "skills"
 CONTRACT = SKILLS / "_shared" / "loci-runtime-contract.md"
+VERDICTS = SKILLS / "_shared" / "verdicts.md"
 PREFLIGHT = SKILLS / "loci-preflight" / "SKILL.md"
 POST_EDIT = SKILLS / "loci-post-edit" / "SKILL.md"
 
@@ -53,7 +68,7 @@ def skill(request) -> Path:
     return request.param
 
 
-# ── the rule lives in one place ──────────────────────────────────────────────
+# ── the rule lives in one place, and both skills reach it ────────────────────
 
 def test_the_contract_carries_the_loop_cost_section_with_an_anchor():
     text = _text(CONTRACT)
@@ -63,50 +78,78 @@ def test_the_contract_carries_the_loop_cost_section_with_an_anchor():
     assert text.count(f'id="{ANCHOR}"') == 1, "two anchors means two rules, and one will drift"
 
 
-def test_the_rule_is_not_copied_into_the_skills():
-    """The `bl`-expansion prose is duplicated across both skills and has already
-    diverged. The loop rule is referenced, not restated: a skill may name `iters`
-    and the four cases, but the table of cases belongs to the contract alone."""
-    for path in (PREFLIGHT, POST_EDIT):
-        text = _text(path)
-        assert text.count("| Annotation | Meaning |") == 0, (
-            f"{path.name} restates the contract's case table instead of linking to it"
-        )
-
-
-# ── both skills reach the rule and the data ──────────────────────────────────
-
 def test_the_skill_links_to_the_loop_cost_section(skill):
     text = _text(skill)
     assert f"#{ANCHOR}" in text, (
-        f"{skill.name} never links to the loop-cost rule, so a run has no reason to "
+        f"{skill.name} never links to the path-cost rule, so a run has no reason to "
         f"read it"
     )
 
 
-def test_the_skill_reads_the_loops_field_for_triage(skill):
-    """`data.loops` is read for the honesty counts — `unknown_trip_count` and
-    `uncounted_cycles`, either of which makes a per-call total a lower bound."""
-    text = _text(skill)
-    assert ".data.loops" in text, (
-        f"{skill.name} does not read `.data.loops`, so it has no advance warning that "
-        f"a total on this run is a lower bound"
+def test_the_rule_is_not_copied_into_the_skills():
+    for path in (PREFLIGHT, POST_EDIT):
+        assert _text(path).count("| Annotation | Meaning |") == 0, (
+            f"{path.name} restates the contract's case table instead of linking to it"
+        )
+
+
+def test_the_contract_hands_path_cost_to_measure():
+    section = _text(CONTRACT).split(f'id="{ANCHOR}"')[1][:6000]
+    assert "loci analyse measure" in section, (
+        "the path-cost rule does not name the verb that computes it, so the arithmetic "
+        "has no owner and the prose will grow one back"
     )
-    assert "unknown_trip_count" in text, (
-        f"{skill.name} reads `.data.loops` but not the field that says whether the "
-        f"numbers can be exact"
+    assert re.search(r"[Nn]ever re-derive", section), (
+        "the rule does not forbid re-deriving a figure by hand — the one thing that "
+        "puts a second, disagreeing number in the report"
+    )
+
+
+# ── the arithmetic is gone from the skills ───────────────────────────────────
+
+MULTIPLY = re.compile(
+    r"[x×*]\s*`?iters`?"
+    r"|`?iters`?\s*[x×*]"
+    r"|multipl\w*\s+(?:\w+\s+){0,4}`?iters`?"
+    r"|`?iters`?[- ]multiplied",
+    re.I)
+
+
+def test_the_skill_gives_no_multiply_by_iters_instruction(skill):
+    """`measure` multiplies. A skill that also multiplies produces a number that
+    disagrees with the run record it is reporting."""
+    hit = MULTIPLY.search(_text(skill))
+    assert hit is None, (
+        f"{skill.name} carries loop arithmetic again: {hit.group(0)!r} — path cost is "
+        f"`loci analyse measure`'s, and a fourth copy will drift like the first three"
+    )
+
+
+def test_the_skill_gives_no_expansion_order_prose(skill):
+    text = _text(skill)
+    order = re.search(r"[Ee]xpand.{0,60}multipl|multipl.{0,60}expand", text, re.S)
+    assert order is None, (
+        f"{skill.name} fixes the order of call-site expansion and `iters` "
+        f"multiplication again: {order.group(0)!r} — that ordering is the evaluator's"
+    )
+
+
+def test_the_skill_gives_no_bl_expansion_instruction(skill):
+    """The `bl`-expansion prose is the copy with the longest drift history."""
+    text = _text(skill)
+    hit = re.search(r"`?\bbl[x]?\b`?|bl_cost|prices the branch", text)
+    assert hit is None, (
+        f"{skill.name} instructs on call-site (`bl`) pricing again: {hit.group(0)!r}"
     )
 
 
 def test_no_skill_gates_the_feature_on_a_capability_flag(skill):
     """The `annotated` flag is gone and must not come back.
 
-    It was derived from the installed CLI's version number, and the minimum it compared
-    against never matched the release that shipped the feature — so it read false on
-    builds whose CFG said `loops: 1 (1 with a derived trip count)`. Because the contract
-    told skills that false meant "do not use `iters`", one stale integer switched the
-    whole feature off with correct `iters=64` values unread in the file. A block's
-    `iters` is the evidence; there is nothing to ask permission for.
+    It was derived from the installed CLI's version number, and the minimum it
+    compared against never matched the release that shipped the feature — so it read
+    false on builds whose CFG said `loops: 1 (1 with a derived trip count)`, and one
+    stale integer switched the whole feature off.
     """
     text = _text(skill)
     assert "loops.annotated" not in text and '"annotated"' not in text, (
@@ -118,88 +161,96 @@ def test_no_skill_gates_the_feature_on_a_capability_flag(skill):
 
 
 def test_the_contract_forbids_reintroducing_the_gate():
-    text = _text(CONTRACT)
-    section = text.split(f'id="{ANCHOR}"')[1]
+    section = _text(CONTRACT).split(f'id="{ANCHOR}"')[1]
     assert "no capability check" in section.lower(), (
-        "the loop-cost rule does not state that there is no capability check, which is "
+        "the path-cost rule does not state that there is no capability check, which is "
         "the instruction that stops the gate being added back"
     )
 
 
-def test_the_skill_multiplies_a_block_cost_by_iters(skill):
-    """The whole point. A total that sums bare block costs has counted every lap
-    once, and the two skills are where the sum happens."""
+# ── what the prose invokes instead: the pair, and the typed patch ────────────
+
+def test_the_skill_invokes_prepare_then_measure_on_the_prepared_id(skill):
     text = _text(skill)
-    assert re.search(r"[x×*]\s*`?iters`?|`iters`\s*(?:multiplied|multiplication)"
-                     r"|multiplied by (?:its |that block's )?`iters`", text), (
-        f"{skill.name} mentions no multiplication by `iters`, so its worst-path total "
-        f"is lap-collapsed"
+    assert "loci analyse prepare" in text, (
+        f"{skill.name} never runs `loci analyse prepare`, so there is no manifest to "
+        f"measure"
     )
+    assert re.search(r"loci analyse measure\s+--prepared", text), (
+        f"{skill.name} does not call `loci analyse measure --prepared <id>` — the "
+        f"metered half only ever executes a prepared manifest"
+    )
+
+
+def test_the_skill_reads_the_figures_it_reports(skill):
+    """`data.paths.<fn>` is the figure. Reading it is the replacement for computing
+    it, so its absence would leave the arithmetic with nowhere to have gone."""
+    text = _text(skill)
+    assert "data.paths" in text, (
+        f"{skill.name} never reads `data.paths`, so it has no measured figure to "
+        f"report and will compute one"
+    )
+
+
+def test_the_skill_patches_its_judgments_through_the_typed_sink(skill):
+    """The command itself moved to `_shared/verdicts.md` in 051 — five skills were
+    carrying five copies of one rule and only one of them had the `--agent-note` half.
+    What each skill must still do is ROUTE there, so both ends are checked: the skill
+    names the shared section and its `--run` patch, and the shared file holds the call
+    with both flags on it."""
+    text = _text(skill)
+    assert "verdicts.md#recording-the-verdict" in text, (
+        f"{skill.name} does not route to the shared recording section, so nothing "
+        f"tells it to patch the run at all"
+    )
+    assert "--run" in text, (
+        f"{skill.name} no longer says which id its patch names, and the shared "
+        f"section cannot know that for it"
+    )
+    shared = _text(VERDICTS)
+    assert re.search(r"stats record\b.{0,200}--run\b", shared, re.S), (
+        "the shared recording section no longer carries `stats record --run <id>`"
+    )
+    for flag in ("--agent-judged", "--agent-note"):
+        assert flag in shared, (
+            f"the shared recording section names no `{flag}`, so the verdicts or the "
+            f"sentence never enter the record"
+        )
+
+
+# ── honesty: the unknown trip count is still reported, not resolved ──────────
+
+def test_the_unknown_trip_count_stays_a_lower_bound(skill):
+    """`iters=?` survives on purpose: it is a field value in the reporting rule, not
+    arithmetic. `?` is not 1, and the number is prefixed `≥`."""
+    text = _text(skill)
     assert "iters=?" in text, (
-        f"{skill.name} never names the unknown case, which is the common one"
+        f"{skill.name} dropped the `iters=?` case from the lower-bound reporting rule, "
+        f"so an underivable trip count can be read as a `1`"
     )
-
-
-def test_the_value_sent_to_the_contract_is_the_multiplied_one(skill):
-    """A bound is judged against `curr`. An un-multiplied `curr` passes a ceiling
-    the code breaches, which is worse than not gating at all."""
-    text = _text(skill)
-    # Paragraph-scoped, not line-scoped: the two skills wrap this sentence at
-    # different columns and a per-line scan would pass on one and fail on the other
-    # for a reason that has nothing to do with what either says.
-    paragraphs = [par for par in re.split(r"\n\s*\n", text) if "`curr`" in par]
-    assert paragraphs, f"{skill.name} never defines `curr`"
-    assert any("iters" in par for par in paragraphs), (
-        f"{skill.name} does not say that `curr` is the `iters`-multiplied total, so a "
-        f"budget can be judged against a lap-collapsed number"
-    )
-
-
-# ── honesty: the unknown case stays unknown ──────────────────────────────────
-
-def test_an_unknown_trip_count_makes_the_total_a_lower_bound(skill):
-    """`?` is not 1. It is reported the way an unmeasured external callee already is
-    — with `>=` — because a fabricated count is wrong in the same direction every
-    time and wrong silently."""
-    text = _text(skill)
     assert "≥" in text, f"{skill.name} has no lower-bound convention to fall back to"
     window = "\n".join(ln for ln in text.splitlines() if "iters" in ln)
-    assert "≥" in window or "lower bound" in window, (
-        f"{skill.name} never ties an unknown `iters` to a lower bound, so a `?` can be "
-        f"silently read as 1"
+    assert "lower bound" in window or "≥" in window, (
+        f"{skill.name} never ties an unknown `iters` to a lower bound"
     )
 
 
 def test_the_contract_forbids_inventing_a_trip_count():
     text = _text(CONTRACT)
     assert re.search(r"[Nn]ever substitute a number", text), (
-        "the loop-cost rule does not forbid supplying a trip count of your own — the "
+        "the path-cost rule does not forbid supplying a trip count of your own — the "
         "one failure mode that is both silent and always in the same direction"
     )
     assert "stack-depth" in text.split(f'id="{ANCHOR}"')[1][:6000], (
-        "the rule does not send recursion depth to stack-depth, so `R1` invites a "
+        "the rule does not send recursion depth to stack-depth, so a cycle invites a "
         "fabricated iteration count"
     )
 
 
-def test_expansion_is_ordered_before_multiplication(skill):
-    """`iters x (bl_cost + callee_body)`, not `bl_cost + iters x body`. Multiplying
-    first counts the callee once, and the wrong order reads as natural."""
-    text = _text(skill)
-    assert re.search(r"[Ee]xpand.{0,40}first.{0,60}multiply"
-                     r"|expand(?:ed)?,? .{0,30}then multipl", text, re.S), (
-        f"{skill.name} does not fix the order of `bl` expansion and `iters` "
-        f"multiplication; the wrong order silently drops a callee body"
-    )
-
-
-def test_the_recorded_metric_says_it_includes_iters(skill):
-    """`loci stats` compares response-time records with each other. A loop-aware
-    value against a lap-collapsed one is the throughput-vs-response-time trap again,
-    so the metric's definition has to name the multiplication."""
-    text = _text(skill)
-    block = text[text.index("response_time"):]
-    assert "iters" in block[:2000], (
-        f"{skill.name}'s response-time definition does not mention `iters`, so a "
-        f"loop-aware number can be diffed against a lap-collapsed one"
+def test_the_report_layout_is_not_mistaken_for_expansion_prose():
+    """post-edit's "expanded form" is the multi-line report. The absence checks above
+    must not be tightened into anything that trips on it."""
+    assert "expanded form" in _text(POST_EDIT), (
+        "post-edit lost the expanded report form — if an assertion above was widened "
+        "to catch the word 'expand', widen it back"
     )

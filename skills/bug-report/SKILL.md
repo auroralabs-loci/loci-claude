@@ -21,9 +21,12 @@ session to diagnose and fix the issue.
 This skill must work even when LOCI is completely broken. Do NOT run analysis
 skills or heavy `loci` verbs (timing / elf) for collection — they may be the
 thing that's broken. Use only: Read, Bash, Glob, Grep, plus the lightweight,
-fast-failing probes `command -v loci`, `loci auth status`, `loci doctor`, and
-`loci build fresh` (a local mtime/DWARF check — no backend call, no asmslicer, and
-it runs signed out, which is why check 8 can rely on it here).
+fast-failing probes `command -v loci`, `loci auth status`, `loci doctor`,
+`loci init probe` (a read-only dump of what init decides from) and
+`loci build fresh` (a local mtime/DWARF check — no backend call, no asmslicer).
+The last two run **signed out**, which is why check 7 and step 1's recipe snapshot
+can rely on them; `loci init` itself needs a session, and this skill never runs
+it.
 
 Read these values from the LOCI session context (system-reminder block at
 session start) and substitute them wherever the placeholders appear below:
@@ -73,43 +76,80 @@ Run these in parallel where possible via Bash and Read:
 2. **Claude model** — read from your own system prompt (e.g. `claude-opus-4-7`,
    `claude-sonnet-4-6`). Record the exact model ID.
 3. **Plugin version** — prefer `<plugin-version>` from session context. If
-   missing, read `<plugin-dir>/.claude-plugin/plugin.json` and extract
-   `.version` with `jq -r '.version'`. Fall back to "unknown".
-4. **OS info** — `uname -a`
-5. **OS short name** — `uname -s | tr '[:upper:]' '[:lower:]'` (for filename)
-6. **Project context** — Read `<project-context>` (the per-session keyed file
+   missing, Read `<plugin-dir>/.claude-plugin/plugin.json` and take its
+   `version` key. Fall back to "unknown".
+4. **loci CLI version** — `loci --version 2>/dev/null || echo "unknown"`. This
+   is the ONE place the CLI's own number is surfaced, and the shared contract
+   says so: everywhere else the plugin version is *the* LOCI version. It belongs
+   here because half the reports that reach us are a CLI a release behind, and
+   the session context deliberately does not carry the number.
+5. **OS info** — `uname -a`
+6. **OS short name** — `uname -s | tr '[:upper:]' '[:lower:]'` (for filename)
+7. **Project context** — Read `<project-context>` (the per-session keyed file
    listed as `project context:` in this session). Record the full JSON. If
-   missing, record "MISSING".
-7. **CLI health** — run `loci doctor` and record `data.report` (covers Python
-   3.12, asmslicer, analysis deps, c++filt, cross-compilers, credential store,
-   and the state dir). If `loci` is unavailable, record "loci not on PATH".
-8. **Git info** — `git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"`
+   missing, record "MISSING". Read two groups of fields apart, because they have
+   different writers and a report that confuses them files the wrong finding:
+   `init_status`, `init_recipe`, `validated`, `confirmed_by_user`, `loci_target`,
+   `compiler`, `compiler_path`, `build_system` and `artifact` all
+   come from **`loci init`, out of the recipe** — the session writes only
+   `detection_status` and `subproject_roots` (the gate's answer; the scan that used
+   to fill the rest is gone). A `null` in the recipe group means *no recipe stands
+   behind this context* — which is true of a project that was never initialized
+   **and** of one whose last init FAILED against a recipe still on disk.
+   `init_status` is what separates them; record it verbatim — and note it has a
+   second writer of its own: the session writes `uninitialized` for an armed
+   project `loci init` has never seen, and in the inactive branches the key is
+   **absent** rather than null. "Absent", "uninitialized", "failed" and "ok" are
+   four different findings.
+8. **CLI health** — run `loci doctor` and record `data.report` (covers Python
+   3.12, asmslicer, analysis deps, c++filt, the Rust demangler, cross-compilers,
+   credential store, and the state dir). If `loci` is unavailable, record "loci not on PATH".
+9. **Git info** — `git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"`
    and `git log --oneline -3 2>/dev/null || echo "no git history"`
-9. **Hooks config** — Read `<plugin-dir>/hooks/hooks.json`. If missing,
+10. **Hooks config** — Read `<plugin-dir>/hooks/hooks.json`. If missing,
    record "MISSING".
-10. **CLI auth** — run `loci auth status` and record signed-in / signed-out.
+11. **CLI auth** — run `loci auth status` and record signed-in / signed-out.
     (The plugin no longer registers an MCP server; all backend calls go through
     the `loci` CLI and authenticate on demand via `! loci login`.)
-11. **Turn baselines** — the per-turn trees `loci build snapshot --turn` writes,
-    which are what a post-edit "Before" is read from. Substitute the
-    `project_root` you read in step 6 for `<project-root>` before running this;
+12. **Turn baselines** — the per-turn trees `loci build snapshot --turn` writes,
+    which are what a post-edit "Before" is read from, under the one build root the
+    CLI reads: `.loci/build/`. (A `.loci-build/` beside it is a pre-move CLI's
+    leftover; nothing reads it, and a tree under it is not a baseline.) Substitute
+    the `project_root` you read in step 6 for `<project-root>` before running this;
     the fence sets it itself so nothing depends on an exported variable:
 
     ```bash
     ROOT='<project-root>'
-    for t in "$ROOT"/.loci-build/turns/*/; do
+    . '<plugin-dir>/lib/loci_json.sh'
+    for t in "$ROOT"/.loci/build/turns/*/; do
       [ -d "$t" ] || continue
+      loci_json_load "$(cat "$t/turn.json" 2>/dev/null)"
       printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$(date -r "$t" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo '?')" \
-        "$(jq -r '.turn // "?"' "$t/turn.json" 2>/dev/null || echo '?')" \
+        "$(date -r "$t" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null \
+           || date -r "$(stat -f %m "$t" 2>/dev/null)" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null \
+           || echo '?')" \
+        "$(loci_json_get turn || echo '?')" \
         "$(find "$t/orig" -type f 2>/dev/null | wc -l)" \
         "$(find "$t/obj" -name '*.o' 2>/dev/null | wc -l)" \
         "$t"
     done | sort | tail -10
     ```
 
-    Each row is `mtime, turn id, captured sources, reconstructed objects, path`.
-    Record all of it, or "none" when there are no rows. Sorting is on the
+    `lib/loci_json.sh` is the plugin's own forkless JSON reader, the one the hooks
+    use. It is sourced here for the same reason they use it: `jq` is a host tool
+    the plugin does not ship, and a diagnostic that reports `?` for every turn id
+    on a machine without one is a diagnostic that hides the state it was run to
+    find.
+
+    One `sort` over every tree, then `tail -10`: the newest ten. The mtime is
+    read GNU-first then BSD, like every other mtime read in this plugin —
+    `date -r FILE` is a file mtime on GNU and an *epoch* on BSD/macOS, where it
+    errors on a path. A row that fell back to `?` would sort on the turn digest,
+    which the paragraph below says is uncorrelated with time. Each row is
+    `mtime, turn id, captured sources, reconstructed objects, path`. The CLI
+    stamps each turn once and never copies a tree, so two rows with the same
+    turn id would mean something wrote one by hand. Record all of it, or "none"
+    when there are no rows. Sorting is on the
     **timestamp** because the directory name is a one-way digest of the turn id —
     lexical order is uncorrelated with time, and `turn.json` is the only place the
     id itself survives. Also record whether `uncaptured.jsonl` exists in the tree
@@ -131,13 +171,78 @@ Run these in parallel where possible via Bash and Read:
       outright, so a cargo project always shows `0`. Only treat it as a
       reconstruction failure when the report is about a header edit.
 
-12. **Rust toolchain** (only when the project context shows
+13. **The build recipe and its escrow** — every measurement resolves its flags
+    from the recipe, so a report about wrong numbers that does not say which
+    recipe governed the run is missing its first fact. `probe` writes nothing and
+    runs signed out:
+
+    ```bash
+    loci init probe --project-root '<project-root>'
+    ```
+
+    Substitute the `project_root` from step 6, as item 11 does. If step 6 recorded
+    "MISSING", drop the flag entirely — probe defaults to the current directory,
+    which is a better answer than a placeholder.
+
+    Record from `.data`: `initialized`, and when true the `recipe` block's `path`,
+    `target`, `validated` (the tier the flags were demonstrated at),
+    `confirmed_by_user` and **`escrow`** — the out-of-repo integrity record at
+    `<LOCI_STATE_DIR>/recipe-escrow-<cwd_hash>.json`. `ok` means the recipe's bytes
+    are the ones `loci init` wrote; `missing` means nothing vouches for them and
+    `confirmed_by_user` can still read `true` beside it; `unchecked` means this
+    load did not verify it, which is not the same as either. A recipe the CLI
+    would **refuse** never reaches that block at all — it comes back under
+    `data.recipe_untrusted`, whose string carries the code. Record that string
+    verbatim and do **not** read it as tampering: `recipe_tampered` is only one of
+    the codes that land there, alongside `recipe_stale`, `recipe_invalid`,
+    `compiler_missing` and an `unreadable:` prefix for a recipe that would not
+    parse at all — a cross-compiler someone uninstalled produces the same key. For the same reason `initialized` reads `false` for all four, so it is
+    not evidence that no recipe exists; the `recipe_untrusted` string is.
+
+    On a CLI predating the recipe (`invalid choice: 'init'`), say so and fall back
+    to `init_status` / `init_recipe` / `validated` / `confirmed_by_user` from the
+    project context: the same values, as of the last successful init.
+
+14. **Rust toolchain** (only when the project context shows
     `build_system: "cargo"`) — record `cargo --version`, `rustc --version`,
     and `rustup target list --installed 2>/dev/null | head -10` (each falling
     back to "not found"). Rust compile failures usually trace to a missing
     rustup std for the LOCI target.
 
-## Step 2: Run 11-point diagnostics checklist
+15. **Go toolchain** (only when the project context shows `build_system: "go"`
+    or `"tinygo"`) — record `go version`, falling back to "not found".
+
+    **The two Go values this step needs are in the recipe FILE, not in any
+    envelope.** `loci init probe`'s `recipe` block carries `path`, `target`,
+    `validated`, `confirmed_by_user` and `escrow` — it has no `go:` block. Read
+    them from the file that `path` names:
+
+    ```
+    sed -n '/^go:/,/^[a-z]/p' "<data.recipe.path>"
+    ```
+
+    Substitute the literal path the probe envelope printed under
+    `data.recipe.path`. No path means no recipe, and there is nothing to read.
+
+    (`data.recipe` is an object here and a plain path string in an `init`
+    envelope — read the one the verb you ran actually returns.)
+
+    For a TinyGo project also record `tinygo version` and, when the block gave a
+    board, `tinygo info -target=<board> 2>&1 | head -5`. **Do not run
+    `tinygo info` with an empty `-target=`** — it errors, and an empty board is
+    itself the finding. Two Go-specific failures are worth naming because neither
+    looks like a toolchain problem in the report:
+
+    - **A version skew between `go` and `tinygo`.** TinyGo pins a supported Go
+      range and refuses outside it with `requires go version 1.25 through 1.27,
+      got go1.24` — a build failure whose cause is the *other* tool's version.
+    - **A missing symbol is usually inlining, not a broken build.** Go inlines
+      small functions into their callers by default, so "the function I edited
+      is not in the binary" is expected rather than a defect. `go.gcflags` from
+      the block above says which: empty means inlining is on, `-l` means the user
+      has already traded it away.
+
+## Step 2: Run 10-point diagnostics checklist
 
 For each check, record status (PASS / FAIL) and a detail string.
 
@@ -145,17 +250,16 @@ For each check, record status (PASS / FAIL) and a detail string.
 |---|-------|-------------|-----------|
 | 1 | loci CLI available & signed in | `command -v loci` resolves AND `loci auth status` exits 0 (`data.status == "signed_in"`) | loci on PATH and signed in |
 | 2 | Session context exists | `<project-context>` (keyed file) exists and contains `project_root` | File exists with key |
-| 3 | Compiler detected | `compiler` field in `<project-context>` is not `unknown` or empty | Has a value |
-| 4 | Architecture detected | `architecture` field in `<project-context>` is not `unknown` or empty | Has a value |
-| 5 | LOCI target supported | `loci_target` in `<project-context>` is one of: `aarch64`, `armv7e-m`, `armv6-m`, `tc399` | Value in set |
-| 6 | loci CLI healthy | `loci doctor` exits 0 and `data.healthy` is true (covers Python 3.12, asmslicer, analysis deps, c++filt, cross-compilers, credential store, state dir) | Exit 0 / healthy |
-| 7 | Build artifacts exist | Read `loci_artifacts` and `elf_files` from `<project-context>`; fall back to a glob for `.loci-build/**/*.o` **that skips `.loci-build/turns/`, `.loci-build/cargo/`, `.loci-build/elf/` and every `.loci-stage-*/` directory at any depth**, or any `.elf`/`.o`/`.axf` in the project root | At least one found |
-| 8 | Analysed artifact is not stale | For each candidate from check 7 (cap at 5, newest first) run `loci build fresh --elf <path>` and read `.data.role` **before** `.data.stale` + `.data.sources_newer` | No candidate reports `stale: true`, **unless** its `role` is exactly `"baseline"` |
-| 9 | session-init executable | `test -x <plugin-dir>/hooks/session-init.sh` | Exit code 0 |
-| 10 | hooks.json valid | `<plugin-dir>/hooks/hooks.json` parses with `jq .` | Valid JSON |
-| 11 | Quota not exceeded | If check 1 passed (signed in), run `loci usage` and read `data.eligible` / `data.daily` (`{used, limit}`). | `data.eligible` is true |
+| 3 | Compiler recorded | `compiler` field in `<project-context>` is not `unknown`, `null` or empty (recipe-only since T14: the session no longer scans PATH) | Has a value |
+| 4 | LOCI target supported | `loci_target` in `<project-context>` is one of: `aarch64`, `armv7e-m`, `armv6-m`, `tc399` | Value in set |
+| 5 | loci CLI healthy | `loci doctor` exits 0 and `data.healthy` is true (covers Python 3.12, asmslicer, analysis deps, c++filt, the Rust demangler, cross-compilers, credential store, state dir) | Exit 0 / healthy |
+| 6 | Build artifacts exist | Read `artifact` from `<project-context>` (the recipe's own, written by `loci init`); fall back to a glob for `**/*.o` under the one build root, `.loci/build/` — **skipping `turns/`, `cargo/`, `dumps/` (and the pre-rename `elf/`) and every `.loci-stage-*/` directory at any depth** — or any `.elf`/`.o`/`.axf` in the project root. A `.loci-build/` beside it is a pre-move CLI's leftover and is not searched | At least one found |
+| 7 | Analysed artifact is not stale | For each candidate from check 6 (cap at 5, newest first) run `loci build fresh --elf <path>` and read `.data.role` **before** `.data.stale` + `.data.sources_newer` | No candidate reports `stale: true`, **unless** its `role` is exactly `"baseline"` |
+| 8 | session-init executable | `test -x <plugin-dir>/hooks/session-init.sh` | Exit code 0 |
+| 9 | hooks.json valid | Read `<plugin-dir>/hooks/hooks.json` — it parses as JSON and its `hooks` key holds the event arrays | Valid JSON |
+| 10 | Quota not exceeded | If check 1 passed (signed in), run `loci usage` and read `data.eligible` / `data.daily` (`{used, limit}`). | `data.eligible` is true |
 
-Check 8 is here because **"the results are wrong" is most often "the results
+Check 7 is here because **"the results are wrong" is most often "the results
 describe a different binary"** — that is the defect behind the report this check
 was added for. Record, per candidate, the artifact path, its `elf_mtime`, `role`,
 `stale`, and the first entry of `sources_newer` (path + `newer_by_s`), so a
@@ -167,8 +271,8 @@ its `reason` (usually no `-g`, or built on another machine).
 than its sources *by construction* — that is what makes it the "before" side — so
 `role: "baseline"` with `stale: true` is the healthy state and never a FAIL. Record
 it as `baseline (expected)`. Two kinds of artifact answer `baseline`: a `.prev`
-written by `loci build snapshot`, and anything under `.loci-build/turns/`, which is
-where `loci build compile --baseline` reconstructs a header edit's Before. The
+written by `loci build snapshot`, and anything under either root's `turns/`, which
+is where `loci build compile --baseline` reconstructs a header edit's Before. The
 envelope's own `recommendation` says the same thing in a sentence — and note its
 advice for a stale baseline is *not* "rebuild", because rebuilding one destroys the
 very state it is the baseline of.
@@ -181,29 +285,47 @@ exactly the installs most likely to have the problem — a demonstrably stale ob
 recorded as PASS. Only the literal string `"baseline"` exempts a candidate; absent,
 null, or anything else is treated as `measured` and a `stale: true` FAILs.
 
-That is also why check 7's fallback glob skips `turns/`: everything under it is a
+That is also why check 6's fallback glob skips `turns/`: everything under it is a
 Before, and a Before is never the answer to "which artifact is being measured".
 
 **And why it skips `.loci-stage-*/`.** `loci build compile` writes its object into
 a private `.loci-stage-<x>/` beside the destination and renames it out, so nothing
 partial is ever visible at the object's real path. A compile that is *killed*
 leaves that directory behind, holding a file called `<stem>.o` that is the newest
-object under `.loci-build` — so an unpruned glob reports it as the artifact being
-measured, and `loci build reap` deletes it out from under the next check. Prune it
+object under the build root — so an unpruned glob reports it as the artifact being
+measured, and `loci build clean` deletes it out from under the next check. Prune it
 at every depth: it sits beside its destination, not at a fixed level.
-`loci_artifacts` in `<project-context>` already prunes those three subtrees
-(`find_loci_artifacts` in `lib/detect-project.sh`), so the fallback exists to agree
-with it — a glob that reaches wider than the list it stands in for reports a
-different project than every other check does. `cargo/` is LOCI's private
-`CARGO_TARGET_DIR` (hundreds of build-script objects, and the crate's real object is
-published above it) and `elf/` holds text dumps, not artifacts.
+The same prune list `loci build clean` walks by, so the fallback agrees with the
+CLI about what is an artifact — a glob that reaches wider than the CLI's own view
+reports a different project than every other check does. `cargo/` is LOCI's
+private `CARGO_TARGET_DIR` (hundreds of build-script objects, and the crate's real
+object is published above it) and `dumps/` holds text dumps, not artifacts.
 
-If `loci` is not on PATH, checks 6, 8 and 11 automatically FAIL (the analysis
+**Checks 3, 4 and 6 move together, and the pattern is the finding.** Since
+T14 the session writes nothing about a project's build — no scan runs — so
+`compiler`, `loci_target` and `artifact` are all `loci init`'s
+and stand or fall with the recipe. Three shapes, each a different finding:
+
+- **all three present, `init_status: ok`** — a recipe governs; each check judges
+  its own value.
+- **all three absent, `init_status` absent or `uninitialized`** — no recipe yet.
+  Checks 3, 4 and 6 fail together and that is ONE finding — the project is not
+  initialized — said once, citing step 1's snapshot; the first analysis will run
+  `/loci:init`.
+- **all three absent, `init_status` is `unsupported` or `needs_user`** — init
+  stopped before recording anything, and the finding is `init_status`.
+- **`compiler` is `null` beside a `.loci/build.yaml` on disk** — `loci init` wrote
+  the file with its no-recipe branch and no scan reran, so `init_status` is
+  `failed`. Check 3 fails while a recipe exists; the finding is the failed init,
+  and `null` (init wrote it) is a different signal from `"unknown"` (the scan did)
+  and from absent (nobody did).
+
+If `loci` is not on PATH, checks 5, 7 and 10 automatically FAIL (the analysis
 stack lives inside the CLI; `loci doctor` reports the specific missing piece).
-If check 1 failed (not signed in), check 11 automatically FAILs with
+If check 1 failed (not signed in), check 10 automatically FAILs with
 "not signed in — cannot check quota".
 
-Check 11 is the only check that reaches the backend. Skip it if check 1
+Check 10 is the only check that reaches the backend. Skip it if check 1
 failed; record "skipped: not signed in" in the detail column.
 
 ## Step 3: Collect stats
@@ -214,7 +336,9 @@ loci stats summary --context-file "<project-context>"
 loci stats global-summary
 ```
 
-Record `data.report` from each, or "stats unavailable — loci not working".
+Record `data.report` from each, or the reason it did not run: both verbs need a
+session, so a signed-out run records "stats unavailable — not signed in", which is
+a different finding from "stats unavailable — loci not working".
 
 ## Step 4: Reasoning — common failure forensics
 
@@ -232,16 +356,16 @@ investigate:
    from the SKILL.md and note which matched or didn't.
 
 2. **Auto-run conditions** — for auto-triggered skills:
-   - `loci-post-edit`: Was the edited file a C/C++/Rust source
-     (.c, .cc, .cpp, .cxx, .h, .hpp, .hxx, .rs)? Was an Edit/Write
+   - `loci-post-edit`: Was the edited file a C/C++/Rust/Go source
+     (.c, .cc, .cpp, .cxx, .c++, .rs, .go, .h, .hpp, .hxx, .h++, .hh, .inc, .ipp, .tcc, .inl, .tpp, .def)? Was an Edit/Write
      tool used?
    - `loci-preflight`: Was Claude in `/plan` mode when the user described
      new logic?
 
 3. **Skill visibility** — is the skill listed in the `Available:` line of the
    session-reminder? Currently expected:
-   `/help, /exec-trace, /stack-depth, /memory-report, /control-flow, /bug-report`.
-   If not, session-init may not have registered it.
+   `/loci:help, /loci:init, /loci:exec-trace, /loci:stack-depth, /loci:memory-report, /loci:control-flow,
+   /loci:contract, /loci:bug-report`. If not, session-init may not have registered it.
 
 4. **Deferred tools** — check if `loci:loci-post-edit`, `loci:loci-preflight`,
    `loci:trends`, etc. appear in the system-reminder available skills list.
@@ -257,7 +381,7 @@ used, investigate:
 
 0. **Which binary was measured, and was it current?** Check this first — it is the
    cheapest explanation for "the numbers are wrong" and the one that has actually
-   happened. Take check 8's output: if the artifact the skill analysed reports
+   happened. Take check 7's output: if the artifact the skill analysed reports
    `stale: true`, the numbers describe a program that is no longer on disk, and
    nothing downstream needs investigating. Two shapes to separate:
    - **stale linked ELF** — the project's own build predates the edit. The report
@@ -266,12 +390,19 @@ used, investigate:
      unapplied relocations, so a worst-case depth or a cross-call timing measured
      from a `.o` collapses to the single function, with `has_unknown_callees: false`
      and no warning. Correct artifact, wrong scope. Check the report's `Artifact:`
-     provenance line (Pattern B, B4) for which of the two it was; if that line is
+     provenance line for which of the two it was; if that line is
      missing altogether, record *that* as the finding.
+   - **right artifact, wrong flags** — the numbers rest on the recipe, so a run
+     whose `Recipe:` line reads `unvalidated`, or that carried a `flag_source_v2`
+     warning about a `flags.json` `mode: "replace"` pin used *instead of* the
+     recipe, measured a build the project does not make. Step 1's snapshot shows
+     it.
 
 1. **Compilation** — did the compilation step succeed? Look for compiler errors,
-   missing headers, wrong flags. Check if the compiler from `<project-context>`
-   is actually installed: `which <compiler>`.
+   missing headers, wrong flags. Do **not** go hunting for the compiler: a recipe
+   naming one this machine does not have answers `compiler_missing`, whose one
+   recovery is `/loci:init --refresh`, and the envelope says so. Record the
+   `error.code` the compile returned; it is the diagnosis.
 
 2. **`loci elf` output** — did `loci elf asm` or `loci elf cfg` return an
    `{"ok":true,"data":…}` envelope? Common failures: function name not found in
@@ -292,8 +423,8 @@ used, investigate:
    returned data but Claude didn't use it, note the gap.
 
 5. **Delta comparison** — for post-edit: did the compile report a baseline, i.e.
-   was `data.output_prev` present (equivalently, did the compile-and-read-back
-   script print a non-empty `PREV`)? Ask it that way round, not "does a `.o.prev`
+   was `data.output_prev` present (equivalently, does `prepare`'s `provenance[]`
+   line carry a `before`)? Ask it that way round, not "does a `.o.prev`
    file exist": a `.prev` can sit on disk and still be **correctly withheld** —
    built from a different source, or with different flags, or captured for another
    turn — and any accompanying `NOTE` says which, as does the compile envelope's own
@@ -361,6 +492,7 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 | Claude Code | <claude --version output> |
 | Claude model | <model ID, e.g. claude-opus-4-7> |
 | LOCI plugin | <plugin version from plugin.json> |
+| loci CLI | <loci --version output, or "unknown"> |
 | OS | <uname -a output> |
 
 ## User Description
@@ -375,11 +507,14 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 | Git branch | <branch> |
 | Compiler | <compiler or "unknown"> |
 | Build system | <build_system or "unknown"> |
-| Architecture | <architecture or "unknown"> |
 | LOCI target | <loci_target or "unknown"> |
 | Auth status | <signed in / not signed in> |
 | loci CLI | <path from `command -v loci`, or "unavailable"> |
 | LOCI_STATE_DIR | <resolved path> |
+| init_status | <from `<project-context>`, or "absent"> |
+| Recipe | <`recipe.path`, or "none — `initialized: false`", or the `recipe_untrusted` string verbatim> |
+| Recipe validated | <tier + `confirmed_by_user`, or "n/a"> |
+| Recipe escrow | <`ok` / `missing` / "n/a — no recipe"> |
 
 ## Diagnostics Checklist
 
@@ -387,17 +522,16 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 |---|-------|--------|--------|
 | 1 | loci CLI available & signed in | <PASS/FAIL> | <detail> |
 | 2 | Session context exists | <PASS/FAIL> | <detail> |
-| 3 | Compiler detected | <PASS/FAIL> | <detail> |
-| 4 | Architecture detected | <PASS/FAIL> | <detail> |
-| 5 | LOCI target supported | <PASS/FAIL> | <detail> |
-| 6 | loci CLI healthy | <PASS/FAIL> | <detail> |
-| 7 | Build artifacts exist | <PASS/FAIL> | <detail> |
-| 8 | Analysed artifact is not stale | <PASS/FAIL> | <detail, e.g. "kernel.elf stale — blink.c 225s newer" or "3 candidates current" or "unverified: no DWARF"> |
-| 9 | session-init executable | <PASS/FAIL> | <detail> |
-| 10 | hooks.json valid | <PASS/FAIL> | <detail> |
-| 11 | Quota not exceeded | <PASS/FAIL> | <detail, e.g. "18,000 / 30,000 daily tokens (free)" or "LIMIT REACHED — 35,000 / 30,000"> |
+| 3 | Compiler recorded | <PASS/FAIL> | <detail> |
+| 4 | LOCI target supported | <PASS/FAIL> | <detail> |
+| 5 | loci CLI healthy | <PASS/FAIL> | <detail> |
+| 6 | Build artifacts exist | <PASS/FAIL> | <detail> |
+| 7 | Analysed artifact is not stale | <PASS/FAIL> | <detail, e.g. "kernel.elf stale — blink.c 225s newer" or "3 candidates current" or "unverified: no DWARF"> |
+| 8 | session-init executable | <PASS/FAIL> | <detail> |
+| 9 | hooks.json valid | <PASS/FAIL> | <detail> |
+| 10 | Quota not exceeded | <PASS/FAIL> | <detail, e.g. "18,000 / 30,000 daily tokens (free)" or "LIMIT REACHED — 35,000 / 30,000"> |
 
-**Result: <N>/11 checks passed.**
+**Result: <N>/10 checks passed.**
 
 ## Reasoning
 
@@ -440,6 +574,18 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 
 ```json
 <sanitized contents or "MISSING">
+```
+</details>
+
+<details>
+<summary>loci init probe</summary>
+
+```json
+<`loci init probe` .data — `initialized`, the `recipe` block and
+`recipe_untrusted` ONLY; or "loci init probe unavailable (CLI predates the
+recipe)". Do not paste the whole envelope: its `sources` and `compilers[].path`
+are absolute paths across the user's machine, and this file is written to be
+shared.>
 ```
 </details>
 
@@ -495,7 +641,7 @@ After writing the report file, display a concise summary:
 ```
 ## LOCI Diagnostic Summary
 
-<N>/11 checks passed.
+<N>/10 checks passed.
 
 **Root cause:** <one-sentence diagnosis>
 

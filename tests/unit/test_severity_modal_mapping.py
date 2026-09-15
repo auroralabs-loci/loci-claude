@@ -1,7 +1,7 @@
 """Lint: severity is drafted from the sentence's modal, not from the model's mood.
 
 Before this rule the only instruction was "set `severity` when the user said so",
-so an unhedged requirement and a nice-to-have both landed at `warn` unless the
+so an unhedged requirement and a nice-to-have both landed at `caution` unless the
 user happened to say "hard fail" out loud — two identical sentences could draft
 two different severities across sessions. The mapping table is what makes it
 reproducible, and the weaker-word rule is what keeps a preference from being
@@ -32,14 +32,14 @@ def test_blocking_modals_map_to_fail(modal):
 
 
 @pytest.mark.parametrize("modal", ("should", "can", "nice to have", "just warn me"))
-def test_hedged_modals_map_to_warn(modal):
+def test_hedged_modals_map_to_caution(modal):
     assert modal in _text(), f"{modal!r} is not mapped to a severity"
 
 
 def test_the_mapping_is_stated_as_a_rule_and_not_only_as_examples():
     body = _text()
     assert "`severity` follows the modal in the sentence" in body
-    assert "Omitted means `warn`" in body, "the absent-severity default was lost"
+    assert "Omitted means `caution`" in body, "the absent-severity default was lost"
 
 
 def test_a_mixed_sentence_resolves_downward():

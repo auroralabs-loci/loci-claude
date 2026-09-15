@@ -2,17 +2,17 @@
 name: contract
 description: >
   Author and inspect this repository's Contract Envelope (.loci/contract.yaml) —
-  the stack, timing, energy, memory and structural bounds every LOCI measurement
-  is judged against.
+  the stack, timing, energy, memory and structural bounds that let LOCI judge a
+  measurement rather than merely report it.
 when_to_use: >
   When user states a limit as a requirement: "set a budget", "add a bound", "no
   more than N bytes of stack for X", "max limit of N", "cap X at N", "X must not
   exceed N", "I want function X to stay under N", "fail the build if timing
-  regresses". Also "what are my limits", "show the contract", or /contract; and
-  when a LOCI skill reported that no bounds are set for this repository and the
-  user wants to fix that. Requirement vs. measurement: if the user states a
+  regresses". Also "what are my limits", "show the contract", or /loci:contract; and
+  when the user asks why a report judged nothing, or how to make LOCI enforce
+  something. Requirement vs. measurement: if the user states a
   limit, use this skill (draft a bound). If they ask what the current usage or
-  worst case actually is, that is stack-depth, exec-trace or memory-report
+  worst case actually is, that is /loci:stack-depth, /loci:exec-trace or /loci:memory-report
   instead — those measure, this one authors the bound they are judged against.
 ---
 
@@ -21,6 +21,15 @@ when_to_use: >
 `.loci/contract.yaml` holds the bounds this repository requires — one committed
 file, a flat list of entries. Every LOCI skill reads it and judges its findings
 against it.
+
+**A contract is what buys enforcement.** Without one, every row's `STATUS` is the
+word the agent's own assessment maps to and the verdict comes from a reading of
+the figures: LOCI reports the number and argues about it, but nothing was
+compared, which is what the caption under such a table says. An entry here is
+what puts a *computed* word in that column. That is a fact about how the
+verdict vocabulary works — see `<plugin-dir>/skills/_shared/verdicts.md` — and
+not a reason for a measuring skill to advertise this one. Skills never prompt for
+setup; the user arrives here by asking.
 
 **One rule governs this whole skill: you draft, the user applies.**
 
@@ -36,8 +45,8 @@ file as what the repository requires, while the release evidence bundle cites it
 to a certification reader. So a fabricated entry does not stay local. It also
 means you never resolve a failing bound by moving it.
 
-Every `loci` call prints one JSON envelope (`{ok,data}`); parse it with `jq` and
-branch on `.ok`. These verbs need no sign-in.
+Every `loci` call prints one JSON envelope (`{ok,data}`); let it print and branch
+on `ok`. These verbs need no sign-in.
 
 ## Step 1 — Read before proposing
 
@@ -49,6 +58,10 @@ loci contract show
   (missing, empty, or everything disabled); go to Step 5.
 - Otherwise show the user the entries that bear on what they asked, with their
   `index`. They cannot amend what they cannot see.
+- Each entry also carries `entry_key` — the identity a request, a judged row and a
+  run line name it by. `index` is its position in the file and moves when an entry
+  is inserted above it; `entry_key` does not. Use `index` for the draft verbs, and
+  `entry_key` to match an entry against a recorded run.
 - `data.draft` present → a draft is already pending. Say what is in it
   (`loci contract draft show`) before adding to it. If `data.draft.stale` is
   true, the contract moved underneath it: run `loci contract draft clear` and
@@ -81,17 +94,19 @@ Rules, in order of how often they are got wrong:
   `2 KB` → `{"max": 2048, "unit": "B"}` while `text` still says "2 KB".
   | signal | unit |
   |---|---|
-  | `stack_depth`, `rom_size`, `ram_size` | `B` |
-  | `exec_time` | `ns` |
+  | `stack_depth`, `stack_frame_size`, `rom_size`, `ram_size` | `B` |
+  | `hot_path_time`, `worst_path_time` | `ns` |
   | `energy` | `uWs` |
-- **A timing bound is always response time — say so when you draft one.**
-  `exec_time` means worst-case latency from entry to exit *including callees* —
-  the metric preflight and post-edit record. Tell the user that in the draft, so
-  they know the budget covers the whole call and not the function's own code.
-  Never draft `exec_time` against exec-trace's throughput time (self-time,
-  callees excluded); it is a different metric and a bound written against it
-  judges the wrong number. If the user's sentence is about a function's own code
-  in isolation, say so and confirm the limit they mean is still end-to-end.
+- **Never draft `exec_time`** — it is deprecated and `loci contract lint` warns on
+  it. Draft `hot_path_time` for the normal case, `worst_path_time` for the worst
+  case. An existing entry keeps working until the removal; do not rewrite one
+  without asking.
+- **A timing bound covers the function's own code — say so when you draft one.**
+  Every LOCI timing signal is callee-excluded: a `bl` costs the call, never the
+  callee body. Tell the user that in the draft, so they know the budget does not
+  cover the whole call tree. If the user's sentence is about end-to-end latency
+  through the callees, say that LOCI does not measure it and confirm the limit
+  they mean is the function's own blocks.
   `energy` shares that basis — exec-trace's `energy_uws` is self-scoped too — so
   an energy bound off an exec-trace figure is wrong the same way. The memory and
   stack signals have no such split and need no such heads-up.
@@ -108,7 +123,7 @@ Rules, in order of how often they are got wrong:
 - **A `bound` needs a limit** — `max`, `min`, or `max_delta`. A `bound` carrying
   only a `unit` is rejected: it reads as enforceable and can never be judged.
 - **Structural signals** (`unbounded_recursion`, `recursion_cycles`,
-  `unresolved_indirect_calls`, `unknown_callees`) are `invariant` with
+  `indirect_calls`, `unknown_callees`) are `invariant` with
   `bound: {max: 0}` and no `function` — they cover the whole binary, and a
   `function` on one is rejected. `stack-depth` is what measures all four, over a
   linked binary; the count it reports is what the bound is judged against.
@@ -117,11 +132,14 @@ Rules, in order of how often they are got wrong:
   | the sentence says | `severity` |
   |---|---|
   | must, shall, never, no more than, hard fail, fail the build | `fail` |
-  | should, can, prefer, try to, ideally, nice to have, just warn me | `warn` |
+  | should, can, prefer, try to, ideally, nice to have, just warn me | `caution` |
   | no modal at all — "cap it at 2 KB", "budget is 200 ns" | omit it |
-  Omitted means `warn`. There is no `defaults:` block; never write one.
+  Omitted means `caution`. There is no `defaults:` block; never write one.
+  Never draft `warn`: it is the pre-2026-09-03 spelling, read as `caution` with a
+  lint notice. An existing one still enforces its bound — report the notice, and
+  change the file only if the user asks.
   Two ways this goes wrong: a sentence carrying both ("should never exceed") is
-  `warn` — **the weaker word governs**, because escalating a preference into a
+  `caution` — **the weaker word governs**, because escalating a preference into a
   build failure is the costlier error; and a modal you are guessing at is one to
   ask about, not to pick. An explicit "hard fail" / "just warn me" always wins
   over the table.
@@ -213,14 +231,15 @@ commit shares it with the team and the portal.
    ROM/RAM. Their pick chooses the *signal* only — you still ask for the number
    and still use their sentence verbatim.
 3. **Never invent their numbers.** A budget needs a limit only this project
-   knows. If the user does not have one yet, `/stack-depth` or `/exec-trace`
+   knows. If the user does not have one yet, `/loci:stack-depth` or `/loci:exec-trace`
    will measure a real value to bound.
 4. If entries exist but are all disabled, say so and show them — re-enabling
    (`draft enable --index <n>`) may be all that is needed.
 5. Nothing is written until they accept a draft.
 
-Do not mention `loci contract init` or a starter set — that flow is internal
-(reserved for seeding LOCI's internal gates later) and not user-facing yet.
+Do not mention `loci contract init` — that flow is internal (it seeds a new
+file's entries) and not user-facing yet. There is no built-in set of bounds
+either: a repo with no contract file is judged against nothing.
 
 ## Step 6 — On the way out
 

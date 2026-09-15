@@ -1,4 +1,4 @@
-"""`/bug-report`'s turn-baseline recipe, run as the file ships it.
+"""`/loci:bug-report`'s turn-baseline recipe, run as the file ships it.
 
 The turn tree is where a post-edit "Before" comes from, and its directory name is a
 one-way digest of the turn id — so `turn.json` is the only place the id survives.
@@ -45,10 +45,7 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(
-    _find_bash() is None or shutil.which("jq") is None,
-    reason="bash and jq required",
-)
+pytestmark = pytest.mark.skipif(_find_bash() is None, reason="bash required")
 
 
 def _to_bash_path(p: Path) -> str:
@@ -74,10 +71,11 @@ def _recipe() -> str:
     # was the first version's root variable and the skill assigns it nowhere, so the
     # recipe silently reported "no turn baselines" for every project; only the test
     # harness, which exported it, made it work.
-    assert _PLACEHOLDER in program, (
-        f"the recipe no longer carries the {_PLACEHOLDER} the prose tells the model "
-        f"to substitute:\n{program}"
-    )
+    for placeholder in (_PLACEHOLDER, _PLUGIN_PLACEHOLDER):
+        assert placeholder in program, (
+            f"the recipe no longer carries the {placeholder} the prose tells the "
+            f"model to substitute:\n{program}"
+        )
     for name in re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", program):
         assert name in {"ROOT", "t"} or f"{name}=" in program, (
             f"the recipe reads ${name}, which nothing in it or in the skill sets"
@@ -85,8 +83,17 @@ def _recipe() -> str:
     return program
 
 
-def _tree(root: Path, key: str, turn: str, *, sources: int, objects: int) -> None:
-    t = root / ".loci-build" / "turns" / key
+#: The one build root the recipe walks. `.loci/build/` is where the CLI writes
+#: since the layout moved; `.loci-build/` is where it wrote before, read beside
+#: the new one for a soak and not at all since T14 — a tree under it is a
+#: pre-move CLI's litter, not a baseline, and the recipe must not report one.
+_LEGACY_ROOT = ".loci-build"
+_NEW_ROOT = ".loci/build"
+
+
+def _tree(root: Path, key: str, turn: str, *, sources: int, objects: int,
+          build_root: str = _NEW_ROOT) -> None:
+    t = root.joinpath(*build_root.split("/")) / "turns" / key
     (t / "orig" / "src").mkdir(parents=True, exist_ok=True)
     (t / "obj" / "9-abcd").mkdir(parents=True, exist_ok=True)
     (t / "turn.json").write_text(
@@ -103,6 +110,12 @@ def _tree(root: Path, key: str, turn: str, *, sources: int, objects: int) -> Non
 
 _PLACEHOLDER = "<project-root>"
 
+#: The recipe sources the plugin's own forkless JSON reader rather than spawning a
+#: `jq`. `jq` is a HOST tool the plugin does not ship, and a diagnostic that reports
+#: `?` for every turn id on a machine without one hides the state it was run to find
+#: — so the PATH below carries no jq, and the tests fail if the recipe wants one.
+_PLUGIN_PLACEHOLDER = "<plugin-dir>"
+
 
 def _run(project_root: Path) -> list[list[str]]:
     """Run the recipe with the substitution the skill tells the model to make.
@@ -116,11 +129,12 @@ def _run(project_root: Path) -> list[list[str]]:
 
     So: nothing is exported, the placeholder is substituted the way the prose says,
     and `_recipe()` asserts the placeholder is still there to substitute."""
-    program = _recipe().replace(_PLACEHOLDER, _to_bash_path(project_root))
+    program = (_recipe().replace(_PLACEHOLDER, _to_bash_path(project_root))
+                        .replace(_PLUGIN_PLACEHOLDER, _to_bash_path(PLUGIN_ROOT)))
     proc = subprocess.run(
         [_find_bash(), "-c", program],
         capture_output=True, text=True, timeout=60,
-        env={"PATH": f"{_to_bash_path(Path(shutil.which('jq')).parent)}:/usr/bin:/bin"},
+        env={"PATH": "/usr/bin:/bin"},
     )
     assert proc.returncode == 0, f"stderr={proc.stderr!r}"
     rows = [ln.split("\t")
@@ -146,6 +160,31 @@ def test_the_recipe_reports_the_turn_id_and_both_counts(tmp_path):
     assert rows[0]["mtime"].startswith("20"), rows
 
 
+def test_the_path_names_the_root_the_cli_writes(tmp_path):
+    """`.loci/build/turns/` is the root that holds every capture a current
+    install makes, and the path column is what makes a row actionable."""
+    _tree(tmp_path, "aaaa1111", "turn-new", sources=2, objects=1)
+    rows = _run(tmp_path)
+    assert len(rows) == 1, rows
+    assert "/.loci/build/turns/aaaa1111/" in rows[0]["path"].replace("\\", "/"), rows
+
+
+def test_a_tree_under_the_legacy_root_is_not_reported(tmp_path):
+    """Since T14 the CLI reads nothing under `.loci-build/`, so a tree there is
+    not a Before any post-edit could have used — and a recipe that reported it
+    would hand the reader a "baseline" the measurement never saw. Beside a real
+    tree, the legacy one must be invisible, not merely second."""
+    _tree(tmp_path, "aaaa1111", "turn-legacy", sources=1, objects=0,
+          build_root=_LEGACY_ROOT)
+    _tree(tmp_path, "bbbb2222", "turn-new", sources=3, objects=2)
+    rows = {r["turn"]: (r["sources"], r["objects"]) for r in _run(tmp_path)}
+    assert rows == {"turn-new": ("3", "2")}, rows
+    # …and alone, it is "no turn baselines", which is the truth.
+    import shutil as _shutil
+    _shutil.rmtree(tmp_path / ".loci")
+    assert _run(tmp_path) == []
+
+
 def test_a_captured_turn_with_no_reconstruction_is_reported_plainly(tmp_path):
     """The counts are reported per turn. What they MEAN is prose, not shell: an empty
     `obj/` is the normal state for an ordinary `.c` edit and for every cargo project,
@@ -167,7 +206,7 @@ def test_the_rows_are_ordered_by_time_and_not_by_name(tmp_path):
     import time
     _tree(tmp_path, "ffff0000", "older", sources=1, objects=0)
     _tree(tmp_path, "0000ffff", "newer", sources=1, objects=0)
-    turns = tmp_path / ".loci-build" / "turns"
+    turns = tmp_path / ".loci" / "build" / "turns"
     old = time.time() - 7200
     os.utime(turns / "ffff0000", (old, old))
     rows = _run(tmp_path)
@@ -190,7 +229,7 @@ def test_a_project_with_no_turns_directory_reports_nothing(tmp_path):
     """An unmatched glob stays literal in bash, so without the `[ -d ]` guard the
     loop body runs once for the pattern itself and reports a turn id of `?` for a
     tree that does not exist."""
-    (tmp_path / ".loci-build").mkdir()
+    (tmp_path / ".loci" / "build").mkdir(parents=True)
     assert _run(tmp_path) == []
 
 
@@ -200,7 +239,7 @@ def test_a_tree_with_no_turn_record_does_not_abort_the_walk(tmp_path):
     including the one the report is about."""
     _tree(tmp_path, "aaaa1111", "turn-A", sources=1, objects=1)
     _tree(tmp_path, "bbbb2222", "turn-B", sources=2, objects=1)
-    (tmp_path / ".loci-build" / "turns" / "aaaa1111" / "turn.json").unlink()
+    (tmp_path / ".loci" / "build" / "turns" / "aaaa1111" / "turn.json").unlink()
     rows = _run(tmp_path)
     assert len(rows) == 2, rows
     by_turn = {r["turn"]: (r["sources"], r["objects"]) for r in rows}

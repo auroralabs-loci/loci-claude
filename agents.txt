@@ -1,0 +1,212 @@
+LOCI: install and setup
+=======================
+
+LOCI version: 0.2.29
+Canonical source: agents.txt in the loci-claude repository root.
+
+This file is the machine-readable install guide for LOCI. A coding agent can
+follow it from top to bottom. A person can follow it too. It is the twin of the
+"Install", "Quick Start" and "Troubleshooting" sections of README.md.
+
+
+WHAT LOCI IS
+------------
+
+LOCI is a Claude Code plugin for C, C++, Rust and Go projects. It predicts what
+compiled code will do: execution time, energy, stack depth and memory. It reads
+the compiled binary. It never runs the code, and it never changes the code.
+
+LOCI judges a measurement against a bound (a limit you state, such as "under
+200 ns"). Without a bound it reports the number and reasons about it.
+
+
+BEFORE YOU START
+----------------
+
+You need these:
+
+  1. Claude Code, latest version.
+  2. Python 3.12 or newer.
+  3. uv (https://docs.astral.sh/uv/). uv installs the loci CLI.
+  4. A compiled artifact in the project: .elf, .o or .axf.
+  5. A cross-compiler for the target, on PATH. Step 4 names the one this
+     project needs, and reports compiler_missing when it is absent.
+  6. Network access to the LOCI backend, for the timing and energy skills.
+
+These skills need no cross-compiler and no backend: /loci:stack-depth,
+/loci:memory-report, /loci:control-flow, /loci:contract.
+
+If you are an agent and uv is missing, stop and give the user one install
+command for their platform. Do not install uv yourself. It needs root and an
+interactive password prompt, so it cannot be installed from inside an agent
+session.
+
+  Linux or macOS   curl -LsSf https://astral.sh/uv/install.sh | sh
+  macOS (brew)     brew install uv
+  Arch             sudo pacman -S uv
+  Windows          winget install astral-sh.uv
+
+
+STEP 1: INSTALL THE PLUGIN
+--------------------------
+
+Inside a Claude Code session:
+
+  /plugin marketplace add auroralabs-loci/loci-claude
+  /plugin install loci@loci
+
+From a terminal, for scripts and CI:
+
+  claude plugin marketplace add auroralabs-loci/loci-claude
+  claude plugin install loci@loci -y
+
+The marketplace repository is public, so this needs no credentials. Use -y when
+there is no terminal to confirm the install.
+
+
+STEP 2: INSTALL THE loci CLI
+----------------------------
+
+All analysis runs through the loci command. The plugin installs it in the
+background at session start, so usually you do nothing here.
+
+Check it:
+
+  command -v loci
+
+If the command is missing, run /loci:setup in Claude Code. It installs the CLI,
+verifies the environment and repairs what is broken. It is safe to run twice.
+
+If you cannot run a skill, install the CLI directly:
+
+  uv tool install -p 3.12 loci-tools
+
+The plugin installs a pinned version of loci-tools and only ever moves it
+forward, so a direct install never rolls you back.
+
+
+STEP 3: SIGN IN
+---------------
+
+Every LOCI analysis needs a signed-in session. The local skills do not reach the
+backend, but the CLI still gates them behind a session.
+
+The user must run this in their own terminal, because it opens a browser:
+
+  loci login
+
+Inside a Claude Code session, the user types this instead:
+
+  ! loci login
+
+If you are an agent, do not run loci login yourself. The browser flow has no
+terminal to take over.
+
+Confirm the result:
+
+  loci auth status
+
+It must report signed_in.
+
+
+STEP 4: RECORD HOW THE PROJECT BUILDS
+-------------------------------------
+
+Run this once per checkout, in the project root:
+
+  /loci:init
+
+It writes .loci/build.yaml: the target ISA, the compiler, the build system and
+the artifact. Every measurement reads its flags from that file instead of
+guessing. LOCI never runs this on its own: until the user does, the analyses
+answer not_initialized and stop.
+
+.loci/build.yaml and .loci/build/ are machine-local and gitignored. A fresh
+clone has neither, so run /loci:init again there.
+
+
+STEP 5: VERIFY
+--------------
+
+  loci doctor
+
+Doctor returns one JSON envelope with a check per line and a summary. It reports
+Python, bundled dependencies, cross-compilers, the credential store, the sign-in
+state and the state directory. A required check that fails blocks analysis. An
+optional check that fails is an advisory.
+
+Then run this in Claude Code:
+
+  /loci:help
+
+It confirms the plugin is loaded, lists every skill, and shows the recorded
+target, compiler and recipe path.
+
+
+FIRST ANALYSIS
+--------------
+
+Ask for one of these in any C, C++, Rust or Go project that has been built:
+
+  "What is the execution cost of main()?"
+  "How much ROM and RAM does my build use?"
+  "Is my stack safe for TaskMain?"
+  "What does the call graph for process_data() look like?"
+  "TaskMain must not exceed 4 kB of stack."
+
+The last one states a bound. LOCI drafts it into .loci/contract.yaml and you
+apply it. A bound is what lets a later report pass or fail.
+
+Two skills also run on their own. loci-preflight runs in /plan mode, before code
+is written. loci-post-edit runs after an edit to C, C++, Rust or Go source, and
+diffs the compiled artifact.
+
+
+WHEN SOMETHING FAILS
+--------------------
+
+Match the error code in the report, then run the skill:
+
+  not_initialized     /loci:init - the USER runs it, see rule 4
+  recipe_stale        /loci:init
+  recipe_tampered     /loci:init
+  recipe_invalid      /loci:init
+  compiler_missing    /loci:init
+  arch_mismatch       /loci:init
+  outside_target      /loci:init
+  compdb_absent       regenerate the compile database - NOT /loci:init
+  auth_required       loci login, in the user's own terminal
+  loci: not found     /loci:setup
+
+A project with no compile database is initialized off its linked binary, so
+stack-depth, memory-report and control-flow work while the timing skills refuse
+with compdb_absent. Only the project's own build makes a database, and
+error.message names the generators.
+
+If a skill did not trigger at all, check these:
+
+  1. loci-preflight runs only in /plan mode.
+  2. loci-post-edit runs only after an edit to C, C++, Rust or Go source.
+  3. Both need a compiled artifact. Build the project first.
+  4. LOCI is inactive in a directory where no build file declares a build.
+
+If nothing works, run /loci:bug-report. It writes a full diagnostic report.
+
+
+RULES FOR AGENTS
+----------------
+
+  1. Do not install a prerequisite for the user. Give the command instead.
+  2. Do not run loci login. Ask the user to run it.
+  3. Do not run loci cockpit. It takes over the terminal and never exits.
+  4. Do not run /loci:init unless the user asked. It writes files into their
+     project, so which projects LOCI runs on is their choice: name it and stop.
+     Repairing a recipe that already exists is different.
+  5. Report the plugin version as the LOCI version. The CLI version is internal.
+
+
+MORE
+----
+
+  README.md    the same setup for a human reader, plus the full skill list
+  PORTAL.md    sessions, results, Guardian verdicts, PR review, account plans

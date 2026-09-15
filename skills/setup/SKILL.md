@@ -44,19 +44,19 @@ user to restart Claude Code so the plugin loads.
 
 ## Step 2: Prerequisites, then install
 
-**Check the prerequisites BEFORE running the script — don't let it fail first.**
-`jq` and `uv` are required host tools. Probe both:
+**Check the prerequisite BEFORE running the script — don't let it fail first.**
+`uv` is the one required host tool; it is what installs the loci CLI. `jq` is
+not one, and nothing here probes for it. Probe `uv`:
 
 ```bash
-command -v jq >/dev/null 2>&1 && echo "jq: ok" || echo "jq: MISSING"
 command -v uv >/dev/null 2>&1 && echo "uv: ok" || echo "uv: MISSING"
 ```
 
-If either is MISSING, **stop and give the user the exact install command for
-their platform** — do not run the setup script yet, and do not install jq/uv
-yourself. These are host tools that need root and an interactive password
-prompt, so they can NEVER be installed from inside Claude (no TTY for `sudo`);
-the user runs the command in their own terminal, then re-runs `/loci:setup`.
+If it is MISSING, **stop and give the user the exact install command for their
+platform** — do not run the setup script yet, and do not install uv yourself.
+It is a host tool that needs root and an interactive password prompt, so it can
+NEVER be installed from inside Claude (no TTY for `sudo`); the user runs the
+command in their own terminal, then re-runs `/loci:setup`.
 
 First determine the platform and package manager yourself — then give the single
 correct command. Do NOT default to Debian/Ubuntu and do NOT ask the user what
@@ -73,25 +73,22 @@ never mention Nix/`nix profile` unless you have confirmed the host is NixOS
 
 Reference (pick the one matching the detected platform — give only that one):
 
-- **jq** — `sudo apt-get install -y jq` (Debian/Ubuntu), `sudo dnf install -y jq`
-  (Fedora/RHEL), `sudo pacman -S jq` (Arch), `brew install jq` (macOS),
-  `winget install jqlang.jq` (Windows).
 - **uv** — NOT in Debian/Ubuntu apt. Use `curl -LsSf https://astral.sh/uv/install.sh | sh`
   (Linux/macOS), or `pipx install uv`; `sudo pacman -S uv` (Arch),
   `brew install uv` (macOS), `winget install astral-sh.uv` (Windows).
 
-Only if you have confirmed the host is NixOS: `nix profile install nixpkgs#jq`
-/ `nix profile install nixpkgs#uv` (no sudo).
+Only if you have confirmed the host is NixOS: `nix profile install nixpkgs#uv`
+(no sudo).
 
 Keep the message to just the missing tool and its command. Do NOT narrate what
-*you* can or can't do ("jq isn't installed and I shouldn't install it for
+*you* can or can't do ("uv isn't installed and I shouldn't install it for
 you…"), do NOT explain that the plugin doesn't install prerequisites, and do NOT
 otherwise editorialize about why — the user only needs the tool name and the
-command to run. Shape it like: "`jq` isn't installed — run `! sudo apt-get
-install -y jq`, then re-run `/loci:setup`." Only proceed to the install below
-once both resolve.
+command to run. Shape it like: "`uv` isn't installed — run
+`! curl -LsSf https://astral.sh/uv/install.sh | sh`, then re-run
+`/loci:setup`." Only proceed to the install below once it resolves.
 
-Once both are present, announce it in one concise line — e.g. "Setting up LOCI" —
+Once it is present, announce it in one concise line — e.g. "Setting up LOCI" —
 then run from the project root:
 
 ```bash
@@ -125,12 +122,15 @@ If the loci CLI step fails:
 ## Step 3: Verify
 
 Nothing is installed here — this is the check half. Run `loci doctor`: it is the
-single verification surface and returns one JSON envelope (`.data.checks[]`,
-`.data.summary`, `.data.healthy`). Running it also proves the freshly-installed
-binary actually works, so it doubles as the post-install sanity check — if the
-`loci doctor` call itself errors (rather than reporting an unhealthy check),
-treat that as an install problem and fall back to the CLI-failure handling in
-Step 2.
+single verification surface and prints one JSON envelope (`data.checks[]`,
+`data.summary`, `data.healthy`). Let it print and read those fields off it — not
+through `jq` or any other parser, and **never with `2>&1`**: diagnostics go to
+stderr, so merging the streams puts non-JSON in front of the envelope and what
+fails is the read rather than the install. Running it also proves the
+freshly-installed binary actually works, so it doubles as the post-install
+sanity check — if the `loci doctor` call itself errors (rather than reporting an
+unhealthy check), treat that as an install problem and fall back to the
+CLI-failure handling in Step 2.
 
 Doctor checks the whole environment (Python, bundled deps, `c++filt`,
 cross-compilers, credential store, sign-in state, state dir), but most of those
@@ -167,6 +167,12 @@ required (sign-in, a missing compiler for their target, adding an SSH key), and
 the verdict. If everything is healthy, one line that setup is complete plus a
 pointer to `/loci:help`. Do NOT list checks that passed, internal paths, the
 state dir, or hook-registration details.
+
+If the install succeeded, close with one more line: `loci cockpit` opens a live
+terminal view of this machine's LOCI measurements, and the user runs it in a
+separate terminal because it takes over the one it starts in. One line only,
+here and nowhere else in the report — no flags, no panel list. Do not run it
+yourself: it does not exit on its own, so a Bash call to it hangs the session.
 
 Do NOT tell the user to restart or reload Claude Code — this skill only runs
 when the plugin is already loaded, so its hooks and skills are already active

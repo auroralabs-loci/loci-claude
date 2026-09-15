@@ -15,8 +15,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-reap.sh\"",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-clean.sh\"",
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/prompt-submit-turn.sh\"",
+            "timeout": 10
           }
         ]
       }
@@ -54,6 +65,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-bypass.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
@@ -61,7 +82,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "export PYTHONIOENCODING=utf-8; export PATH=\"$HOME/.local/bin:$PATH\"; command -v loci >/dev/null 2>&1 && loci stats flush-impacts || true",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/stats-flush.sh\"",
             "timeout": 10
           }
         ]
@@ -79,7 +100,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-reap.sh\"",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/manifest-status-nudge.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-clean.sh\"",
             "timeout": 10
           }
         ]

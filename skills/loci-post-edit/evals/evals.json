@@ -3,27 +3,223 @@
   "evals": [
     {
       "id": "pe-3",
-      "prompt": "Run post-edit on my changes. Session context: Target: x86_64, Compiler: gcc, LOCI target: x86_64.",
-      "expected_output": "Detects that x86_64 is not a supported LOCI architecture. Emits the unsupported architecture message listing the four supported targets (aarch64/Cortex-A53, armv7e-m/Cortex-M4, armv6-m/Cortex-M0+, tc399/TriCore TC399) and stops without running any analysis.",
-      "files": []
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited src/codec.c and post-edit fired. The LOCI session context block for this session carries only two lines: `project context: /home/me/proj/.loci/state/project-context-9f2a.json` and `plugin dir: /home/me/.claude/plugins/loci`. There is no `LOCI target:` line and no `recipe:` line. What does loci-post-edit do — specifically, what value does it pass to `--loci-target` / `--arch`, and does the missing target line tell you this project is uninitialized?",
+      "expected_output": "Does NOT invent, guess or default a target. `--loci-target` takes exactly one of aarch64 / armv7e-m / armv6-m / tc399 and anything else is rejected by argparse with exit 2 and no envelope to explain it, so no `loci analyse prepare` is attempted with a made-up value and no host architecture (x86_64, arm64, native) is substituted. Says a missing `LOCI target:` line is a fact about the SESSION and not a diagnosis of the project — a wiped state directory prints no target for a project that IS initialized — and that the target sitting in the persisted context file BEFORE an init is a scan's hint for an older CLI, not a fact to lift out and quote. Where the session block sends it to init it invokes the loci:init skill once; a SUCCESSFUL init records the target in `<project-context>`, which is where the contract's own `jq` reads it, so the skill reads it from there rather than waiting for a `LOCI target:` line that only appears at the next session. Does not re-run detection, sniff an ELF, read the build system or pick a compiler in order to derive an architecture. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Does not invent, guess or default a value for `--loci-target` / `--arch`, and does not substitute a host architecture (x86_64, arm64, native)",
+          "description": "the one thing a missing target line must never produce"
+        },
+        {
+          "text": "Says a missing `LOCI target:` line is a fact about the SESSION, not a diagnosis that the project has no recipe",
+          "description": "a wiped state directory prints no target for a project that IS initialized"
+        },
+        {
+          "text": "Concludes there is no `loci analyse prepare` to run on a made-up target, and does not lift the scan's pre-init target hint out of the persisted context file to get past that",
+          "description": "SKILL-ONLY: Step 0's own sentences — the contract's Pattern A says what a missing line means, not that the pre-init context value is a hint or that Step 1 is not run on a made-up value."
+        },
+        {
+          "text": "Says that after a SUCCESSFUL init the target is read from `<project-context>` (the contract's own `jq`), not from a `LOCI target:` line that only appears at the next session",
+          "description": "SKILL-ONLY: the read-it-from-the-context-file-after-init rule is Step 0's, and the earlier eval wording (wait for the next session) contradicted it."
+        }
+      ]
     },
     {
       "id": "pe-5",
-      "prompt": "Analyze my post-edit changes. Pre: build/codec.o.prev, Post: build/codec.o. Session: Target: arm64, Compiler: g++, LOCI target: aarch64. Note: the LOCI MCP server is not connected right now.",
-      "expected_output": "Runs diff-elfs and extract-cfg successfully. When the MCP call fails or is unavailable, falls back to CFG-only analysis and notes '(timing unavailable \u2014 MCP not connected)' in the report. Still provides control-flow analysis for all modified/added functions.",
-      "files": []
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited codec.cpp and post-edit fired. Step 1's `loci analyse prepare` came back `ok:true`: `data.functions` is `[\"codec_decode\"]`, `data.requests[]` holds one `hot_path_time` request for it, `data.candidates[]` ranks three paths with `data.proposed` naming p1, and the `data.provenance[]` entry carries a `before` (the turn's pre-edit object) with `freshness: current`. I confirmed p1 in Step 3. Then Step 4's `loci analyse measure --prepared <id>` came back `ok:false` with `error.code == \"auth_required\"` and exit 1. What does the report look like? Session: Target: arm64, Compiler: g++, LOCI target: aarch64.",
+      "expected_output": "Stops at the metered half without inventing anything: says timing/energy is unavailable and tells the user to run `! loci login` — the skill's own remediation for `auth_required` — rather than describing an MCP connection problem or suggesting `/mcp`. Reports what `prepare` established for free: `codec_decode` is the changed function, the repo demands a `hot_path_time` measurement for it, the proposed hot path — named by the source line ranges it covers, never by its `p1` id, and that a pre-edit Before exists for this turn. Invents no timing or energy number and no percentage, and states that nothing was billed (`measure` checks lazily and refused before spending). Does not re-run `measure` hoping for a different answer, does not fall back to `loci elf asm` + `loci timing` to compute a path cost by hand (path cost is `measure`'s arithmetic), and does not present the run as having had no baseline — a `before` exists, so the no-baseline template is wrong here. Emits no footer and no `stats record --run` patch, since no run was recorded. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Tells the user to run `! loci login`, and does not describe an MCP connection problem or suggest `/mcp`",
+          "description": "auth_required's remediation, in the vocabulary the skill actually uses"
+        },
+        {
+          "text": "Reports what `prepare` established (the changed function, the hot_path_time request, the proposed path, that a Before exists) and stops",
+          "description": "the free half is reported; the metered half is not faked"
+        },
+        {
+          "text": "Invents no timing or energy number and no percentage to fill the gap, and says nothing was billed",
+          "description": "a fabricated number is the failure this guards; `measure` refuses before spending"
+        },
+        {
+          "text": "Does not re-run `measure`, and does not fall back to `loci elf asm` + `loci timing` to cost the path by hand",
+          "description": "SKILL-ONLY: Path cost is `measure`'s arithmetic — the shared contract forbids the hand version and the skill names the two leaves it must not reach for"
+        },
+        {
+          "text": "Does not present the run as no-baseline: a `before` exists in `data.provenance[]`",
+          "description": "SKILL-ONLY: the no-baseline template is Step 6's own branch, keyed on `provenance[].before`"
+        }
+      ]
     },
     {
       "id": "pe-12",
-      "prompt": "Decision question, no tools needed \u2014 reason it out from the loci-post-edit skill and answer directly. During this session, /exec-trace recorded a throughput time of 4862 ns for AesEncrypt_C. I then edited AesEncrypt_C to call a new secret-dependent helper, and post-edit measured its response time at 7769 ns. There was no preflight, so there is no .o.prev baseline. How should the Performance row and the footer present this \u2014 is 4862 -> 7769 a valid Before->After delta (a +60% regression)? Session: Target: aarch64, Compiler: g++, LOCI target: aarch64.",
-      "expected_output": "Concludes 4862 -> 7769 is NOT a valid Before->After delta and must NOT be shown as one (no +60%): 4862 ns is a throughput-time measurement (self-time, callees excluded) while 7769 ns is response time (includes callees) \u2014 different LOCI metrics that are not comparable. Because there is no .o.prev, the Performance row has no Before column and uses the no-baseline (After-only) template, reporting 7769 ns as a fresh response-time baseline. Explains that loci stats trend-line is metric-segmented, so it returns no 4862 -> 7769 trend and the footer shows a baseline rather than a delta. Does not manufacture a Before from the stored 4862 throughput value or fabricate any cross-metric percentage. (Grade only this reasoning; the agent need not execute any loci command.)",
-      "files": []
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. During this session, /loci:exec-trace recorded a hot path time of 4862 ns for AesEncrypt_C. I then edited AesEncrypt_C to call a new secret-dependent helper, and post-edit measured its worst path time at 7769 ns. There was no preflight, so there is no .o.prev baseline. How should the Performance row and the footer present this — is 4862 -> 7769 a valid Before->After delta (a +60% regression)? Session: Target: aarch64, Compiler: g++, LOCI target: aarch64.",
+      "expected_output": "Concludes 4862 -> 7769 is NOT a valid Before->After delta and must NOT be shown as one (no +60%): 4862 ns is a hot-path-time measurement (the selected most-probable path) while 7769 ns is worst path time (the longest own-blocks path) — different LOCI metrics that are not comparable. Because there is no .o.prev, the Performance row has no Before column and uses the no-baseline (After-only) template, reporting 7769 ns as a fresh worst-path-time baseline. Explains that loci stats trend-line is metric-segmented, so it returns no 4862 -> 7769 trend and the footer shows a baseline rather than a delta. Does not manufacture a Before from the stored 4862 hot-path value or fabricate any cross-metric percentage. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Concludes 4862 -> 7769 is NOT a valid Before->After delta and shows no +60% (or any) percentage for it",
+          "description": "the cross-metric delta is the defect under test"
+        },
+        {
+          "text": "Explains that 4862 ns is hot path time (the selected most-probable path) and 7769 ns is worst path time (the longest own-blocks path), so they are different LOCI metrics",
+          "description": "the reason, not just the refusal"
+        },
+        {
+          "text": "Uses the no-baseline (After-only) template with no Before column, reporting 7769 ns as a fresh worst-path-time baseline",
+          "description": "there is no .o.prev, so Case B applies"
+        },
+        {
+          "text": "Explains that `loci stats trend-line` is metric-segmented and returns no trend, so the footer shows a baseline rather than a delta",
+          "description": "the footer must not backfill a Before from mismatched history"
+        }
+      ]
     },
     {
       "id": "pe-loops-1",
-      "prompt": "I just changed the tap count in fir_filter() from 8 to 16 in dsp.c. Run post-edit. Session context: Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m. `loci elf asm` returned data.loops = {\"total\":1,\"with_trip_count\":1,\"unknown_trip_count\":0,\"recursion\":0,\"uncounted_cycles\":0} on both sides. The CFG's loops: block reads `L1 loop header bb_0x1c latch bb_0x3c depth 1 blocks 3 trips 8 exact` before and `trips 16 exact` after; every block in L1 carries iters=8 before and iters=16 after. The per-block loci timing costs are identical on both sides (140 ns for the L1 body). (Grade only the reasoning; the agent need not execute any loci command.)",
-      "expected_output": "Multiplies each L1 block's cost by its iters rather than counting the loop once, so the L1 body contributes 8 x 140 = 1120 ns before and 16 x 140 = 2240 ns after \u2014 a real ~100% regression on that region, NOT the 0 ns delta a sum of bare block costs would report. Names the trip-count change (loop L1 x8 -> x16) as the root cause in the Performance Note, ahead of any per-block explanation, since no block's own cost moved. Does not claim the edit had no measurable effect and does not attribute the regression to a new or changed instruction.",
+      "prompt": "I just changed the tap count in fir_filter() from 8 to 16 in dsp.c. Run post-edit. Session context: Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m. Step 1's `loci analyse prepare` came back `ok:true` with `data.functions` EMPTY (the bound is a masked immediate) and a `data.provenance[]` entry carrying a `before`. On the Step 2a branch, `loci elf diff` gives `data.summary` `{added:0, removed:0, modified:0, unchanged:3}`, the footprint pair answers ok:true with ROM/RAM deltas of 0 and an empty frame_deltas, and the two `loci elf cfg` calls show `loops:` blocks `L1 loop header bb_0x1c latch bb_0x3c depth 1 blocks 3 trips 8 exact` before and `trips 16 exact` after; every block in L1 carries iters=8 before and iters=16 after. Per-block costs are not available — nothing was metered. The repo has no `hot_path_time` bound on fir_filter. What does the report say? (Grade only the reasoning; the agent need not execute any loci command.)",
+      "expected_output": "Stays on the Step 2a branch and emits the 'loop bound changed' report: names the trip-count change (the loop in fir_filter, x8 -> x16, exact, identified by its source range rather than by its `L1` id) as the root cause and states the effect as the ratio — blocks in that loop now run 2x — with Verdict CAUTION and the note that no `hot_path_time` bound exists in this repo to judge it against. Does NOT go on to Steps 3-5: no function's instructions changed, so there is no new per-block timing to fetch and nothing to measure; nothing is billed and no footer is emitted. Does NOT compute a path cost itself — no `8 x 140 = 1120 ns` style arithmetic, no invented per-block figures — because path cost is `loci analyse measure`'s arithmetic and this branch never measured. Does not claim the edit had no measurable effect (the trip count moved), and does not attribute the change to a new or changed instruction. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Names the trip-count change (x8 -> x16) as the root cause, identifying the loop by its source location rather than by its `L1` id, and states the effect as a ratio (blocks in that loop now run 2x), with Verdict CAUTION",
+          "description": "the finding the loop check exists for, in the shape the Step 2a template gives it"
+        },
+        {
+          "text": "Does not proceed to Steps 3-5, runs no `loci analyse measure`, and bills nothing",
+          "description": "SKILL-ONLY: Step 2a's own rule — no function's instructions changed, so there is nothing to meter"
+        },
+        {
+          "text": "Does not multiply block costs by iters or invent per-block figures (no `8 x 140 = 1120 ns` arithmetic)",
+          "description": "Path cost is not the skill's; this branch never measured, so any number would be fabricated"
+        },
+        {
+          "text": "Does not claim the edit had no measurable effect and does not attribute the change to a new or changed instruction",
+          "description": "both are the wrong conclusion here"
+        }
+      ]
+    },
+    {
+      "id": "pe-14",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited fw/src/adc.c in a fresh clone and post-edit fired. Step 1's `loci analyse prepare` came back `ok:false`, exit 1, with `error.stage == \"compile\"`, `error.code == \"not_initialized\"` and `error.message`: \"compile: this project is not initialized for LOCI — no .loci/build.yaml governs /home/me/fw. Run `/loci:init` (or `loci init --auto`) to record how this project builds; LOCI has no build knowledge for it until then.\"\n\nThe session-start block for this directory said \"this project is not initialized — no `.loci/build.yaml`\". Walk me through exactly what post-edit does from that envelope onward, and what it does NOT do.",
+      "expected_output": "Routes the code through the shared contract's coded-error table rather than improvising a recovery, and takes the NO-RECIPE half of `not_initialized`: no `.loci/build.yaml` exists, so initializing this project is the user's decision. Says so in about one line, names `/loci:init` as what enables measurement here, and STOPS. Crucially it does NOT invoke the loci:init skill and does NOT run `loci init` itself — init writes files into the user's tree, and an edit to a .c file is not a request to adopt their repo; post-edit being MANDATORY after an edit does not license it either. It does not retry `prepare`, does not fall back to compiling on guessed or default flags, does not hunt for a compiler or try another driver, does not reuse a project-built .o or .elf, and emits no timing, energy or percentage from an artifact it never built — nothing was billed. (The other half of the code — a recipe on disk with degraded state — is the repair case, where the init skill does run; that is not this scenario.) Grade only this reasoning; the agent need not execute any loci command.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Names `/loci:init` as the way forward and STOPS, without invoking the loci:init skill or running `loci init` itself",
+          "description": "the rule this eval exists for: adopting a project is the user's decision, so the no-recipe half of `not_initialized` is report-and-stop. This assertion is INVERTED from what it was — the eval used to require the auto-init."
+        },
+        {
+          "text": "Ties the decision to there being no recipe on disk, rather than treating every `not_initialized` the same way",
+          "description": "the code has two halves and they take opposite actions; a recipe with degraded state is still the init skill's repair"
+        },
+        {
+          "text": "Does not retry `loci analyse prepare` in the hope of a different answer",
+          "description": "nothing changed between the two calls, so a retry is a wasted call, not a recovery"
+        },
+        {
+          "text": "Does not compile on guessed or default flags, does not look for a compiler, and does not reuse a project-built .o or .elf",
+          "description": "the deleted ladder must not return as improvisation"
+        },
+        {
+          "text": "Emits no timing, energy or percentage from an artifact it never built",
+          "description": "reporting a number here would be fabrication"
+        }
+      ]
+    },
+    {
+      "id": "pe-15",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. A post-edit run reached Step 2a: `loci analyse prepare` returned an empty `data.functions` with a `data.provenance[]` entry carrying a `before`, the footprint pair showed ROM 137 -> 361 B, the loop check found no changed trip count, and the report is the Step 2a 'no function changed' one — so N is 0 and no footer is emitted. Reading the session context gives `validated` = `compile-check` and `confirmed_by_user` = `false`, and the compile's `.meta.json` beside the artifact carries `provenance.validated_note` = `replay-compare dropped to compile-check: .text differs`. What, if anything, does the report say about what those numbers rest on, and where does it go?",
+      "expected_output": "Prints the caveat even though N is 0 and there is no footer — the rule is not part of the footer and is not gated on N > 0, and Step 2a is the branch it exists for. Prints the `confirmed_by_user: false` caveat, with `/loci:init` as what clears it. On the tier: recognises that `compile-check` here was reached by a DROP, not as a floor — `validated_note` says `.text differs`, which means the recorded flags are not the flags this project builds with — and relays the CLI's sentence. (Had it been a floor, as it permanently is for a Rust crate, the correct answer is to say nothing about the tier, because a caveat there implies a defect init cannot clear.) Does not print the full absolute-verb provenance line (target / tier / recipe path), which belongs to exec-trace, stack-depth and memory-report. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "assertions": [
+        {
+          "text": "Prints the caveat on the Step 2a branch, where N is 0 and no footer is emitted",
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. The rule that it is not gated on N > 0, and that Step 2a is included, is post-edit's own."
+        },
+        {
+          "text": "Prints a caveat for `confirmed_by_user: false`",
+          "description": "the addition this task made must actually fire"
+        },
+        {
+          "text": "Treats `compile-check` reached by a DROP as a real degradation and relays `validated_note`'s reason, rather than staying silent",
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. The contract gives rendering wording for `unvalidated` only; the floor-vs-drop distinction is post-edit's."
+        },
+        {
+          "text": "Does not print the full absolute-verb provenance line (target, tier and recipe path)",
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. post-edit carries the caveat half only."
+        }
+      ],
       "files": []
+    },
+    {
+      "id": "pe-16",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. My session block says `LOCI target: armv6-m`. Mid-session I ran `/loci:init --refresh --target=armv7e-m` because I switched boards. I then edited a file and post-edit fired; the compile came back `ok:false` with `error.code` `arch_mismatch`, and `error.message` says the recipe now records armv7e-m while this compile asked for armv6-m, offering \"measure armv7e-m, or run /loci:init --refresh\". What does post-edit do?",
+      "expected_output": "Names the disagreement explicitly — the recipe records armv7e-m while this session is measuring as armv6-m — rather than silently substituting either value and running the analysis. Does NOT act on the first half of the CLI's own suggestion: measuring the recipe's target would mean sending a `--loci-target` this session cannot be seen to hold, which is the thing the contract forbids. Says a new session picks up the change. Relays the message rather than paraphrasing it away, and produces no timing, energy or percentage from a compile that never happened. Does not re-run the compile with a different target to see if it works. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "assertions": [
+        {
+          "text": "Names the disagreement between the recipe's target and the session's target explicitly",
+          "description": "the check pe-3 used to make, in the form the new design can actually reach"
+        },
+        {
+          "text": "Does not substitute either target and does not re-run the compile with a different `--loci-target`",
+          "description": "silent substitution is the observed failure this replaces"
+        },
+        {
+          "text": "Does not act on the CLI's 'measure <recipe target>' suggestion, because this session cannot be seen to hold that target",
+          "description": "the half of the CLI's own message that is not the agent's to act on"
+        },
+        {
+          "text": "Reports no timing, energy or percentage, since no artifact was produced",
+          "description": "no compile, no numbers"
+        },
+        {
+          "text": "Does not run `/loci:init --refresh` to make the mismatch go away, which would re-derive the recipe back to the old board and can clear `confirmed_by_user`",
+          "description": "the CLI's message offers this as its second half; acting on it discards the user's deliberate mid-session switch"
+        }
+      ],
+      "files": []
+    },
+    {
+      "id": "pe-go-1",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and the shared runtime contract, and answer directly. This is a Go project: the session context shows `Build: go` and the recipe records `artifacts.elf: .loci/build/objects/aarch64/sensorfw.elf` with `go.gcflags: ''`. I edited `main.go`, changing the body of `func compute(n int) int`. `loci analyse prepare` succeeded and `loci elf diff` on the pair reports exactly one modified function: `main.main`. `main.compute` appears nowhere in the diff, and `loci elf asm --functions main.compute` reports it in `functions_not_found`. What do you report to the user?",
+      "expected_output": "Reports that `main.compute` was INLINED into its caller and that the change is therefore measured on `main.main` — not that the edit produced no change, and not that the measurement failed. Go inlines small functions by default, so a function having no symbol of its own is the ordinary case for Go rather than a defect or a stale build; the contract's Go section says exactly this. Reports the `main.main` numbers as the effect of the edit, naming that they cover the caller including the inlined body. May offer the remedy, and if it does, offers BOTH commands — `loci init set go.gcflags=-l` AND `loci init --refresh` — because a Go recipe freezes its knobs into `build.full_build`, so `set` alone changes no build; and states the cost, that with inlining off the figures describe code the release build does not contain. Does not call the artifact stale, does not re-run init to 'fix' it, does not suggest rebuilding, and does not present `functions_not_found` as an error. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Says `main.compute` was inlined into its caller and reports the change on `main.main`",
+          "description": "the one thing an absent Go symbol must produce"
+        },
+        {
+          "text": "Does NOT report 'no change', and does not treat the absent symbol as a failure, a stale artifact or a broken build",
+          "description": "the confidently-wrong answer this eval exists to prevent"
+        },
+        {
+          "text": "If it offers `go.gcflags=-l`, it also names `loci init --refresh` and says the figures then describe code the release build does not contain",
+          "description": "a Go recipe freezes its knobs into the command, so `set` alone is inert"
+        }
+      ]
+    },
+    {
+      "id": "pe-go-2",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and the shared runtime contract, and answer directly. A Go project (`Build: go`). I edited `main.go`, and `loci analyse prepare` came back with `provenance[0].kind: \"elf\"` and `provenance[0].artifact: \".loci/build/objects/aarch64/sensorfw.elf\"`. There is no `.o` anywhere under `.loci/build/`. The contract entry I am judging against is a worst-case stack-depth bound and a ROM budget. Is the artifact wrong or missing, where do you look for the object, and are those two signals answerable from this run?",
+      "expected_output": "Says nothing is wrong or missing: Go's unit IS the linked binary, so a Go edit relinks and `analyse prepare` reports `kind: \"elf\"` where a C edit reports `\"object\"`. There is no `.o` to look for — `gc`'s per-package output is content-addressed under `$GOCACHE` with no stable name and TinyGo emits no intermediate object at all — so it does not go hunting for one, does not construct a path, and does not conclude the build is broken or the recipe wrong. Takes every path from the envelope. On the two signals: BOTH are answerable, and answerable at full strength — `stack_depth` and `rom_size` are `verifiable` on an `elf` where they are `unmeasurable` / `breach_only` on an object, because the link is what makes the whole call graph and the whole image visible. Does NOT caveat them as scope-limited, does not say a whole-binary invariant cannot be confirmed at edit time, and does not escalate to stack-depth or memory-report on the grounds that this run cannot answer them. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Says the `elf` kind is correct for Go and does not look for, construct, or ask for a `.o`",
+          "description": "Go has no per-TU object; hunting for one is the wrong-shaped failure"
+        },
+        {
+          "text": "Says both stack_depth and rom_size ARE answerable from this run, and does not caveat them as breach-only or scope-limited",
+          "description": "the elf column is stronger than the object column; treating Go as weaker inverts the gain"
+        },
+        {
+          "text": "Does not conclude the build is broken, the recipe is wrong, or init needs re-running",
+          "description": "the absent object is by design, not a symptom"
+        }
+      ]
     }
   ]
 }

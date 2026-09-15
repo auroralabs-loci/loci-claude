@@ -61,10 +61,10 @@ should report `signed_in`.
 
 ## Step 4 — Verify LOCI is ready
 
-Run `/help` in Claude Code:
+Run `/loci:help` in Claude Code:
 
 ```
-/help
+/loci:help
 ```
 
 This shows your current environment status, available skills, and quota — confirming everything is wired up.
@@ -79,8 +79,8 @@ This shows your current environment status, available skills, and quota — conf
 | `loci: command not found` | CLI not installed yet | Run `/loci:setup` to install and verify — it's idempotent and repairs whatever's missing |
 | `Daily token limit reached` | Free-tier quota consumed for the day | Wait for the reset window shown in the error, or upgrade your plan |
 
-Skills that work signed-out: `/help`, `/loci:setup`, `/bug-report`.
-Skills that need sign-in: `exec-trace`, `stack-depth`, `memory-report`, `control-flow`, `trends`, `loci-preflight`, `loci-post-edit`.
+Skills that work signed-out: `/loci:help`, `/loci:setup`, `/loci:bug-report`.
+Skills that need sign-in: `/loci:exec-trace`, `/loci:stack-depth`, `/loci:memory-report`, `/loci:control-flow`, `/loci:trends`, `loci-preflight`, `loci-post-edit`.
 
 For build-environment or cross-compiler issues, see [README — Troubleshooting](../README.md#troubleshooting).
 
@@ -90,11 +90,11 @@ For build-environment or cross-compiler issues, see [README — Troubleshooting]
 
 With LOCI signed in and installed, you can run any of its skills from Claude Code:
 
-- `/exec-trace` — timing and energy from real workloads and platform traces.
-- `/stack-depth` — worst-case stack depth analysis.
-- `/memory-report` — ROM/RAM breakdown from your ELF file.
-- `/control-flow` — annotated CFG for a function.
-- `/trends` — per-function measurement history on the current branch.
+- `/loci:exec-trace` — timing and energy from real workloads and platform traces.
+- `/loci:stack-depth` — worst-case stack depth analysis.
+- `/loci:memory-report` — ROM/RAM breakdown from your ELF file.
+- `/loci:control-flow` — annotated CFG for a function.
+- `/loci:trends` — per-function measurement history on the current branch.
 
 Two skills also run automatically without a slash command:
 

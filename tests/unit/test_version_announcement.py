@@ -85,6 +85,23 @@ def test_context_announces_only_plugin_version(tmp_path):
                            text=True, timeout=30).stdout,
         )
         if cli_ver and cli_ver != plugin_ver:
-            assert cli_ver not in ctx, (
-                "CLI version leaked into the session context."
+            # The stale-CLI advisory (session-init.sh) names both numbers on
+            # purpose: it says the pinned upgrade has not taken effect, which
+            # cannot be said without them. That is a diagnostic, not a second
+            # answer to "what version is loci" — the shape this test guards is
+            # the retired `loci command: loci (on PATH, v<cli>)` line, asserted
+            # above and unconditionally.
+            #
+            # Asserting over the whole context made this test pass only on a
+            # machine whose installed CLI sits exactly at the pin, so it went
+            # red on every developer box for as long as a version bump was
+            # ahead of the local install — which is the normal state right
+            # after a bump, not a defect.
+            answerable = "\n".join(
+                line for line in ctx.splitlines()
+                if "the automatic upgrade is not taking effect" not in line
+            )
+            assert cli_ver not in answerable, (
+                "CLI version leaked into the session context outside the "
+                "stale-CLI advisory."
             )

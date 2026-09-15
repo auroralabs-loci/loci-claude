@@ -19,7 +19,7 @@ PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Mirrors session-init.sh so both write the same status/log files. Resolved
 # BEFORE sourcing the library — the shared logger keys its log path off
 # LOCI_STATE_DIR at source time.
-STATE_DIR="${HOME}/.loci/state"
+STATE_DIR="${LOCI_STATE_DIR:-${HOME:-}/.loci/state}"
 mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR="${PLUGIN_DIR}/state"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 export LOCI_STATE_DIR="$STATE_DIR"

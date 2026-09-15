@@ -18,10 +18,12 @@ instrumenting real sessions, since the payload is undocumented.
 Two invariants:
 
 * **Always exit 0.** A non-zero exit from a `PreToolUse` hook is a tool failure.
-* **Degrade, never drop.** A `loci` predating `--turn` rejects it. The hook must
-  retry without the flag — restoring the old overwrite-every-time behaviour, which
-  is worse but is what those installs already had — rather than skip the snapshot
-  and leave the turn with no baseline at all.
+* **Exactly one snapshot, and never a retry.** The plugin and the CLI ship in
+  lockstep and session-init already reports a stale, shadowed or failed install, so a
+  usage error is a broken hook/CLI contract — not an older CLI. Retrying without the
+  flags dropped `--turn` with them, which silently traded the turn's whole
+  first-write-wins baseline for surviving one bad call. A failure is SURFACED on
+  `additionalContext` instead.
 """
 
 from __future__ import annotations
@@ -52,10 +54,7 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(
-    _find_bash() is None or shutil.which("jq") is None,
-    reason="bash and jq required",
-)
+pytestmark = pytest.mark.skipif(_find_bash() is None, reason="bash required")
 
 
 def _to_bash_path(p: Path) -> str:
@@ -65,14 +64,11 @@ def _to_bash_path(p: Path) -> str:
 
 
 def _base_path() -> str:
-    """A PATH the hook can work on — it gates on `command -v jq || exit 0`, and jq is
-    not in /usr/bin on a Windows checkout, so a hardcoded PATH makes every assertion
-    here vacuous."""
-    base = "/usr/bin:/bin:/usr/local/bin"
-    jq = shutil.which("jq")
-    if jq:
-        base = f"{_to_bash_path(Path(jq).parent)}:{base}"
-    return base
+    """Deliberately jq-less. Todo 044 moved every payload read into `loci hook
+    edit-scan` and `lib/loci_json.sh`, so a PATH carrying jq would let a
+    reintroduced `jq` pipe pass this suite on the developer's machine and fail on
+    a host without it."""
+    return "/usr/bin:/bin:/usr/local/bin"
 
 
 def opt(call: list[str], name: str) -> str | None:
@@ -91,11 +87,12 @@ def opt(call: list[str], name: str) -> str | None:
 
 
 class Result:
-    def __init__(self, proc, calls: list[list[str]]):
+    def __init__(self, proc, calls: list[list[str]], stdins: list[str] | None = None):
         self.code = proc.returncode
         self.out = proc.stdout
         self.stderr = proc.stderr
         self.calls = calls          # one argv LIST per `loci` invocation
+        self.stdins = stdins or []  # what each of those was handed on stdin
 
     @property
     def snapshots(self) -> list[list[str]]:
@@ -103,7 +100,7 @@ class Result:
 
     @property
     def scans(self) -> list[list[str]]:
-        return [c for c in self.calls if c[:1] == ["scan"]]
+        return [c for c in self.calls if c[:2] == ["hook", "edit-scan"]]
 
     def turn_of(self, i: int = 0) -> str | None:
         return opt(self.snapshots[i], "--turn")
@@ -126,10 +123,14 @@ def _run(home: Path, payload: dict, *, stub: str, expect_zero: bool = True,
     # BYTES and split explicitly: Python's `str.splitlines()` treats \x1c, \x1d and
     # \x1e as line boundaries, so any line-oriented parse shreds this at its own
     # separators.
+    stdin_log = home / "stdin.log"
+    # Todo 044: the payload now goes over the pipe instead of being read into
+    # flags, so what a call was HANDED is as much the contract as its argv.
     (bin_dir / "loci").write_text(
         "#!/usr/bin/env bash\n"
         f'{{ for a in "$@"; do printf "%s\\036" "$a"; done; printf "\\035"; }} '
         f'>> "{_to_bash_path(args_log)}"\n'
+        f'{{ cat; printf "\\035"; }} >> "{_to_bash_path(stdin_log)}"\n'
         f"{stub}\n",
         encoding="utf-8",
     )
@@ -158,25 +159,34 @@ def _run(home: Path, payload: dict, *, stub: str, expect_zero: bool = True,
             if not chunk:
                 continue
             calls.append([a.decode("utf-8") for a in chunk.split(b"\x1e")[:-1]])
-    return Result(proc, calls)
+    stdins: list[str] = []
+    if stdin_log.is_file():
+        stdins = [c.decode("utf-8")
+                  for c in stdin_log.read_bytes().split(b"\x1d")[:-1]]
+    return Result(proc, calls, stdins)
 
 
 # `scan` must still answer (the hook reads .data.report from it); `snapshot` is the
 # call under test.
 _OK = "echo '{\"ok\":true,\"data\":{\"report\":\"\",\"snapshotted\":true}}'"
-# A `loci` predating --turn: argparse rejects the flag and exits 2.
-_NO_TURN_FLAG = (
-    'if [[ "$*" == *--turn* ]]; then\n'
-    '  echo "loci: error: unrecognized arguments: --turn" >&2; exit 2\n'
+# A CLI out of step with this hook: argparse rejects an argument and exits 2 on
+# stderr, which is the shape the hook has to read back and report.
+_USAGE_ERROR = (
+    'echo "loci: error: unrecognized arguments: --turn" >&2; exit 2\n'
+)
+# Snapshot refuses with a coded envelope on STDOUT (a LociError), scan is fine.
+_SNAPSHOT_REFUSES = (
+    'if [[ "$1 $2" == "build snapshot" ]]; then\n'
+    '  echo \'{"ok":false,"error":{"code":"recipe_stale","message":"the recipe moved"}}\'\n'
+    '  exit 1\n'
     "fi\n" + _OK
 )
-# The pinned CLI: it has neither of the flags this branch adds, and rejects the
-# whole call the moment it sees either. This is the generation production runs.
-_NO_NEW_FLAGS = (
-    'if [[ "$*" == *--turn* || "$*" == *--loci-target* || "$*" == *--content-kind* ]]; then\n'
-    '  echo "loci: error: unrecognized arguments" >&2; exit 2\n'
-    "fi\n" + _OK
+# Snapshot succeeds but drops the target hint it was given.
+_TARGET_IGNORED = (
+    'echo \'{"ok":true,"data":{"report":"","snapshotted":true,'
+    '"loci_target_ignored":"--loci-target sparc is not a LOCI target; ignored"}}\''
 )
+
 
 _PROMPT_ID = "b52ae369-e1ba-4823-9c6e-3d51b9e0166e"
 
@@ -270,38 +280,42 @@ def test_two_edits_of_one_turn_send_the_same_turn_id(tmp_path):
     assert first.turn_of(0) == second.turn_of(0) == _PROMPT_ID
 
 
-# ── degrade, never drop ─────────────────────────────────────────────────────
+# ── one call, and say when it fails ────────────────────────────────────────
 
-def test_an_older_cli_still_gets_a_snapshot_without_the_flag(tmp_path):
-    """--turn needs a CLI newer than the pin, and the pin installs an exact `==`
-    spec, so an older `loci` is normal. Dropping the snapshot would leave no baseline
-    at all, which is worse than the overwrite behaviour those installs already have."""
-    r = _run(tmp_path, _edit("/p/blink.c"), stub=_NO_TURN_FLAG)
-    assert len(r.snapshots) == 2, f"expected a flagless retry; snapshots={r.snapshots!r}"
+def test_a_usage_error_is_not_retried(tmp_path):
+    """The retry existed for a CLI predating `--turn`, and it dropped `--turn` to
+    survive — trading the turn's whole first-write-wins baseline for one bad call,
+    silently, because everything went to /dev/null. Plugin and CLI now ship in
+    lockstep, so exit 2 is a broken contract and there is nothing to degrade to."""
+    r = _run(tmp_path, _edit("/p/blink.c"), stub=_USAGE_ERROR)
+    assert len(r.snapshots) == 1, f"no retry may fire; snapshots={r.snapshots!r}"
     assert r.turn_of(0) == _PROMPT_ID
-    assert r.turn_of(1) is None, "the retry must drop --turn entirely"
 
 
-def test_the_retry_drops_every_unreleased_flag_at_once(tmp_path):
-    """The fallback used to drop `--turn` and nothing else. Adding a second
-    unreleased flag to the same call would then have made an older CLI exit 2
-    TWICE and capture nothing at all — worse than the degrade-don't-drop contract
-    it is supposed to have. So the retry is the base call, not the previous one
-    minus a flag."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    _context(tmp_path, proj, "armv7e-m")
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_NO_NEW_FLAGS)
-    assert len(r.snapshots) == 2, f"snapshots={r.snapshots!r}"
-    first, retry = r.snapshots
-    assert opt(first, "--turn") == _PROMPT_ID
-    assert opt(first, "--loci-target") == "armv7e-m"
-    assert opt(retry, "--turn") is None
-    assert opt(retry, "--loci-target") is None
-    # …and the retry must still name the source and the root, or the degrade has
-    # quietly become a different call.
-    assert opt(retry, "--source") == "/p/blink.c"
-    assert opt(retry, "--project-root") == str(proj)
+def test_a_failed_snapshot_says_the_turn_has_no_baseline(tmp_path):
+    """Silence here is what cost a whole turn's regression bounds with nothing in
+    the transcript to explain it. The hook's one channel is `additionalContext`."""
+    r = _run(tmp_path, _edit("/p/blink.c"), stub=_USAGE_ERROR)
+    ctx = json.loads(r.out)["hookSpecificOutput"]["additionalContext"]
+    assert "no pre-edit baseline" in ctx, ctx
+    assert "unrecognized arguments" in ctx, ctx
+
+
+def test_a_coded_refusal_is_relayed_from_the_stdout_envelope(tmp_path):
+    """A LociError renders as JSON on STDOUT while argparse writes to stderr, so the
+    one capture has to hold either and the message has to come out of both."""
+    r = _run(tmp_path, _edit("/p/blink.c"), stub=_SNAPSHOT_REFUSES)
+    ctx = json.loads(r.out)["hookSpecificOutput"]["additionalContext"]
+    assert "the recipe moved" in ctx, ctx
+
+
+def test_a_dropped_target_hint_is_surfaced(tmp_path):
+    """`build snapshot` drops an unrecognised `--loci-target` rather than exiting 2 —
+    which keeps the baseline, and is only honest if the drop is reported. The CLI has
+    always said so in the envelope; the hook used to throw the envelope away."""
+    r = _run(tmp_path, _edit("/p/blink.c"), stub=_TARGET_IGNORED)
+    ctx = json.loads(r.out)["hookSpecificOutput"]["additionalContext"]
+    assert "not a LOCI target" in ctx, ctx
 
 
 def test_the_state_dir_override_is_honoured(tmp_path):
@@ -338,19 +352,19 @@ def test_exactly_one_snapshot_on_the_happy_path(tmp_path):
 
 @pytest.mark.parametrize("stub,label", [
     ("exit 1", "generic failure"),
+    ("exit 2", "usage error"),
     ("exit 127", "not runnable"),
     ("exit 3", "auth_required"),
     ("exit 4", "quota_exceeded"),
 ])
-def test_only_a_usage_error_drops_the_flag(tmp_path, stub, label):
-    """Exit 2 means "I do not know that flag" — the one case where retrying without
-    `--turn` is right. Any other failure must NOT escalate to the overwrite path:
-    that is the defect, and with everything redirected to /dev/null it would happen
-    silently and stay for the rest of the turn."""
+def test_no_failure_mode_produces_a_second_snapshot(tmp_path, stub, label):
+    """One flagged call, whatever happens. A second call overwrites the baseline the
+    first one just captured, and `--turn` is what the overwrite protection is keyed
+    on — so a retry that drops it is the defect, not a degrade."""
     r = _run(tmp_path, _edit("/p/blink.c"), stub=stub)
     assert r.code == 0
     assert len(r.snapshots) == 1, (
-        f"{label} (exit from `{stub}`) must not trigger the flagless retry; "
+        f"{label} (exit from `{stub}`) must not produce a second snapshot; "
         f"snapshots={r.snapshots!r}"
     )
     assert r.turn_of(0) == _PROMPT_ID
@@ -358,7 +372,9 @@ def test_only_a_usage_error_drops_the_flag(tmp_path, stub, label):
 
 @pytest.mark.parametrize("stub", ["echo 'not json'", "echo ''"])
 def test_a_nonsense_but_successful_cli_is_accepted(tmp_path, stub):
-    """Exit 0 means the call was understood; the hook does not read its output."""
+    """Exit 0 means the call was understood. The hook reads the envelope for the
+    dropped-target notice, so unparseable output must degrade to no notice — not to
+    a second call or a non-zero exit."""
     r = _run(tmp_path, _edit("/p/blink.c"), stub=stub)
     assert r.code == 0
     assert len(r.snapshots) == 1
@@ -381,8 +397,10 @@ def test_a_write_payload_is_snapshotted_too(tmp_path):
 # ── scope ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("ext", [".c", ".cc", ".cpp", ".cxx", ".c++", ".rs",
+                                 ".go",
                                  ".h", ".hpp", ".hxx", ".h++", ".hh",
-                                 ".inc", ".ipp", ".tcc", ".S", ".s"])
+                                 ".inc", ".ipp", ".tcc", ".inl", ".tpp", ".def",
+                                 ".S", ".s"])
 def test_every_source_extension_is_snapshotted(tmp_path, ext):
     """Headers included, and this list must not be NARROWER than the CLI's
     `_SNAPSHOT_SOURCE_EXTS`.
@@ -408,9 +426,9 @@ def test_a_non_source_path_never_invokes_loci(tmp_path, path):
 
 
 def test_the_pre_scan_still_runs(tmp_path):
-    """The snapshot is not the hook's only job — it also asks `loci scan` for the
-    call-graph pre-scan. Pinned so a change to the snapshot path cannot quietly
-    remove it."""
+    """The snapshot is not the hook's only job — it also asks `loci hook edit-scan`
+    for the call-graph pre-scan. Pinned so a change to the snapshot path cannot
+    quietly remove it."""
     r = _run(tmp_path, _edit("/p/blink.c"), stub=_OK)
     assert r.scans, f"calls={r.calls!r}"
 
@@ -438,7 +456,7 @@ def test_an_ordinary_source_under_a_dot_claude_sibling_still_runs(tmp_path):
 
 def test_the_payloads_cwd_is_passed_as_the_project_root(tmp_path):
     """`build snapshot` resolves its root from `--project-root` or `Path.cwd()`.
-    Passing neither left every reader guessing the same way — `turn-reap.sh` swept
+    Passing neither left every reader guessing the same way — `turn-clean.sh` swept
     a directory it had to reproduce the writer's guess to find, and a session
     running in a subdirectory of a repo made the two disagree."""
     r = _run(tmp_path, _edit("/p/blink.c", cwd=r"C:\proj\firmware"), stub=_OK)
@@ -448,7 +466,7 @@ def test_the_payloads_cwd_is_passed_as_the_project_root(tmp_path):
 def test_the_native_path_is_passed_through_unchanged(tmp_path):
     """A `/c/...` conversion reaches Python on Windows as a rooted path on the
     CURRENT DRIVE (`C:\\c\\...`), which is a different directory that usually does
-    not exist. Same rule as `turn-reap.sh`."""
+    not exist. Same rule as `turn-clean.sh`."""
     r = _run(tmp_path, _edit("/p/blink.c", cwd=r"C:\proj"), stub=_OK)
     root = opt(r.snapshots[0], "--project-root")
     assert not root.startswith("/c/"), root
@@ -527,44 +545,46 @@ def test_no_context_file_at_all_still_snapshots(tmp_path):
 
 # ── the pre-scan says what it looked at ─────────────────────────────────────
 
-def test_an_edits_replacement_text_is_sent_as_a_fragment(tmp_path):
-    """The Edit tool passes `new_string` — the replacement text alone. Sent without
-    a kind, `loci scan` applied its `file` default, and the call-graph checks are
-    ABSENCE tests: "no early-return base case" was asserted about a function on the
-    evidence of the lines that replaced part of it."""
-    r = _run(tmp_path, _edit("/p/blink.c"), stub=_OK)
-    assert opt(r.scans[0], "--content-kind") == "fragment"
+@pytest.mark.parametrize("payload,path", [
+    (_edit("/p/blink.c"), "/p/blink.c"),
+    ({"hook_event_name": "PreToolUse", "tool_name": "Write",
+      "prompt_id": _PROMPT_ID,
+      "tool_input": {"file_path": "/p/newfile.c", "content": "int g(void){return 1;}"}},
+     "/p/newfile.c"),
+])
+def test_the_payload_goes_over_whole_and_unread(tmp_path, payload, path):
+    """Todo 044: what the incoming code IS — a Write's whole `content` against an
+    Edit's replacement text alone — decides which of `scan`'s rules apply, and the
+    answer now comes from `loci hook edit-scan` rather than from two `jq` reads
+    here. So the contract this side owns is that the payload arrives whole: the
+    verb carries no `--path`, no `--content-kind` and no code on its argv, and the
+    bytes it is handed are the bytes the harness sent.
+
+    The classification itself is pinned CLI-side, over `_edit_code`, where it now
+    lives. `tests/unit/test_hook_edit_scan.py` in loci-cli is its home."""
+    r = _run(tmp_path, payload, stub=_OK)
+    assert r.scans == [["hook", "edit-scan"]], f"scans={r.scans!r}"
+    assert json.loads(r.stdins[0])["tool_input"]["file_path"] == path
 
 
-def test_a_writes_whole_content_is_sent_as_a_file(tmp_path):
-    """The other half. A Write's `content` really is the whole translation unit, so
-    the whole-file rules are sound for it — sending `fragment` for everything would
-    make the flag decorative."""
-    r = _run(tmp_path, {
-        "hook_event_name": "PreToolUse", "tool_name": "Write",
-        "prompt_id": _PROMPT_ID,
-        "tool_input": {"file_path": "/p/newfile.c", "content": "int g(void){return 1;}"},
-    }, stub=_OK)
-    assert opt(r.scans[0], "--content-kind") == "file"
-
-
-def test_the_scan_path_is_joined_so_a_leading_dash_is_not_an_option(tmp_path):
-    """`--path <value>` lets a value beginning with `-` become the next option;
-    argparse then answers "expected one argument" and exits 2. `post-edit-hook.sh`
-    already uses the joined form."""
+def test_a_path_beginning_with_a_dash_is_never_an_option(tmp_path):
+    """`--path <value>` used to let a value beginning with `-` become the next
+    option, and argparse answered "expected one argument" and exited 2. The path is
+    not on the argv at all any more, so the whole class is gone — asserted rather
+    than assumed, because a future flag would bring it back."""
     r = _run(tmp_path, _edit("/p/-weird.c"), stub=_OK)
-    assert "--path" not in r.scans[0], r.scans[0]
-    assert opt(r.scans[0], "--path") == "/p/-weird.c"
+    assert r.scans == [["hook", "edit-scan"]], f"scans={r.scans!r}"
+    assert json.loads(r.stdins[0])["tool_input"]["file_path"] == "/p/-weird.c"
 
 
-def test_an_older_cli_still_gets_the_pre_scan(tmp_path):
-    """`--content-kind` postdates the pin, and the pinned CLI is the one production
-    runs. An unconditional flag would take the pre-scan away from every install
-    today — so on a usage error the hook asks again without it."""
-    r = _run(tmp_path, _edit("/p/blink.c"), stub=_NO_NEW_FLAGS)
-    assert len(r.scans) == 2, f"scans={r.scans!r}"
-    assert opt(r.scans[1], "--content-kind") is None
-    assert opt(r.scans[1], "--path") == "/p/blink.c"
+def test_a_scan_usage_error_is_not_retried_and_is_said(tmp_path):
+    """One call, never a second. A retry that dropped flags to survive a bad call
+    is how the whole-file brace rule got re-applied to an Edit's fragment — the bug
+    the kind was introduced to fix. A failure costs the pre-scan and says so."""
+    r = _run(tmp_path, _edit("/p/blink.c"), stub=_USAGE_ERROR)
+    assert len(r.scans) == 1, f"scans={r.scans!r}"
+    ctx = json.loads(r.out)["hookSpecificOutput"]["additionalContext"]
+    assert "No static pre-scan" in ctx, ctx
 
 
 def test_the_pre_scan_report_is_surfaced(tmp_path):
@@ -613,21 +633,64 @@ def test_the_context_file_is_the_only_one_opened(tmp_path):
     directory that only grows.
 
     Pinned by cost rather than by inspection: 400 decoy contexts must not slow the
-    hook down, and one of them holding a different target must not be read."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    _context(tmp_path, proj, "armv6-m")
-    state = tmp_path / ".loci" / "state"
-    for i in range(400):
-        (state / f"project-context-{i:012x}.json").write_text(
-            json.dumps({"project_root": f"/nowhere/{i}", "loci_target": "tc399"}),
-            encoding="utf-8")
+    hook down, and one of them holding a different target must not be read.
 
+    Measured as a SLOPE, not against a wall-clock constant. The earlier form
+    asserted `elapsed < 8` at 400 decoys, and on a slow enough machine that
+    measures the hook's fixed startup instead of the property it names: probed
+    here, 0 decoys already cost 9.75 s while 400 cost 8.25 s — flat in the file
+    count, and red anyway. A guard that fails where the behaviour it guards is
+    provably correct is not a guard, and one whose reading is dominated by a
+    constant it does not control cannot see the cliff arrive either. What the
+    scanning version actually did was scale with a directory that only ever
+    grows, so scaling is what is measured: the same hook, an empty state
+    directory against a full one, on this machine, in this run.
+    """
     import time
-    start = time.monotonic()
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
-    elapsed = time.monotonic() - start
-    assert opt(r.snapshots[0], "--loci-target") == "armv6-m", r.snapshots[0]
-    # Generous by design — this is a cliff detector, not a benchmark. The scanning
-    # version took seconds here and returned nothing at all past ~200 files.
-    assert elapsed < 8, f"the hook took {elapsed:.1f}s with 400 context files"
+
+    def _timed(name: str, decoys: int) -> tuple[float, str]:
+        """Best-of-two elapsed for one hook run, plus the target it resolved.
+
+        Best-of-two rather than a single reading because the noise here is whole
+        seconds (9.75 / 11.92 / 8.25 across one probe) and the signal being
+        separated from it is the difference between two runs. A minimum is the
+        cheapest estimator that is not dragged upward by one scheduling stall.
+        """
+        root = tmp_path / name
+        root.mkdir()
+        proj = root / "proj"
+        proj.mkdir()
+        _context(root, proj, "armv6-m")
+        state = root / ".loci" / "state"
+        for i in range(decoys):
+            (state / f"project-context-{i:012x}.json").write_text(
+                json.dumps({"project_root": f"/nowhere/{i}",
+                            "loci_target": "tc399"}),
+                encoding="utf-8")
+        best = None
+        target = None
+        for _ in range(2):
+            start = time.monotonic()
+            r = _run(root, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
+            elapsed = time.monotonic() - start
+            best = elapsed if best is None else min(best, elapsed)
+            target = opt(r.snapshots[0], "--loci-target")
+        return best, target
+
+    empty_cost, empty_target = _timed("empty", 0)
+    full_cost, full_target = _timed("full", 400)
+
+    # The correctness half, unchanged and still the primary guard: the decoys all
+    # carry `tc399`, so reading any of them shows up here whatever the timing did.
+    assert empty_target == "armv6-m", empty_target
+    assert full_target == "armv6-m", full_target
+
+    # The cost half. A direct lookup pays the same whether the directory holds 0
+    # files or 400; the scan forked per entry, so its cost rose with the count.
+    # 4 s is generous against the ~1 s spread of a best-of-two and well under the
+    # 6.4 s the scan added at 500 files — still a cliff detector, not a benchmark.
+    overhead = full_cost - empty_cost
+    assert overhead < 4.0, (
+        f"400 context files added {overhead:.1f}s to the hook "
+        f"({empty_cost:.1f}s empty vs {full_cost:.1f}s full) — the lookup is "
+        f"scaling with the directory again")

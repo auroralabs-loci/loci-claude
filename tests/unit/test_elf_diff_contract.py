@@ -14,19 +14,19 @@ gap was left to a guess. Four guesses fail, and all four fail quietly:
 * an **empty result does not mean the edit had no effect** — the differ hashes masked
   instructions, so a constant-only edit produces no entry at all.
 
-So the recipes are pinned here, and — where `jq` is available — actually **run**
-against a fixture in the CLI's own written shape (`src/loci/cli/elf.py`'s diff entry;
-`tests/unit/test_elf_handlers.py::test_diff_writes_file_summary_and_count` pins it
-there). A regex can only say the prose still contains a filter; running it is what says
-the filter still selects.
+Todo 044 moved all four of those from the documents into the CLI. `elf diff` now
+answers with **`data.functions`** — `added`, `removed` and `modified`, `STT_FUNC`
+only — so the filtering is the producer's and the document's job is to say which
+list to read. The executable half of this file went with it: the shapes are pinned
+where the code is, in the CLI repo's
+`tests/unit/test_elf_handlers.py::test_diff_function_names_exclude_the_variables_the_differ_also_diffs`.
+What stays here is what only this repo can answer — that every document sends the
+model to the right field, and none of them asserts a field the verb does not return.
 
-Two lessons from the mutation campaign are built into the shape of this file, because
-the first version failed both. **Fixtures are derived, not listed** — emptying
-`CHANGED`, `NOT_CHANGED` or `DIFF_CONSUMERS` used to leave the suite green, which is
-the "a lint that passes with its own fixture emptied is testing nothing" failure in its
-own test file. And **the executor reads the flag out of the document** rather than
-hardcoding `-r`, because `jq -c` prints `"new_fn"` *with quotes* — a name that matches
-nothing — and that mutation was invisible.
+One lesson from the mutation campaign is still built into the shape of this file:
+**fixtures are derived, not listed** — emptying `CHANGED`, `NOT_CHANGED` or
+`DIFF_CONSUMERS` used to leave the suite green, which is the "a lint that passes
+with its own fixture emptied is testing nothing" failure in its own test file.
 """
 
 from __future__ import annotations
@@ -45,9 +45,11 @@ SKILLS_DIR = PLUGIN_ROOT / "skills"
 CONTRACT = SKILLS_DIR / "_shared" / "loci-runtime-contract.md"
 
 # Skills whose own steps invoke `loci elf diff` and act on its answer. Declared here
-# for legibility and checked against a scan below, so a fourth skill that starts
-# calling the verb cannot stay invisible to every test in this file.
-DIFF_CONSUMERS = ("loci-post-edit", "exec-trace", "control-flow")
+# for legibility and checked against a scan below, so a third skill that starts
+# calling the verb cannot stay invisible to every test in this file. `control-flow`
+# left when `analyse cfg` took its Incremental Path: the verb decides what to
+# compile and the skill diffs nothing.
+DIFF_CONSUMERS = ("loci-post-edit",)   # exec-trace runs the pair since T17
 
 # One entry per reachable shape, in the form `diff_elfs` writes, with
 # `similarity_ratio` ordering them as the CLI's sort does.
@@ -116,19 +118,6 @@ def _docs() -> list[tuple[str, str]]:
 # fences and reported the other two as having no recipe at all.
 _FENCE = re.compile(r"^[ \t]*```[a-z]*\n(.*?)^[ \t]*```$", re.S | re.M)
 
-# A `jq` invocation in a fenced block: the flag group, then a single-quoted program
-# that may span lines and never contains a single quote itself. The flags are captured
-# rather than discarded — see the module docstring.
-_JQ_PROGRAM = re.compile(r"jq\s+(-[a-zA-Z]+)\s+'([^']*)'", re.S)
-
-# Inside such a fence, a program reading the *envelope* starts at `.data` or `.ok`;
-# anything else is reading the diff file's array. Selecting diff readers this way,
-# rather than by "it mentions `.status`", is deliberate: the property under test IS
-# that they filter on status, so a discriminator that requires `.status` makes every
-# per-program assertion vacuous for exactly the recipe that lost its filter. A
-# mutation campaign proved that — deleting `select(…)` left the filter lint green and
-# was caught only, and accidentally, by the coverage guard.
-_READS_ENVELOPE = re.compile(r"\s*\.(?:data|ok)\b")
 
 
 def _sentence_before(text: str, pos: int) -> str:
@@ -168,17 +157,13 @@ def _fences(text: str) -> list[str]:
     return _FENCE.findall(text)
 
 
-def _diff_programs() -> list[tuple[str, str, str]]:
-    """(label, jq-flags, jq-program) for every documented read of the diff file."""
-    out: list[tuple[str, str, str]] = []
-    for label, text in _docs():
-        for fence in _fences(text):
-            if "data.diff_file" not in fence:
-                continue        # not a diff fence at all
-            for flags, prog in _JQ_PROGRAM.findall(fence):
-                if not _READS_ENVELOPE.match(prog):
-                    out.append((label, flags, prog))
-    return out
+#: `data.functions.<group>`, wherever a document names one.
+_FUNCTIONS_FIELD = re.compile(r"`?data\.functions(?:\.(added|removed|modified))?`?")
+
+
+def _functions_groups(text: str) -> set[str]:
+    """The `data.functions` groups a document names. `None` for a bare mention."""
+    return {m.group(1) for m in _FUNCTIONS_FIELD.finditer(text)}
 
 
 # ── who the consumers are ────────────────────────────────────────────────────
@@ -201,31 +186,29 @@ def test_the_declared_consumers_are_the_skills_that_actually_run_the_verb():
     )
 
 
-def test_every_diff_consumer_documents_a_way_to_read_the_file():
-    """A guard that scans nothing passes for the wrong reason. If the fence
-    convention or the regex drifts, fail here rather than lint an empty list."""
-    found = {label for label, _flags, _prog in _diff_programs()}
-    expected = {"skills/_shared/loci-runtime-contract.md"} | {
-        f"skills/{n}/SKILL.md" for n in DIFF_CONSUMERS
-    }
-    assert found == expected, (
-        "these documents invoke `loci elf diff` but never show how to turn "
-        f"`data.diff_file` into a function list. found={sorted(found)} "
-        f"expected={sorted(expected)}"
+def test_every_diff_consumer_names_the_field_the_names_come_out_of():
+    """A guard that scans nothing passes for the wrong reason. Every document that
+    runs the verb has to send the model to `data.functions`; one that stops at
+    `data.summary` has given it counts and no names, and the model then opens
+    `diff_file` and re-derives the two filters the CLI already applied."""
+    missing = [label for label, text in _docs()
+               if not _functions_groups(text)]
+    assert not missing, (
+        "these documents invoke `loci elf diff` and never name `data.functions`, so "
+        "the changed function names have no documented source: " + ", ".join(missing)
     )
 
 
-def test_the_contract_carries_both_documented_forms():
-    """The consumers link here for two different shapes — a flat list, and the
-    labelled groups `loci-post-edit` needs because only a `modified` function has a
-    Before. Coverage is counted per document, so deleting one of the two left the
-    contract still "present" via the other."""
-    progs = [p for label, _f, p in _diff_programs() if label.endswith("contract.md")]
-    grouped = [p for p in progs if "group_by" in p]
-    flat = [p for p in progs if "group_by" not in p]
-    assert grouped and flat, (
-        f"the contract must document both forms; found {len(flat)} flat and "
-        f"{len(grouped)} grouped"
+def test_the_contract_names_all_three_groups_and_keeps_them_apart():
+    """The consumers link here for the groups, not for a flat list: only a `modified`
+    function has a Before to extract, an `added` one has none, and a `removed` one is
+    not in the After at all. A contract naming `data.functions` and no group leaves
+    the model to merge them."""
+    text = CONTRACT.read_text(encoding="utf-8")
+    groups = _functions_groups(text) - {None}
+    assert groups == {"added", "removed", "modified"}, (
+        f"the contract names {sorted(groups)}; all three groups have to be named, "
+        f"because each is acted on differently"
     )
 
 
@@ -241,41 +224,26 @@ def test_the_recipes_read_the_path_from_the_envelope():
     The other half — "a fence that reads entries knows where they are" — needs a
     discriminator for *reading entries*, and `.status` is no longer one: phase 11's
     footprint recipe reads `symbol_deltas[].status` out of `elf memmap`, which has no
-    diff file at all and was reported here as a diff fence missing one. `stt_type` and
-    `similarity_ratio` are keys only this producer writes. Selecting on the invocation
-    instead is wrong in the other direction — the section opens by *showing* the
-    command, with no jq at all."""
-    offenders = []
-    for label, text in _docs():
-        for fence in _fences(text):
-            if "diff.json" in fence:
-                offenders.append(f"  {label}: spells diff.json instead of reading "
-                                 f"`.data.diff_file`")
-            if "jq" not in fence:
-                continue    # the entry-shape sample is a fence too, and reads nothing
-            if not any(k in fence for k in ("stt_type", "similarity_ratio")):
-                continue
-            if "diff_file" not in fence:
-                offenders.append(f"  {label}: reads diff entries without reading "
-                                 f"`.data.diff_file`, so their path is a guess")
+    diff file at all and was reported here as a diff fence missing one."""
+    offenders = [f"  {label}: spells diff.json instead of reading `data.diff_file`"
+                 for label, text in _docs() for fence in _fences(text)
+                 if "diff.json" in fence]
     assert not offenders, (
-        "these recipes name the diff file instead of taking its path from the "
+        "these fences name the diff file instead of taking its path from the "
         "envelope:\n" + "\n".join(sorted(set(offenders)))
     )
 
 
-def test_every_diff_fence_also_reads_the_counts():
-    """Since the empty-result branch is decided on `data.summary` — a non-zero
-    `removed` means functions were deleted, all-zero means the differ saw nothing —
-    a fence that prints only the list documents an answer the prose cannot
-    interpret. Deleting the summary line while the prose still said "the second
-    command prints the counts" left the suite green."""
-    offenders = [
-        label for label, fence in _diff_fences() if "data.summary" not in fence
-    ]
+def test_every_diff_consumer_also_reads_the_counts():
+    """The empty-result branch is decided on `data.summary` — a non-zero `removed`
+    means functions were deleted, all-zero means the differ saw nothing. A document
+    that names only the function lists documents an answer the prose cannot
+    interpret: an empty `added`/`modified` pair is BOTH of those states."""
+    offenders = [label for label, text in _docs() if "data.summary" not in text]
     assert not offenders, (
-        "these diff fences never read `data.summary`, so the model cannot tell "
-        "'nothing changed' from 'everything was deleted': " + ", ".join(offenders)
+        "these documents run `loci elf diff` and never read `data.summary`, so the "
+        "model cannot tell 'nothing changed' from 'everything was deleted': "
+        + ", ".join(offenders)
     )
 
 
@@ -386,19 +354,26 @@ def test_every_consumer_states_that_an_empty_result_is_not_no_effect():
     )
 
 
-def test_every_recipe_projects_symbol_and_not_a_guessed_key():
-    offenders = []
-    for label, _flags, prog in _diff_programs():
-        if ".symbol" not in prog:
-            offenders.append(f"  {label}: reads no `.symbol`")
-        for guess in (".function", ".name"):
-            if guess in prog:
-                offenders.append(f"  {label}: projects `{guess}`, which is null")
-    assert not offenders, (
-        "the function name in a diff entry is under `symbol`; every other key "
-        "yields null, which jq prints as the literal string `null`:\n"
-        + "\n".join(offenders)
-    )
+def test_the_documented_entry_shape_is_the_one_the_cli_writes():
+    """The sample entry in the contract is what a reader of `diff_file` matches
+    against, and `symbol` is the key that has bitten: `function` and `name` are both
+    absent, and a name read off an absent key is the string `null`, which `elf asm`
+    accepts as a name matching nothing.
+
+    Keyed on FIXTURE_ENTRIES so the fixture is answerable to the shipped prose rather
+    than to itself — the failure this file's own docstring names."""
+    text = CONTRACT.read_text(encoding="utf-8")
+    samples = [f for f in _fences(text) if '"stt_type"' in f]
+    assert len(samples) == 1, (
+        f"the contract shows {len(samples)} diff-entry samples; a reader matching "
+        f"the file against a sample needs exactly one")
+    for key in sorted(set(FIXTURE_ENTRIES[0])):
+        assert f'"{key}"' in samples[0], (
+            f"the documented entry sample omits `{key}`, which every entry carries")
+    for guess in ("function", "name"):
+        assert f'"{guess}"' not in samples[0], (
+            f"the documented entry sample names `{guess}`; the symbol is under "
+            f"`symbol` and every other key yields null")
 
 
 def test_no_prose_names_a_key_the_entries_do_not_have():
@@ -417,24 +392,23 @@ def test_no_prose_names_a_key_the_entries_do_not_have():
     )
 
 
-def test_every_recipe_filters_on_status_and_on_symbol_type():
-    """Two filters, both load-bearing. `removed` symbols are gone from the After;
-    `STT_OBJECT` symbols are variables, and `elf asm` answers `ok:true` with empty
-    assembly for one while `elf cfg` fails outright."""
-    offenders = []
-    for label, _flags, prog in _diff_programs():
-        if "select" not in prog:
-            offenders.append(f"  {label}: reads the file without a select()")
-            continue
-        for status in ("modified", "added"):
-            if f'"{status}"' not in prog:
-                offenders.append(f"  {label}: never selects `{status}`")
-        if "STT_FUNC" not in prog:
-            offenders.append(f"  {label}: does not filter on stt_type")
-    assert not offenders, (
-        "these recipes hand on symbols the edit did not change, or that are not "
-        "functions at all:\n" + "\n".join(offenders)
-    )
+def test_the_contract_states_both_filters_the_cli_applies():
+    """`data.functions` is filtered twice, and both filters are load-bearing: a
+    `removed` symbol is gone from the After, and an `STT_OBJECT` symbol is a variable
+    that `elf asm` answers `ok:true` with empty assembly for while `elf cfg` fails
+    outright. The contract has to say the CLI applied them — a model that does not
+    know the list is already filtered re-derives it from `diff_file`, which is the
+    work this field exists to remove."""
+    text = CONTRACT.read_text(encoding="utf-8")
+    assert re.search(r"`data\.functions` (?:is already filtered|holds functions only)",
+                     text), (
+        "the contract does not state that `data.functions` excludes the variables "
+        "the differ also diffs, so a model reads it as every changed symbol")
+    assert "stt_type" in text, "the contract never names the type filter"
+    assert re.search(r"`removed` function[\s\S]{0,120}?(?:own list|separate|apart)",
+                     text), (
+        "the contract does not say the `removed` group is kept apart, so a model "
+        "sends a deleted function to `elf asm`, which cannot extract it")
 
 
 # ── the links the consumers deliver the contract through ─────────────────────
@@ -462,123 +436,12 @@ def test_every_contract_link_resolves_to_a_file_and_an_anchor():
     )
 
 
-# ── the recipes, actually run ────────────────────────────────────────────────
-# A filter that lints clean can still select nothing: `.status` vs `.data.status`,
-# `==` vs `=`, a `group_by` on a key that is not there. Only running it can tell.
-
-requires_jq = pytest.mark.skipif(
-    shutil.which("jq") is None,
-    reason="jq required to execute the documented recipes",
-)
-
-
-def _write(tmp_path: Path, entries: list[dict], name: str = "diff.json") -> Path:
-    path = tmp_path / name
-    path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
-    return path
-
-
-@pytest.fixture
-def diff_file(tmp_path: Path) -> Path:
-    return _write(tmp_path, FIXTURE_ENTRIES)
-
-
-def _run_jq(flags: str, program: str, target: Path) -> str:
-    """Run a documented program **with the flags the document specifies.**
-
-    Hardcoding `-r` here hid a real defect: with `-c` the flat recipe prints
-    `"new_fn"` *with quotes*, and a model pasting that into `--functions` asks for a
-    name that cannot match.
-    """
-    proc = subprocess.run(
-        ["jq", flags, program, str(target)],
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    assert proc.returncode == 0, (
-        f"a documented jq program failed to run:\njq {flags} '{program}'\n"
-        f"{proc.stderr}"
-    )
-    return proc.stdout
-
-
-def test_the_runner_fails_on_a_program_that_errors(tmp_path: Path):
-    """`_run_jq`'s return-code assertion is the only thing separating "printed
-    nothing" from "crashed", and both empty-output tests below read a crash as a pass
-    without it. Dropping that assert left a genuine jq bug — indexing `.[0]` on an
-    empty group — undetected."""
-    if shutil.which("jq") is None:
-        pytest.skip("jq required")
-    with pytest.raises(AssertionError, match="failed to run"):
-        _run_jq("-r", ".[] | .nope | error", _write(tmp_path, FIXTURE_ENTRIES))
-
-
-def _parse(out: str) -> list[tuple[str | None, str]]:
-    """A recipe's output as (label, symbol) pairs.
-
-    Two documented shapes: one symbol per line, and `status<TAB>a,b` when a consumer
-    needs the groups apart. Parsing both the same way lets one assertion cover them.
-    """
-    pairs: list[tuple[str | None, str]] = []
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        label, _, rest = line.partition("\t")
-        if not rest:
-            label, rest = None, line
-        for symbol in rest.split(","):
-            pairs.append((label, symbol.strip()))
-    return pairs
-
-
-@requires_jq
-def test_each_documented_recipe_selects_the_changed_functions_and_nothing_else(
-        diff_file: Path):
-    for label, flags, prog in _diff_programs():
-        out = _run_jq(flags, prog, diff_file)
-        pairs = _parse(out)
-        named = {symbol for _, symbol in pairs}
-
-        assert CHANGED <= named, (
-            f"{label}: the documented recipe drops {sorted(CHANGED - named)}, which "
-            f"changed:\njq {flags} '{prog}'\n-> {out!r}"
-        )
-        for symbol in sorted(NOT_CHANGED & named):
-            pytest.fail(
-                f"{label}: the documented recipe passes on `{symbol}` "
-                f"({STATUS_OF[symbol]}). A `removed` symbol has no assembly in the "
-                f"After; a data symbol makes `elf asm` answer ok:true with none; an "
-                f"`unchanged` one costs a metered timing call to say nothing:\n"
-                f"jq {flags} '{prog}'\n-> {out!r}"
-            )
-
-        # A recipe that labels its groups has to label them *correctly*. Membership
-        # alone cannot see this: `group_by` on a key the entries do not have puts
-        # every symbol in one group under the first one's status, so a `modified`
-        # function arrives tagged `added` — and the skill then extracts assembly from
-        # the After only, reporting a delta it never measured as a new function.
-        if "group_by" in prog:
-            assert any(lbl is not None for lbl, _ in pairs), (
-                f"{label}: the grouped recipe printed no `status<TAB>…` labels, so "
-                f"the two lists cannot be told apart:\njq {flags} '{prog}'\n-> {out!r}"
-            )
-        for status, symbol in pairs:
-            if status is None:
-                continue
-            assert status == STATUS_OF[symbol], (
-                f"{label}: the recipe labels `{symbol}` as `{status}`, but it is "
-                f"`{STATUS_OF[symbol]}`. The two lists are used differently — only a "
-                f"`modified` function has a Before to extract:\njq {flags} '{prog}'\n"
-                f"-> {out!r}"
-            )
-
-
 # ── the fences, actually run ─────────────────────────────────────────────────
-# Running the jq *program* leaves the shell around it unguarded, and that shell is
-# most of what a model retypes. A campaign proved the gap: dropping the `\` from the
-# flat fence's continuation left jq reading stdin and bash then executing the diff
-# file's path as a command (`.loci-build/…/diff.json: line 1: [: missing ']'`), which
-# a model reads as a corrupt diff; swapping the two `jq` lines, and unquoting the
-# `$( )` that supplies the path, were likewise invisible. So the fence is run whole,
+# What is left to run is the SHELL, not a filter: `elf diff` is one command whose
+# whole answer is its envelope. The shapes `data.functions` groups are pinned where
+# the code that groups them is, in the CLI repo's
+# `tests/unit/test_elf_handlers.py`. What can still break here is the invocation —
+# a dropped `\` on a continuation, an unquoted path — so the fence is run whole,
 # against a stub `loci`, exactly as written.
 
 def _find_bash() -> str | None:
@@ -597,51 +460,53 @@ def _to_bash_path(p: Path) -> str:
 
 
 requires_bash = pytest.mark.skipif(
-    _find_bash() is None or shutil.which("jq") is None,
-    reason="bash and jq required to run the documented fences",
-)
+    _find_bash() is None, reason="bash required to run the documented fences")
 
-# Only `elf diff` is implemented: it writes the fixture where the envelope says it is,
-# so the fence has to read the path out of the envelope to find it.
 _SUMMARY = '{"added":2,"removed":1,"modified":2,"unchanged":0}'
+_FUNCTIONS = ('{"added":["new_fn"],"removed":["gone_fn"],'
+              '"modified":["adc_read","spi_write"]}')
 _STUB_LOCI = """#!/usr/bin/env bash
 if [ "$1 $2" != "elf diff" ]; then echo "unexpected: $*" >&2; exit 9; fi
-cp "__FIXTURE__" "__OUT__"
-echo '{"ok":true,"data":{"summary":__SUMMARY__,"count":6,"diff_file":"__OUT__"}}'
+echo '{"ok":true,"data":{"summary":__SUMMARY__,"count":6,"functions":__FUNCTIONS__,"diff_file":"__OUT__"}}'
 """
 
 
 def _diff_fences() -> list[tuple[str, str]]:
     return [(label, fence) for label, text in _docs() for fence in _fences(text)
-            if "loci elf diff" in fence and "data.diff_file" in fence]
+            if "loci elf diff" in fence]
 
 
 @requires_bash
-def test_every_documented_diff_fence_runs_and_prints_what_the_prose_promises(
-        tmp_path: Path):
-    """The whole fence, verbatim, with only the placeholders substituted."""
-    fixture = _write(tmp_path, FIXTURE_ENTRIES)
-    # A directory with a space in it, deliberately: unquoting the `$( )` that supplies
-    # the path is otherwise invisible, and a project under `C:\\Users\\First Last\\…`
-    # is ordinary on Windows.
+def test_every_documented_diff_fence_runs_and_prints_the_envelope(tmp_path: Path):
+    """The whole fence, verbatim, with only the placeholders substituted.
+
+    One assertion, and it is the one that moved: the fence's entire output has to BE
+    the envelope. A fence that captures it into a variable prints nothing, and the
+    fields the prose then names are in a shell variable the next Bash call cannot
+    reach — which is the defect todo 044 removed from every one of these documents."""
     out_json = tmp_path / "out dir" / "diff.json"
     out_json.parent.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     stub = bindir / "loci"
     stub.write_text(
-        _STUB_LOCI.replace("__FIXTURE__", _to_bash_path(fixture))
-                  .replace("__OUT__", _to_bash_path(out_json))
-                  .replace("__SUMMARY__", _SUMMARY),
+        _STUB_LOCI.replace("__OUT__", _to_bash_path(out_json))
+                  .replace("__SUMMARY__", _SUMMARY)
+                  .replace("__FUNCTIONS__", _FUNCTIONS),
         encoding="utf-8", newline="\n")
     stub.chmod(0o755)
 
-    jq_dir = _to_bash_path(Path(shutil.which("jq")).parent)
-    env_path = f"{_to_bash_path(bindir)}:{jq_dir}:/usr/bin:/bin"
+    env_path = f"{_to_bash_path(bindir)}:/usr/bin:/bin"
+    fences = _diff_fences()
+    assert fences, "no document runs `loci elf diff` in a fence any more"
 
-    for label, fence in _diff_fences():
+    for label, fence in fences:
         script = (fence.replace("<PREV>", "before.o")
                        .replace("<OBJ>", "after.o")
+                       .replace("<before>", "before.o")
+                       .replace("<artifact>", "after.o")
+                       .replace("<project_root>", _to_bash_path(tmp_path))
+                       .replace("<turn-id>", "t1")
                        .replace("<loci_target>", "armv7e-m"))
         proc = subprocess.run(
             [_find_bash(), "-s"],
@@ -656,46 +521,8 @@ def test_every_documented_diff_fence_runs_and_prints_what_the_prose_promises(
             f"{label}: the documented fence writes to stderr, which a model reads as "
             f"a failure:\n{proc.stderr}"
         )
-        lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-        assert lines, f"{label}: the documented fence printed nothing"
-
-        # The counts lead. Every consumer's prose refers to them as what comes first
-        # ("the second command prints the counts"), and `loci-post-edit` reads the two
-        # answers positionally.
-        if "data.summary" in fence:
-            assert lines[0].startswith("{") and '"modified"' in lines[0], (
-                f"{label}: the first line is not the summary — the prose says it is, "
-                f"and the ordering is unguarded otherwise:\n{proc.stdout!r}"
-            )
-            lines = lines[1:]
-
-        named = {sym for _lbl, sym in _parse("\n".join(lines))}
-        assert CHANGED <= named and not (NOT_CHANGED & named), (
-            f"{label}: run whole, the fence yields {sorted(named)}; expected exactly "
-            f"{sorted(CHANGED)}\n--- fence ---\n{script}\n--- stdout ---\n"
-            f"{proc.stdout!r}"
-        )
-
-
-@requires_jq
-@pytest.mark.parametrize("shape", ["empty", "removed-only", "data-only"])
-def test_a_recipe_prints_nothing_when_no_function_changed(tmp_path: Path, shape: str):
-    """Empty output is the "no compiled function changed" answer every consumer is
-    told to report (with the masking caveat). These are the shapes that reach it:
-    the differ writes `[]` when it sees no difference, a delete-only edit yields
-    `removed` rows alone, and an edit touching only a global yields `STT_OBJECT` rows
-    alone. An earlier version tested an `unchanged`-only file — a shape the producer
-    never writes.
-    """
-    entries = {
-        "empty": [],
-        "removed-only": [e for e in FIXTURE_ENTRIES if e["status"] == "removed"],
-        "data-only": [e for e in FIXTURE_ENTRIES if e["stt_type"] == "STT_OBJECT"],
-    }[shape]
-    assert shape == "empty" or entries, "the fixture lost the shape under test"
-    path = _write(tmp_path, entries)
-    for label, flags, prog in _diff_programs():
-        out = _run_jq(flags, prog, path)
-        assert out.strip() == "", (
-            f"{label}: printed {out!r} for a {shape} diff\njq {flags} '{prog}'"
+        printed = json.loads(proc.stdout)
+        assert printed["data"]["functions"]["modified"] == ["adc_read", "spi_write"], (
+            f"{label}: the fence did not put the envelope in front of the model; it "
+            f"printed {proc.stdout!r}"
         )

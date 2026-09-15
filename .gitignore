@@ -22,6 +22,12 @@ dist/
 build/
 *.egg-info/
 
+# LOCI's per-project build root: compiled objects, turn state, manifests.
+# Named explicitly rather than left to the bare `build/` rule above, which
+# catches it only incidentally — tightening that rule to `/build/` would make
+# turn state committable.
+.loci/build/
+
 # IDE
 .vscode/
 .idea/

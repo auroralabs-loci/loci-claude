@@ -34,9 +34,18 @@ Access the LOCI Portal in your browser once you have a LOCI account.
 
 1. Create your LOCI account and open the portal in your browser.
 2. Install the LOCI plugin in Claude Code — see [README](README.md) for setup instructions.
-3. Run your first analysis from Claude Code. Results appear in the portal automatically.
+3. Run `/loci:init` in your project so LOCI knows how it builds.
+4. Run your first analysis from Claude Code. Results appear in the portal automatically.
 
-No additional configuration is required to start seeing data. Every Claude Code and Cursor session that runs LOCI analysis is logged, analysed, and visualised in the portal in real time.
+Every Claude Code and Cursor session that runs LOCI analysis is logged, analysed, and visualised in the portal in real time.
+
+**What stays on your machine.** The build recipe `/loci:init` writes
+(`.loci/build.yaml`) and LOCI's own build output (`.loci/build/`) are local and
+gitignored, and neither is uploaded. **Your source code is not uploaded either**
+— but its layout partly is: what reaches the portal is the measurement and enough
+to file it, which means the function name, the numbers, the verdict, the commit,
+the project and branch names, and the **path of the source file** each measured
+function came from.
 
 ---
 
@@ -155,7 +164,7 @@ Monitor your LOCI usage against your plan limits.
 
 Quota resets daily. 
 
-If you hit your limit, on-demand skills (`/exec-trace`, `/stack-depth`, `/memory-report`, `/control-flow`) will be unavailable until reset. 
+If you hit your limit, on-demand skills (`/loci:exec-trace`, `/loci:stack-depth`, `/loci:memory-report`, `/loci:control-flow`) will be unavailable until reset. 
 
 Auto-running skills (`loci-preflight`, `loci-post-edit`) pause automatically and resume the following day.
 

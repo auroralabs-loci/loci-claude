@@ -1,8 +1,34 @@
 # LOCI Usage Examples
 
-LOCI runs two skills automatically on every Claude Code session — no slash command needed. Four additional skills are available on demand.
+LOCI runs two skills automatically on every Claude Code session — no slash command needed. The rest are available on demand.
 
 Each example shows a complete LOCI interaction — the trigger phrase, what LOCI does internally, and the output format you will see in Claude Code.
+
+---
+
+### 0. Initialization — Recording How the Project Builds
+
+**Trigger:** Once per checkout, before anything else
+
+> `/loci:init`
+
+LOCI reads the project, asks at most one question, and records the answer in
+`.loci/build.yaml`. It relays the CLI's own report rather than rebuilding one, so
+what you see is close to:
+
+    LOCI is initialized for this project:
+      target:     armv7e-m
+      languages:  c
+      compiler:   arm-none-eabi-gcc
+      build:      cmake, compdb build/compile_commands.json (cmake)
+      artifact:   build/app.elf
+      validated:  replay-compare (confirmed by user: True)
+      recipe:     /home/you/fw/.loci/build.yaml
+
+Every measurement below resolves its compiler and flags from that file rather
+than guessing, which is what makes two runs of the same binary agree. The recipe
+and LOCI's build output (`.loci/build/`) are machine-local and gitignored, so
+each clone runs `/loci:init` once for itself.
 
 ---
 
@@ -115,10 +141,11 @@ LOCI extracts the annotated control-flow graph directly from the compiled binary
 
       control-flow shape: cycles no · indirect 1 · recursion no
 
-      Verdict: ⚠ findings — 1 item flagged
+      Verdict: 🔶 CAUTION — 1 indirect call site in dispatch_handler; the
+              invariant for indirect_calls is 0 by definition
 
 Indirect calls through registers (`bl r3`, `blx r2`) are the finding class code review alone can't see — the source shows a clean function-pointer call, but only the binary reveals whether the target is statically resolvable or reachable from attacker-controlled input. LOCI flags them with the specific call site so you can verify the dispatch table is bounds-checked before merge.
 
-A clean graph returns `✅ clean` with no table. Unbounded recursion or broken linkage returns `❌ blocking` and names the function.
+A graph with nothing in it to raise closes on `PASS`, with no table, and says what the word rests on — over the functions the run cut, which is not the whole binary. Whether a cycle is bounded, and whether a callee is missing from the link, are `/loci:stack-depth`'s to judge: this skill states the cycles and call sites it found and names the function.
 
-`/control-flow` requires no MCP connection and no network access — it runs entirely from your compiled binary.
+`/loci:control-flow` requires no MCP connection and no network access — it runs entirely from your compiled binary.

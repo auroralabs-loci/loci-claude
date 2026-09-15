@@ -1,15 +1,13 @@
 {
   "skill_name": "memory-report",
-  "description": "Tests that the memory-report skill correctly runs asm-analyze memmap, interprets the JSON output, and reports section breakdowns, ROM/RAM summaries, top consumers, delta comparisons, and optional region budgets. Primary test ELF is $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out.",
-  "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running.",
-
+  "description": "Tests that the memory-report skill correctly runs asm-analyze memmap, interprets the JSON output, and reports section breakdowns, ROM/RAM summaries, top consumers, delta comparisons, and optional per-region occupancy. Primary test ELF is $LOCI_TEST_BLE_FRESH/basic_ble.out.",
+  "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running. These prompts do NOT restate session facts: run_evals.sh injects a real SESSION_CONTEXT, and a prompt asserting a different target, compiler or build system asks the model to choose between two sources of truth — which the recipe design settles against the prompt, so such an eval can only fail. Ask for the analysis; let the harness supply the session.",
   "evals": [
-
     {
       "id": "mr-1",
       "category": "single-elf-report",
-      "prompt": "Analyze the ROM/RAM memory usage of $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/freertos/ticlang/basic_ble.out. No map file — just show me the section breakdown, summary, and top consumers. Session says Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
-      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to basic_ble.out. Reports a section breakdown table with section names, addresses, sizes, types, and memory regions. Reports ROM/RAM summary totals with code/rodata/data/bss breakdown. Reports top ROM consumers (functions) and top RAM consumers (variables) by size. Does not report memory region budgets since no map file was provided (memory_regions is null).",
+      "prompt": "Analyze the ROM/RAM memory usage of $LOCI_TEST_BLE_FRESH/basic_ble.out. No map file — just show me the section breakdown, summary, and top consumers.",
+      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to basic_ble.out. Reports a section breakdown table with section names, addresses, sizes, types, and memory regions. Reports ROM/RAM summary totals with code/rodata/data/bss breakdown. Reports top ROM consumers (functions) and top RAM consumers (variables) by size. Does not report per-region occupancy since no map file was provided (memory_regions is null). Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; B3 says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
       "files": [],
       "assertions": [
         {
@@ -29,17 +27,16 @@
           "description": "Top consumers help identify optimization targets"
         },
         {
-          "text": "Response does NOT show memory region budgets or usage percentages",
-          "description": "No map file was provided, so region budget information should be absent"
+          "text": "Response does NOT show per-region occupancy or usage percentages",
+          "description": "No map file was provided, so there are no region sizes to compute a percentage against"
         }
       ]
     },
-
     {
       "id": "mr-2",
       "category": "single-elf-with-map",
-      "prompt": "Show me the memory usage of $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/freertos/ticlang/basic_ble.out with the linker map file at $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/freertos/ticlang/basic_ble.map. I want to see how much of each memory region is used. Session says Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
-      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to basic_ble.out and --map-file pointing to basic_ble.map. Reports section breakdown, ROM/RAM summary, and top consumers as in a normal report. Additionally reports memory region budgets showing per-region used bytes, total bytes, and usage percentage. If the map file is not found or cannot be parsed, the report still completes but notes that memory regions are unavailable.",
+      "prompt": "Show me the memory usage of $LOCI_TEST_BLE_FRESH/basic_ble.out with the linker map file at $LOCI_TEST_BLE_FRESH/basic_ble.map. I want to see how much of each memory region is used.",
+      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to basic_ble.out and --map-file pointing to basic_ble.map. Reports section breakdown, ROM/RAM summary, and top consumers as in a normal report. Additionally reports per-region occupancy showing per-region used bytes, total bytes, and usage percentage. Those percentages are arithmetic on region sizes the map declared, so reporting them is correct; they must NOT produce a status or verdict by themselves, since no contract bounds them. If the map file is not found or cannot be parsed, the report still completes but notes that memory regions are unavailable. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; B3 says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
       "files": [],
       "assertions": [
         {
@@ -51,17 +48,16 @@
           "description": "Map file should add to the report, not replace the base sections"
         },
         {
-          "text": "Response includes memory region budgets with used/total bytes and usage percentage per region, OR notes that the map file was not found or could not be parsed",
-          "description": "Region budgets are the key added value of the map file; graceful fallback if absent"
+          "text": "Response includes per-region occupancy with used/total bytes and usage percentage per region, OR notes that the map file was not found or could not be parsed. No occupancy percentage may set a row status or the verdict on its own",
+          "description": "Region occupancy is the key added value of the map file; graceful fallback if absent. The region size is a fact, but the level at which a percentage becomes a concern is not, so it informs a flag rather than setting a status"
         }
       ]
     },
-
     {
       "id": "mr-3",
       "category": "delta-comparison",
-      "prompt": "Compare memory usage between two builds. The new binary is $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/freertos/ticlang/basic_ble.out and the old binary is $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out. Show me what changed. Session says Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
-      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to the OLD build (CC2340R5/basic_ble.out) and --comparing-elf-path pointing to the NEW build (examples/.../basic_ble.out); the reported delta is new-minus-old. Reports section deltas showing before/after/delta sizes per section. Reports ROM/RAM summary deltas with total byte changes and percentages. Reports the symbol-level delta section (added/removed/changed symbols sorted by delta size). NOTE: these two builds are near-identical, so the symbol-delta section may legitimately report 'no symbols changed' while the ROM summary shows only a small (a few bytes) delta — that is correct. Does not report memory region budget deltas since no map file was provided.",
+      "prompt": "Compare memory usage between two builds. The new binary is $LOCI_TEST_BLE_FRESH/basic_ble.out and the old binary is $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out. Show me what changed.",
+      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to the OLD build (CC2340R5/basic_ble.out) and --comparing-elf-path pointing to the NEW build (examples/.../basic_ble.out); the reported delta is new-minus-old. Reports section deltas showing before/after/delta sizes per section. Reports ROM/RAM summary deltas with total byte changes and percentages. Reports the symbol-level delta section (added/removed/changed symbols sorted by delta size). NOTE: these two builds are near-identical, so the symbol-delta section may legitimately report 'no symbols changed' while the ROM summary shows only a small (a few bytes) delta — that is correct. Does not report per-region occupancy deltas since no map file was provided.",
       "files": [],
       "assertions": [
         {
@@ -81,16 +77,19 @@
           "description": "Symbol deltas pinpoint exactly which functions/variables grew or shrank; with two near-identical builds the section correctly reports no changes"
         },
         {
-          "text": "Response does NOT show memory region budget deltas",
-          "description": "No map file was provided, so region budget comparison should be absent"
+          "text": "Response does NOT show per-region occupancy deltas",
+          "description": "No map file was provided, so there are no region sizes to compare against"
         }
+      ],
+      "requires_files": [
+        "$LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out"
       ]
     },
-
     {
       "id": "mr-4",
+      "source_file": "examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/app/app_data.c",
       "category": "object-file-report",
-      "prompt": "Compile $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/app/app_data.c for armv7e-m and analyze the memory usage of the object file that compile produces, using the object path the compile reports back. Session says Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
+      "prompt": "Compile $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/app/app_data.c at this session's LOCI target and analyze the memory usage of the object file that compile produces, using the object path the compile reports back.",
       "expected_output": "Compiles the source and then runs asm-analyze memmap with --elf-path set to the object path the compile REPORTED, whatever that path turns out to be, rather than one it assembled from the basename. Recognizes it as a relocatable object file (not a linked executable). Reports section sizes and types but notes that addresses are zero-based (no linker placement). Reports ROM and RAM estimates. Notes that memory regions are not available for object files (memory_regions is null). Does not attempt to use a map file.",
       "files": [],
       "assertions": [
@@ -100,7 +99,7 @@
         },
         {
           "text": "Response measures the object path the compile reported back, not one it constructed from the source's basename",
-          "description": "Graded on PROVENANCE, not on the path's shape — the shape depends on which CLI is installed. The pinned CLI still writes a flat .loci-build/<target>/<stem>.o; a newer one keys the path on the source's own directories (phase 02c). An assertion naming either shape fails the correct behaviour on the other generation. What is always wrong is assembling the path: the earlier version of this eval handed the model a flat .loci-build/armv7e-m/app_data.o for a source six directories down, and the harness never built it, so the eval either failed for a bogus reason or silently measured a pre-upgrade leftover and PASSED."
+          "description": "Graded on PROVENANCE, not on the path's shape — the shape depends on which CLI is installed. Both the directory and the shape depend on the generation: an older CLI writes a flat .loci-build/<target>/<stem>.o, a newer one writes under .loci/build/ and keys the path on the source's own directories. An assertion naming either shape fails the correct behaviour on the other generation. What is always wrong is assembling the path: the earlier version of this eval handed the model a flat .loci-build/armv7e-m/app_data.o for a source six directories down, and the harness never built it, so the eval either failed for a bogus reason or silently measured a pre-upgrade leftover and PASSED."
         },
         {
           "text": "Response identifies the file as relocatable and notes that addresses are zero-based or that memory regions are not available",
@@ -111,11 +110,10 @@
           "description": "Even without linking, section sizes provide useful ROM/RAM estimates"
         },
         {
-          "text": "Response does NOT pass --map-file or report memory region budgets",
+          "text": "Response does NOT pass --map-file or report per-region occupancy",
           "description": "Map files are not applicable to unlinked object files"
         }
       ]
     }
-
   ]
 }

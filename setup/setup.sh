@@ -17,7 +17,7 @@ NC='\033[0m'
 
 # MUST match session-init.sh / ensure-loci-cli.sh so the detection guard below
 # checks the same keyed file session-init writes.
-STATE_DIR="${HOME}/.loci/state"
+STATE_DIR="${LOCI_STATE_DIR:-${HOME:-}/.loci/state}"
 mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR="${PLUGIN_DIR}/state"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 export LOCI_STATE_DIR="$STATE_DIR"
@@ -33,13 +33,12 @@ echo -e "${BLUE}  SW Execution-Aware Analysis${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
 
-# 1. Prerequisites (jq, uv)
+# 1. Prerequisites (uv). `jq` is NOT one any more — the hooks and the shared
+# libraries read and write JSON through `lib/loci_json.sh`, which forks nothing.
+# What still wants a JSON tool is steps 6 and 7 below, which run on a fresh
+# machine possibly BEFORE the CLI exists, so they take whatever the host happens
+# to have and say so when it has nothing. Nothing here fails for want of it.
 echo -n "Checking prerequisites... "
-if ! JQ=$(find_jq); then
-  echo -e "${RED}missing: jq${NC}"
-  echo "PREREQ_MISSING: jq is required but not installed."
-  exit 1
-fi
 if ! have_uv; then
   echo -e "${RED}missing: uv${NC}"
   echo "PREREQ_MISSING: uv is required to install the loci CLI but is not installed."
@@ -50,7 +49,12 @@ echo -e "${GREEN}OK${NC}"
 # 2. Install the loci CLI via the single installer (self-locking).
 echo -n "Installing loci CLI... "
 bash "${PLUGIN_DIR}/hooks/ensure-loci-cli.sh" >/dev/null 2>&1 || true
-_cli_status=$("$JQ" -r '.status // "unknown"' "${STATE_DIR}/loci-cli-status.json" 2>/dev/null || echo unknown)
+_cli_status="unknown"
+if [ -f "${STATE_DIR}/loci-cli-status.json" ]; then
+  loci_json_load "$(<"${STATE_DIR}/loci-cli-status.json")"
+  _cli_status=$(loci_json_get status) || _cli_status="unknown"
+  [ -n "$_cli_status" ] || _cli_status="unknown"
+fi
 case "$_cli_status" in
   ready|installed) echo -e "${GREEN}OK${NC}" ;;
   skipped)         echo -e "${YELLOW}skipped (bootstrap/test mode)${NC}" ;;
@@ -71,25 +75,73 @@ echo -n "Detecting project... "
 _hash=$(hash_cwd)
 _ctx="${STATE_DIR}/project-context-${_hash}.json"
 _status="missing"
-[ -f "$_ctx" ] && _status=$("$JQ" -r '.detection_status // "ok"' "$_ctx" 2>/dev/null)
+# Default "" and not "ok": three of the four session states never write
+# `detection_status` (the CLI owns it once a recipe governs), so reading its
+# absence as a healthy detection made setup skip the repair it exists to do,
+# on exactly the files that needed it.
+if [ -f "$_ctx" ]; then
+  loci_json_load "$(<"$_ctx")"
+  _status=$(loci_json_get detection_status) || _status=""
+fi
 if [ "$_status" = "ok" ]; then
   echo -e "${GREEN}OK (already detected this session)${NC}"
 elif detect_and_write_context; then
   echo -e "${GREEN}OK${NC}"
-  echo "  Compiler:   ${_CTX_COMPILER:-unknown}"
-  echo "  Build:      ${_CTX_BUILD:-unknown}"
-  echo "  Target:     ${_CTX_TARGET:-unknown}"
+  # Only what is known. Three `unknown`s under a green OK read as a broken
+  # detection; in the inactive and uninitialized states they are not unknown,
+  # they are not applicable, and the line below says which.
+  [ "${_CTX_COMPILER:-unknown}" = unknown ] || echo "  Compiler:   ${_CTX_COMPILER}"
+  case "${_CTX_BUILD:-unknown}" in unknown|none) ;; *) echo "  Build:      ${_CTX_BUILD}" ;; esac
+  [ "${_CTX_TARGET:-unknown}" = unknown ]   || echo "  Target:     ${_CTX_TARGET}"
+  # Say which of the four states this is. Setup used to print three `unknown`s
+  # for a directory LOCI will not analyze and leave the reader to guess whether
+  # that was a detection failure or a deliberate refusal.
+  case "${_CTX_STATE:-}" in
+    initialized)          echo "  Recipe:     ${_CTX_RECIPE:-.loci/build.yaml}" ;;
+    initialized_degraded)
+      if [ -n "${_CTX_RECIPE:-}" ]; then
+        echo "  Recipe:     ${_CTX_RECIPE} — no recorded state yet; the first analysis rebuilds it"
+      else
+        echo "  Recipe:     recorded state says this project is initialized, but no .loci/build.yaml was found from here"
+      fi ;;
+    armed)                echo "  Recipe:     none yet — run /loci:init (or let the first analysis initialize it)" ;;
+    inactive_status)      echo "  LOCI:       inactive (init: ${_CTX_STATUS:-recorded}) — /loci:init is what changes it" ;;
+    inactive_multi)       echo "  LOCI:       inactive — this directory holds several independent projects" ;;
+    inactive_none)        echo "  LOCI:       inactive — no build file declares a build here" ;;
+    inactive_failed)      echo "  LOCI:       inactive — project detection could not run here; /loci:bug-report collects why" ;;
+  esac
 else
   echo -e "${YELLOW}detection failed${NC}"
 fi
 
-# 6. Validate hooks.json.
+# 6. Validate hooks.json — with whatever parser the host has.
+#
+# This step runs before the CLI is guaranteed to exist, so it cannot ask `loci`,
+# and `jq` is no longer a prerequisite. So: jq if the host has one, else a
+# python, else say plainly that nothing validated it. A missing parser is not a
+# broken install and must not fail the setup — Claude Code parses hooks.json
+# itself and reports its own error — but an INVALID file with a parser present
+# still stops here, which is the whole point of the step.
+JQ=$(command -v jq 2>/dev/null || true)
+PY_BIN=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
 echo -n "Validating hooks... "
-if "$JQ" empty "${PLUGIN_DIR}/hooks/hooks.json" 2>/dev/null; then
-  echo -e "${GREEN}OK${NC}"
+if [ -n "$JQ" ]; then
+  if "$JQ" empty "${PLUGIN_DIR}/hooks/hooks.json" 2>/dev/null; then
+    echo -e "${GREEN}OK${NC}"
+  else
+    echo -e "${RED}INVALID hooks/hooks.json${NC}"
+    exit 1
+  fi
+elif [ -n "$PY_BIN" ]; then
+  if "$PY_BIN" -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' \
+       "${PLUGIN_DIR}/hooks/hooks.json" 2>/dev/null; then
+    echo -e "${GREEN}OK${NC}"
+  else
+    echo -e "${RED}INVALID hooks/hooks.json${NC}"
+    exit 1
+  fi
 else
-  echo -e "${RED}INVALID hooks/hooks.json${NC}"
-  exit 1
+  echo -e "${YELLOW}skipped (no jq or python on this host)${NC}"
 fi
 
 # 7. Register hooks with Claude Code. As a plugin, Claude Code reads hooks.json
@@ -98,6 +150,11 @@ fi
 echo -n "Registering hooks... "
 if echo "${PLUGIN_DIR}" | grep -q '\.claude/plugins'; then
   echo -e "${GREEN}plugin mode — hooks.json used directly${NC}"
+elif [ -z "$JQ" ]; then
+  # Only the non-plugin (checkout) install reaches here, and the rewrite below
+  # is a JSON transform this script cannot do on its own. Named, not silent: the
+  # user is told which file to edit rather than left with hooks that never fire.
+  echo -e "${YELLOW}skipped (needs jq; add hooks/hooks.json to .claude/settings.json by hand)${NC}"
 else
   PROJECT_ROOT="$(cd "${PLUGIN_DIR}/../../.." 2>/dev/null && pwd || echo "")"
   # Skip if PROJECT_ROOT is empty, a filesystem root, or not writable
@@ -151,7 +208,7 @@ echo "  - Analyze ELF binaries locally via the loci CLI (timing, energy,"
 echo "    stack depth, memory, symbols, assembly, diff)"
 echo "  - Inject performance/regression findings into Claude's context"
 echo ""
-echo "Skills: /exec-trace, /stack-depth, /memory-report, /control-flow"
+echo "Skills: /loci:exec-trace, /loci:stack-depth, /loci:memory-report, /loci:control-flow"
 echo "Auto-runs: loci-preflight (in /plan), loci-post-edit (after edits)"
 echo ""
 echo "Run 'loci doctor' to verify your toolchain, and sign in once with"

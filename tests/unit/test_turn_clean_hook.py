@@ -1,11 +1,11 @@
-"""The hook that reclaims what `.loci-build` accumulates.
+"""The hook that cleans what `.loci/build` accumulates.
 
 Phase 03. `loci build snapshot --turn` writes one tree per user turn — the
 pre-edit copy of every file the turn touched, plus any baseline objects rebuilt
 from them — and until now nothing removed any of it. One script on two events:
 `Stop` is the one event that means "that turn is over", so retention lives
-there; `SessionStart` does the same plus `--reclaim-objects`, the only stage
-that deletes something a compile produced.
+there; `SessionStart` does the same plus `--deep`, the stages that delete
+something a compile produced and the stale files under `~/.loci/state`.
 
 The interesting assertions are not "it ran". They are the ways this hook could
 be worse than absent:
@@ -13,13 +13,13 @@ be worse than absent:
 * **It must never exit 2.** On `Stop`, exit 2 blocks the stop and continues the
   conversation, so a hook that runs every turn would spin for ever. The CLI it
   calls exits 2 for an unknown subcommand, which is exactly what the pinned CLI
-  does with `build reap` — i.e. the dangerous case is the DEFAULT case today.
+  does with `build clean` — i.e. the dangerous case is the DEFAULT case today.
 * **It must resolve the project root the way the WRITER does.**
   `pre-edit-hook.sh` calls `build snapshot` with no `--project-root`, so captures
   land under the session's own directory — the payload's `cwd`. An earlier
   version walked that up to the git top level, which is a different directory
   whenever a session runs in a subdirectory of a repo: the snapshot wrote
-  `repo/firmware/.loci-build` while the reap swept `repo/.loci-build`, and
+  `repo/firmware/.loci-build` while the clean swept `repo/.loci-build`, and
   retention never ran for that project, silently, for ever. Every test here runs
   the hook from somewhere that is NOT the project root; with the two equal,
   "anchored to the payload" and "resolved against the shell" are the same path
@@ -52,7 +52,7 @@ from pathlib import Path
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
-HOOK = PLUGIN_ROOT / "hooks" / "turn-reap.sh"
+HOOK = PLUGIN_ROOT / "hooks" / "turn-clean.sh"
 
 _RS = "\x1e"
 
@@ -78,7 +78,7 @@ pytestmark = pytest.mark.skipif(
 # `"cwd":"C:\Playground\loci-claude-tests\probe-hooks"` — and the hook passes it
 # through unchanged, which is what makes it agree with the writer. A `/c/...`
 # spelling would not: Python on Windows reads that as a rooted path on the
-# CURRENT DRIVE, i.e. `C:\c\...`, so the reap would sweep a directory that does
+# CURRENT DRIVE, i.e. `C:\c\...`, so the clean would sweep a directory that does
 # not exist while the captures piled up in the one that does.
 def _to_bash_path(p: Path) -> str:
     s = Path(p).as_posix()
@@ -116,8 +116,8 @@ class Result:
         ]
 
     @property
-    def reaps(self) -> list[list[str]]:
-        return [c for c in self.calls if c[:2] == ["build", "reap"]]
+    def cleans(self) -> list[list[str]]:
+        return [c for c in self.calls if c[:2] == ["build", "clean"]]
 
     def flag(self, name: str, call: int = 0) -> str | None:
         """The value of `--name=value`.
@@ -125,23 +125,35 @@ class Result:
         The joined form is the one the hook must use: `prompt_id` is
         undocumented, and argparse reads a separate value beginning with `-` as
         the next OPTION and exits 2 — which is indistinguishable here from "this
-        CLI has no `build reap`", so the whole reap would silently stop running.
+        CLI has no `build clean`", so the whole clean would silently stop running.
         """
         prefix = f"{name}="
-        for token in self.reaps[call]:
+        for token in self.cleans[call]:
             if token.startswith(prefix):
                 return token[len(prefix):]
         return None
 
     def has(self, name: str, call: int = 0) -> bool:
         return any(t == name or t.startswith(f"{name}=")
-                   for t in self.reaps[call])
+                   for t in self.cleans[call])
 
 
-def _project(tmp_path: Path, name: str = "proj") -> Path:
-    """A project with a `.loci-build`, which is the hook's cheap gate."""
+# The two build roots the hook has to work on. `.loci/build/` is where the CLI
+# writes since the layout moved; `.loci-build/` is where it wrote before, and
+# still holds real turn trees on any project that has not recompiled since.
+_NEW_ROOT = ".loci/build"
+_OLD_ROOT = ".loci-build"
+
+
+def _project(tmp_path: Path, name: str = "proj",
+             roots: tuple[str, ...] = (_NEW_ROOT,)) -> Path:
+    """A project with a turn tree under each named build root — the hook's cheap
+    gate. The default is the one root the CLI reads since T14; the legacy name
+    is staged only by the tests that say it must NOT open the gate."""
     root = tmp_path / name
-    (root / ".loci-build" / "turns").mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    for rel in roots:
+        (root / rel / "turns").mkdir(parents=True, exist_ok=True)
     return root
 
 
@@ -193,19 +205,19 @@ def _run(tmp_path: Path, root: Path | None, *, payload: dict | None = None,
 
 # ── the call it makes ────────────────────────────────────────────────────────
 
-def test_the_turn_is_reaped_against_the_payloads_project_root(tmp_path):
+def test_the_turn_is_cleaned_against_the_payloads_project_root(tmp_path):
     root = _project(tmp_path)
 
     res = _run(tmp_path, root)
 
-    assert len(res.reaps) == 1
+    assert len(res.cleans) == 1
     assert res.flag("--project-root") == str(root)
     assert res.flag("--turn") == "5e1b8673-df09-42d3-a338-c13726ff8d32"
 
 
 def test_the_project_root_survives_a_space_in_its_path(tmp_path):
     """The whole reason arguments are logged RS-separated. Unquoted, this arrives
-    as two argv entries and the reap runs against a directory that does not
+    as two argv entries and the clean runs against a directory that does not
     exist — silently, since everything here is redirected."""
     root = _project(tmp_path, "My Project")
 
@@ -221,7 +233,7 @@ def test_the_root_is_the_payloads_cwd_not_the_git_top_level(tmp_path):
 
     An earlier version walked that up to the git top level, which is a different
     directory whenever a session runs in a subdirectory of a repo: the snapshot
-    wrote `repo/firmware/.loci-build` while the reap swept `repo/.loci-build`,
+    wrote `repo/firmware/.loci-build` while the clean swept `repo/.loci-build`,
     the cheap gate found nothing, and retention never ran for that project —
     silently, for ever."""
     repo = tmp_path / "repo"
@@ -232,7 +244,7 @@ def test_the_root_is_the_payloads_cwd_not_the_git_top_level(tmp_path):
 
     res = _run(tmp_path, root)
 
-    assert len(res.reaps) == 1
+    assert len(res.cleans) == 1
     assert res.flag("--project-root") == str(root)
 
 
@@ -244,22 +256,110 @@ def test_the_environment_is_only_a_fallback(tmp_path):
     res = _run(tmp_path, root, project_dir_env=True,
                payload={"hook_event_name": "Stop", "prompt_id": "abc"})
 
-    assert len(res.reaps) == 1
+    assert len(res.cleans) == 1
     assert res.flag("--project-root") == str(root)
 
 
 # ── the ways it must stay quiet ──────────────────────────────────────────────
 
 def test_a_project_that_has_never_run_loci_spawns_nothing(tmp_path):
-    """This fires at the end of every single turn in every session. No
-    `.loci-build`, no spawn."""
+    """This fires at the end of every single turn in every session. Neither build
+    root, no spawn."""
     root = tmp_path / "bare"
     root.mkdir()
 
     res = _run(tmp_path, root)
 
-    assert res.reaps == []
+    assert res.cleans == []
     assert res.out == ""
+
+
+def test_a_dot_loci_with_no_build_directory_is_not_a_reason_to_spawn(tmp_path):
+    """`.loci/` alone holds the recipe and its `.gitignore`. Gating on the parent
+    would spawn a clean on every turn of every INITIALIZED project, which is most
+    of them, for a directory that may hold nothing cleanable at all."""
+    root = tmp_path / "recipe-only"
+    (root / ".loci").mkdir(parents=True)
+    (root / ".loci" / "build.yaml").write_text("version: 1\n", encoding="utf-8")
+
+    res = _run(tmp_path, root)
+
+    assert res.cleans == []
+
+
+# ── the gate: one build root ───────────────────────────────────────────
+#
+# The layout moved from `.loci-build/` to `.loci/build/`, and T14 ended the
+# soak: the CLI reads one root, `loci build clean` sweeps one root, and the
+# hook's gate tests the same one. The way a gate goes wrong is silent — a hook
+# that tests the wrong name never fires, so retention is off for the population
+# that has it, for ever — so all three combinations are pinned, including the
+# one that must NOT open it: a `.loci-build/` alone is a pre-move CLI's litter,
+# and a clean there would be a `loci` spawn on every Stop of every project last
+# measured before the move, for nothing.
+
+def test_the_new_root_opens_the_gate(tmp_path):
+    root = _project(tmp_path, roots=(_NEW_ROOT,))
+
+    res = _run(tmp_path, root)
+
+    assert len(res.cleans) == 1, "the gate did not open; retention never runs"
+    assert res.flag("--project-root") == str(root)
+
+
+def test_the_legacy_root_alone_does_not_open_the_gate(tmp_path):
+    root = _project(tmp_path, roots=(_OLD_ROOT,))
+
+    res = _run(tmp_path, root)
+
+    assert res.cleans == [], (
+        "the hook still gates on the pre-move root, which nothing reads or "
+        "writes since T14"
+    )
+
+
+def test_both_roots_present_is_one_clean(tmp_path):
+    root = _project(tmp_path, roots=(_NEW_ROOT, _OLD_ROOT))
+
+    res = _run(tmp_path, root)
+
+    assert len(res.cleans) == 1
+    assert res.flag("--project-root") == str(root)
+
+
+def test_the_new_root_alone_still_passes_the_turn_through(tmp_path):
+    """The gate is the only thing that changed. Everything the clean is called
+    WITH has to survive the change — a gate that opened but dropped `--turn` would
+    let a background task read a Before that the same turn's clean collected."""
+    root = _project(tmp_path, roots=(_NEW_ROOT,))
+
+    res = _run(tmp_path, root)
+
+    assert res.flag("--turn") == "5e1b8673-df09-42d3-a338-c13726ff8d32"
+    assert not res.has("--deep")
+
+
+def test_the_new_root_alone_runs_deep_on_session_start(tmp_path):
+    root = _project(tmp_path, roots=(_NEW_ROOT,))
+
+    res = _run(tmp_path, root, event="SessionStart")
+
+    assert len(res.cleans) == 1
+    assert res.has("--deep")
+
+
+def test_the_gate_does_not_depend_on_the_compat_stub_existing(tmp_path):
+    """During the soak the CLI left an empty `.loci-build/` beside every write so
+    a plugin PREDATING the move kept passing its own gate; since T14 it writes no
+    stub. A gate that depended on one would work only where it was not needed:
+    a project whose only LOCI artifact is a turn tree has just `.loci/build/`,
+    and this hook is the one that has to sweep it."""
+    root = _project(tmp_path, roots=(_NEW_ROOT,))
+    assert not (root / _OLD_ROOT).exists(), "fixture built the stub after all"
+
+    res = _run(tmp_path, root)
+
+    assert len(res.cleans) == 1
 
 
 def test_an_absent_cli_is_not_an_error(tmp_path):
@@ -270,8 +370,8 @@ def test_an_absent_cli_is_not_an_error(tmp_path):
     assert res.calls == []
 
 
-def test_the_hook_prints_nothing_even_when_the_reap_talks(tmp_path):
-    """Plain stdout on `Stop` goes to the debug log, and a reap has nothing to
+def test_the_hook_prints_nothing_even_when_the_clean_talks(tmp_path):
+    """Plain stdout on `Stop` goes to the debug log, and a clean has nothing to
     tell the user anyway. A hook that leaked the envelope would put JSON where
     Claude Code expects a hook-output document."""
     root = _project(tmp_path)
@@ -285,33 +385,33 @@ def test_the_hook_prints_nothing_even_when_the_reap_talks(tmp_path):
 # ── the pinned CLI, which is the CLI that runs ───────────────────────────────
 
 def test_a_cli_without_the_verb_exits_2_and_the_hook_still_exits_0(tmp_path):
-    """The pin is an exact `==` on a release that has no `build reap` at all, so
+    """The pin is an exact `==` on a release that has no `build clean` at all, so
     argparse's exit 2 is the DEFAULT outcome today, not an edge case. `_run`
     asserts the hook's own exit code, which is the thing that would block the
     stop and spin the conversation."""
     root = _project(tmp_path)
 
     res = _run(tmp_path, root,
-               body='echo "loci build: error: invalid choice: reap" >&2; exit 2')
+               body='echo "loci build: error: invalid choice: clean" >&2; exit 2')
 
-    assert len(res.reaps) == 1
+    assert len(res.cleans) == 1
 
 
 def test_exit_2_is_not_retried_without_the_turn(tmp_path):
     """The edge hooks retry without `--turn` on exit 2, because there it means
     "this CLI has the verb but not the flag". Here it means the verb is missing
     entirely — so a retry cannot succeed, and the only thing it could achieve is
-    running a reap that no longer protects this turn's tree."""
+    running a clean that no longer protects this turn's tree."""
     root = _project(tmp_path)
 
     res = _run(tmp_path, root,
-               body='echo "invalid choice: reap" >&2; exit 2')
+               body='echo "invalid choice: clean" >&2; exit 2')
 
-    assert len(res.reaps) == 1
+    assert len(res.cleans) == 1
     assert res.has("--turn")
 
 
-def test_a_payload_with_no_prompt_id_still_reaps(tmp_path):
+def test_a_payload_with_no_prompt_id_still_cleans(tmp_path):
     """`prompt_id` is undocumented and was established by probing real sessions.
     If it ever goes missing the retention must still run — losing the protection
     for one turn is a recompile; losing retention is unbounded growth."""
@@ -320,20 +420,20 @@ def test_a_payload_with_no_prompt_id_still_reaps(tmp_path):
     res = _run(tmp_path, root, payload={
         "hook_event_name": "Stop", "cwd": str(root)})
 
-    assert len(res.reaps) == 1
+    assert len(res.cleans) == 1
     assert not res.has("--turn")
     assert res.flag("--project-root") == str(root)
 
 
-def test_the_per_turn_reap_never_reclaims_objects(tmp_path):
-    """`--reclaim-objects` is the one stage that deletes something a compile
-    produced, and it belongs to the once-per-session caller. Running it every
+def test_the_per_turn_clean_never_runs_deep(tmp_path):
+    """`--deep` runs the stages that delete something a compile produced,
+    and they belong to the once-per-session caller. Running it every
     turn would put the riskiest stage on the hottest path."""
     root = _project(tmp_path)
 
     res = _run(tmp_path, root)
 
-    assert not res.has("--reclaim-objects")
+    assert not res.has("--deep")
 
 
 # ── registration ─────────────────────────────────────────────────────────────
@@ -346,24 +446,24 @@ def test_the_hook_is_registered_on_stop(tmp_path):
     commands = [h["command"]
                 for entry in doc["hooks"]["Stop"] for h in entry["hooks"]]
 
-    assert any("turn-reap.sh" in c for c in commands)
+    assert any("turn-clean.sh" in c for c in commands)
 
 
-def test_session_start_reclaims_objects_and_names_no_turn(tmp_path):
+def test_session_start_runs_deep_and_names_no_turn(tmp_path):
     """The other caller, driven rather than grepped. A previous version of this
     test read `session-init.sh` as prose and asserted on the flags in the line it
     found — which stayed green when the CALL was deleted, i.e. it could not see
     the one failure it existed to catch.
 
     SessionStart is the once-per-session caller, so it is the one that passes
-    `--reclaim-objects`; and it has no turn to protect, which is fine because a
+    `--deep`; and it has no turn to protect, which is fine because a
     tree written moments ago is kept by the CLI's in-flight window."""
     root = _project(tmp_path)
 
     res = _run(tmp_path, root, event="SessionStart")
 
-    assert len(res.reaps) == 1
-    assert res.has("--reclaim-objects")
+    assert len(res.cleans) == 1
+    assert res.has("--deep")
     assert not res.has("--turn")
     assert res.flag("--project-root") == str(root)
 
@@ -376,19 +476,19 @@ def test_the_hook_is_registered_on_session_start_with_no_matcher(tmp_path):
     doc = json.loads((PLUGIN_ROOT / "hooks" / "hooks.json").read_text(
         encoding="utf-8"))
     entries = [e for e in doc["hooks"]["SessionStart"]
-               if any("turn-reap.sh" in h["command"] for h in e["hooks"])]
+               if any("turn-clean.sh" in h["command"] for h in e["hooks"])]
 
     assert len(entries) == 1
     assert "matcher" not in entries[0]
 
 
-def test_session_init_no_longer_reaps_on_its_own(tmp_path):
+def test_session_init_no_longer_cleans_on_its_own(tmp_path):
     """Two callers spawning the same verb on one event would double the work and
     let the two disagree about the project root, which is how they diverged in
     the first place."""
     text = (PLUGIN_ROOT / "hooks" / "session-init.sh").read_text(encoding="utf-8")
     invocations = [line for line in text.splitlines()
-                   if "loci build reap" in line]
+                   if "loci build clean" in line]
 
     assert invocations == []
 
@@ -397,7 +497,7 @@ def test_flags_are_passed_joined_so_a_dash_value_cannot_be_read_as_an_option(
         tmp_path):
     """`prompt_id` is undocumented — established by probing real sessions. A
     value beginning with `-` makes argparse answer "expected one argument" and
-    exit 2, which is indistinguishable here from "this CLI has no `build reap`":
+    exit 2, which is indistinguishable here from "this CLI has no `build clean`":
     retention would stop for every project and look exactly like the pre-release
     no-op. The joined form has no such reading."""
     root = _project(tmp_path)
@@ -406,4 +506,4 @@ def test_flags_are_passed_joined_so_a_dash_value_cannot_be_read_as_an_option(
         "hook_event_name": "Stop", "prompt_id": "-abc123", "cwd": str(root)})
 
     assert res.flag("--turn") == "-abc123"
-    assert "--turn" not in res.reaps[0]          # never the separate spelling
+    assert "--turn" not in res.cleans[0]          # never the separate spelling

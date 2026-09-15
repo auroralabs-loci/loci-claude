@@ -5,7 +5,7 @@ description: >
   stack, and memory trends over time from LOCI analysis.
 when_to_use: >
   When user says "show trends", "optimization progress", "what changed on
-  this branch", "how are my functions doing", "/trends". Also when user asks
+  this branch", "how are my functions doing", "/loci:trends". Also when user asks
   about performance trajectory or whether an optimization sprint is working.
 ---
 
@@ -13,11 +13,11 @@ when_to_use: >
 
 This skill calls the bare `loci` command (on PATH via the session bootstrap)
 and reads `<project-context>` from the session context — see Step 0. Every
-`loci` call prints one JSON envelope (`{ok,data}`); parse it with `jq`.
+`loci` call prints one JSON envelope (`{ok,data}`); let it print and read `ok`.
 
 ## Step 0: Check session context
 
-Read the persisted detection results from the `<project-context>` path (the
+Read the recorded project facts from the `<project-context>` path (the
 per-session keyed file, listed as `project context:` in this session's
 context). Extract `git_branch` for the report header.
 
@@ -62,7 +62,7 @@ Computing the summary line:
 - **B** = count of rows with `Direction = baseline`.
 
 The table shows only columns that have data — timing from post-edit
-auto-runs, stack from /stack-depth invocations, memory from /memory-report
+auto-runs, stack from /loci:stack-depth invocations, memory from /loci:memory-report
 invocations. No empty columns, no missing-data notices.
 
 ## Step 3: Single-function drill-down (optional)

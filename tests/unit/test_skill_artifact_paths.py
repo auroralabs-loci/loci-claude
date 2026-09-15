@@ -22,7 +22,6 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS_DIR = PLUGIN_ROOT / "skills"
 CONTRACT = SKILLS_DIR / "_shared" / "loci-runtime-contract.md"
-SCRIPT_REL = "lib/compile-and-read-back.sh"
 
 # Skills that consume compile artifacts. `loci-preflight` is included: it does not
 # read a baseline through the script, but it does compile, and it spelled the flat
@@ -31,20 +30,32 @@ ARTIFACT_CONSUMERS = (
     "loci-post-edit",
     "loci-preflight",
     "exec-trace",
-    "control-flow",
-    "stack-depth",
-    "memory-report",
 )
 
-# The four whose Incremental Path used to invoke a compiler directly.
-INCREMENTAL_SKILLS = ("exec-trace", "control-flow", "stack-depth", "memory-report")
+# The skills whose Incremental Path used to invoke a compiler directly. `stack-depth`,
+# `memory-report` and `control-flow` left this list when `analyse stack` / `analyse
+# memory` / `analyse cfg` took the artifact ladder into the CLI: they compile nothing,
+# resolve nothing, and name no object path at all, so there is no path for them to
+# assemble wrongly.
+# Measures a change through `loci analyse prepare`; must not type a compiler line.
+INCREMENTAL_SKILLS = ("exec-trace",)
 
-# An assembled LOCI object/sidecar path: `.loci-build/` + a target-like segment + a
-# filename ending in `.o` or `.meta.json`. It must NOT flag the legitimate mentions
-# that remain:
-#   * `.loci-build/elf/…`     — where the CLI spills CFG/timing files, read by path
-#   * `.loci-build/flags.json`, `.loci-build/cargo/` — user-facing config/cache
-#   * `.loci-build/` alone    — prose about the directory
+# ...which makes the *absence* of a path the property to hold for those three.
+VERB_OWNED_SKILLS = ("stack-depth", "memory-report", "control-flow")
+
+# An assembled LOCI object/sidecar path: EITHER build root + a target-like segment
+# + a filename ending in `.o` or `.meta.json`.
+#
+# Both roots, because the layout moved (`.loci-build/` → `.loci/build/`) and a lint
+# that knows only the old name is a lint that stops working the moment the prose is
+# rewritten to the new one — which is exactly what the skill-slimming tasks are
+# about to do. The rule is unchanged: never guess where the CLI put something it
+# wrote. Only the spelling of "where" got a second form.
+#
+# It must NOT flag the legitimate mentions that remain:
+#   * `<root>/dumps/…`       — where the CLI spills CFG/timing files, read by path
+#   * `<root>/flags.json`, `<root>/cargo/` — user-facing config/cache
+#   * `<root>/` alone         — prose about the directory
 #   * `<output>.meta.json`    — the sidecar's relation to the envelope's own
 #                               `output`, which is not an assembled path
 #
@@ -61,8 +72,12 @@ INCREMENTAL_SKILLS = ("exec-trace", "control-flow", "stack-depth", "memory-repor
 # `$(basename <source> .c).o`, which is the canonical shell idiom for the very defect,
 # and a flat concrete `blink.o.meta.json`. So anything under a target-like segment
 # that ends in `.o` or `.meta.json` counts, whatever the middle looks like.
+# Named once: three lints below need "either build root", and a second spelling of
+# the alternation is the same defect this file exists to prevent, one level up.
+BUILD_ROOT_RE = r"(?:\.loci-build|\.loci/build)"
+
 ASSEMBLED_OBJECT_RE = re.compile(
-    r"\.loci-build/"
+    BUILD_ROOT_RE + r"/(?:objects/)?"
     r"(?:<[a-z_]+>|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|aarch64|armv7e-m|armv6-m|tc399)/"
     # The filename part: ordinary characters, OR a `$(…)` command substitution, which
     # contains spaces and a `)` and so was excluded by a plain character class —
@@ -77,20 +92,48 @@ def _doc(name: str) -> tuple[Path, str]:
     return path, path.read_text(encoding="utf-8")
 
 
+def _joined(text: str) -> str:
+    """Shell line-continuations folded away — **inside fenced blocks only**.
+
+    `[^\n]` cannot cross a newline, so both compiler screens were blind to the
+    house style the contract's own preamble fence uses:
+
+        arm-none-eabi-gcc <flags> <objects> -T <linker.ld> \\
+            -o <binary>
+
+    But a trailing backslash means two different things either side of a fence. In
+    a shell it continues the command; in Markdown prose it is a **hard line
+    break**, and review used exactly that: a sentence ending `…do not stop there:
+    \\` followed by a command on the next line. Folding those into one line
+    manufactured the proximity the negation exemption then honoured — the screen
+    was defeated with its own normalisation. So the fold happens only where a
+    backslash is shell syntax.
+    """
+    out: list[str] = []
+    in_fence = False
+    pending = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            pending = False
+            out.append(line)
+            continue
+        if pending:
+            out[-1] = out[-1] + " " + line.lstrip()
+        else:
+            out.append(line)
+        body = out[-1].rstrip("\r\n")
+        pending = in_fence and body.endswith("\\")
+        if pending:
+            out[-1] = body[:-1]
+    return "".join(out)
+
+
 def _rel(path: Path) -> str:
     # `as_posix()`: on Windows `relative_to` yields backslashes, so a set comparison
     # against the forward-slash labels these lints build by hand never matched.
     return path.relative_to(PLUGIN_ROOT).as_posix()
-
-
-def test_the_script_the_skills_point_at_exists_and_is_executable():
-    """Six documents name this path. A rename that misses them turns every
-    Incremental Path into `bash: no such file`."""
-    script = PLUGIN_ROOT / SCRIPT_REL
-    assert script.is_file(), f"{SCRIPT_REL} is missing but skills invoke it"
-    assert script.read_text(encoding="utf-8").startswith("#!"), (
-        "the script has no shebang"
-    )
 
 
 def test_no_skill_assembles_a_loci_build_artifact_path():
@@ -111,6 +154,111 @@ def test_no_skill_assembles_a_loci_build_artifact_path():
     )
 
 
+def test_the_lint_would_catch_an_assembled_path_under_either_root():
+    """A guard that cannot fire is not a guard.
+
+    `test_no_skill_assembles_a_loci_build_artifact_path` passes today because no
+    skill assembles one — which is indistinguishable from a regex that matches
+    nothing at all, and the regex just grew an alternation. So drive it: the same
+    defect written against each root has to be caught, and the mentions that are
+    deliberately legal have to survive."""
+    caught = [
+        ".loci-build/armv6-m/blink.o",
+        ".loci/build/objects/armv6-m/blink.o",
+        ".loci/build/armv6-m/blink.o",
+        ".loci/build/objects/<loci_target>/<basename>.o",
+        ".loci/build/<loci_target>/<basename>.o",
+        ".loci/build/$loci_target/$(basename <source> .c).o",
+        ".loci/build/objects/armv7e-m/app_data.o.meta.json",
+    ]
+    for spelling in caught:
+        assert ASSEMBLED_OBJECT_RE.search(spelling), (
+            f"the lint no longer catches {spelling!r}")
+
+    allowed = [
+        ".loci/build/dumps/app_data-abc123/stack-analysis.json",
+        ".loci/build/turns/2f1c/dumps/app_data-abc123/control-flow.txt",
+        ".loci/build/flags.json",
+        ".loci/build/cargo/",
+        ".loci-build/elf/blink/relinked.elf",
+        "the `.loci/build/` tree",
+        "<output>.meta.json",
+    ]
+    for spelling in allowed:
+        assert not ASSEMBLED_OBJECT_RE.search(spelling), (
+            f"the lint now flags the legitimate {spelling!r}")
+
+
+# The hooks are edge adapters: they map payload fields onto `loci` flags and read
+# whatever the CLI reports back. A hook that spelled an object path for itself
+# would be the skills' defect in the one place no skill lint looks — and unlike a
+# skill, a hook has no model to notice the file is missing.
+HOOK_SCRIPTS = ("post-edit-hook.sh", "post-bash-bypass.sh", "pre-edit-hook.sh", "turn-clean.sh",
+                "draft-pending-nudge.sh", "session-init.sh", "contract-guard.sh",
+                "ensure-loci-cli.sh",
+                # PR #259: the turn stamp and the manifest nudge. Both are one
+                # `loci` call each and spell no artifact path of their own.
+                "prompt-submit-turn.sh", "manifest-status-nudge.sh",
+                # The Stop impact flush, a `hooks.json` command string until it
+                # needed a log line of its own. Same shape: one `loci` call.
+                "stats-flush.sh")
+
+
+def test_every_linted_hook_exists():
+    """The list above is written by hand, so a renamed hook would silently drop
+    out of the lint below rather than fail it."""
+    missing = [n for n in HOOK_SCRIPTS
+               if not (PLUGIN_ROOT / "hooks" / n).is_file()]
+    assert not missing, f"hooks named in the lint are gone: {missing}"
+    on_disk = {p.name for p in (PLUGIN_ROOT / "hooks").glob("*.sh")}
+    assert on_disk == set(HOOK_SCRIPTS), (
+        f"a hook is not covered by the lint: {sorted(on_disk - set(HOOK_SCRIPTS))}")
+
+
+def test_no_hook_assembles_a_loci_build_artifact_path():
+    offenders: list[str] = []
+    for name in HOOK_SCRIPTS:
+        path = PLUGIN_ROOT / "hooks" / name
+        text = path.read_text(encoding="utf-8")
+        for m in ASSEMBLED_OBJECT_RE.finditer(text):
+            offenders.append(
+                f"  {_rel(path)}:{text.count(chr(10), 0, m.start()) + 1}"
+                f" -> {m.group(0)}")
+    assert not offenders, (
+        "these hooks assemble a LOCI artifact path instead of passing the project "
+        "root and letting the CLI resolve it:\n" + "\n".join(offenders))
+
+
+def test_the_verb_owned_skills_resolve_no_artifact_of_their_own():
+    """`analyse stack` / `analyse memory` own the B1-B4 ladder now.
+
+    A skill that still spells a compile, a `.prev` or an artifact path has two
+    resolvers, and the one that loses is the one with the freshness gate in it.
+    """
+    offenders: list[str] = []
+    for name in VERB_OWNED_SKILLS:
+        path, text = _doc(name)
+        for pattern in (r"compile-and-read-back", r"loci build compile",
+                        r"loci build fresh", r"\.o\.prev", r"\bPREV_META\b"):
+            for m in re.finditer(pattern, text):
+                offenders.append(
+                    f"  {_rel(path)}:{text.count(chr(10), 0, m.start()) + 1}"
+                    f" -> {m.group(0)}")
+    assert not offenders, (
+        "these skills still resolve an artifact themselves; the verb does it, and "
+        "two resolvers means the un-gated one can win:\n" + "\n".join(offenders))
+
+
+def test_the_verb_owned_skills_call_the_verb_with_turn_and_caller():
+    for name, verb in (("stack-depth", "loci analyse stack"),
+                       ("memory-report", "loci analyse memory"),
+                       ("control-flow", "loci analyse cfg")):
+        text = _doc(name)[1]
+        assert verb in text, f"{name} never calls `{verb}`"
+        assert "--turn" in text and "--caller" in text, (
+            f"{name} omits a flag the verb refuses without")
+
+
 def test_the_incremental_skills_do_not_raw_compile():
     """A raw `<compiler> … -c … -o` writes no `.meta.json` sidecar, so the next
     `loci build snapshot` refuses outright and the turn loses its baseline. Worse, a
@@ -128,7 +276,8 @@ def test_the_incremental_skills_do_not_raw_compile():
         re.M)
     offenders: list[str] = []
     for name in INCREMENTAL_SKILLS:
-        path, text = _doc(name)
+        path, raw = _doc(name)
+        text = _joined(raw)
         for m in raw_compile.finditer(text):
             # The prose that *forbids* the shape has to name it, so an exemption is
             # needed — but it must be a negation POSITIONED BEFORE the command, not
@@ -146,36 +295,153 @@ def test_the_incremental_skills_do_not_raw_compile():
             )
 
     assert not offenders, (
-        "these skills still invoke a compiler directly for the Incremental Path. "
-        f"Route it through {SCRIPT_REL} so a sidecar is written and the object's "
+        "these skills still invoke a compiler directly. Route it through "
+        "`loci analyse prepare --source` so a sidecar is written and the object's "
         "real path comes back:\n" + "\n".join(offenders)
     )
 
 
-def test_the_incremental_skills_invoke_the_script():
-    """Naming the contract section is not enough — the skill has to run the thing.
-    The withdrawn rounds each described the right idea and then pasted a compiler
-    line underneath it."""
-    missing = [n for n in INCREMENTAL_SKILLS if SCRIPT_REL not in _doc(n)[1]]
-    assert not missing, (
-        f"these skills never invoke {SCRIPT_REL}: " + ", ".join(missing)
-    )
-    also = "loci-post-edit"
-    assert SCRIPT_REL in _doc(also)[1], f"{also} never invokes {SCRIPT_REL}"
+#: The anchor in the shared contract that owns the three-step preamble. T12
+#: replaced four byte-identical copies of it — `.o.prev` rule, invocation fence,
+#: `key<TAB>value` table, `FAILED` branch — with a link to this.
+
+#: A fenced block in **either** CommonMark fence style. Round 1 of T12's review
+#: pasted the whole invocation back into `control-flow` inside a `~~~` fence and
+#: every invocation lint stayed green — while `_split_sections` in the same test
+#: package had toggled on `~~~` for years, so the repo already knew tilde fences
+#: render here. One spelling now, used by every fence scan in this file.
+FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)[a-z]*\n(.*?)^[ \t]*(?:```|~~~)",
+                      re.S | re.M)
+
+
+def _fences(text: str) -> list[str]:
+    return FENCE_RE.findall(text)
+
+
+def test_the_fence_scanner_sees_both_commonmark_fence_styles():
+    """A guard that reads one fence style is a guard one character wide.
+
+    Driven rather than assumed: the tilde form is what defeated three lints in
+    review, so it is asserted here directly, and the indented form because these
+    recipes sit inside numbered list items.
+    """
+    for style in ("```", "~~~"):
+        assert _fences(f"text\n{style}\nbash x.sh --source y\n{style}\nmore"), (
+            f"the scanner cannot see a {style} fence")
+        assert _fences(f"1. item\n   {style}\n   bash x.sh\n   {style}\n"), (
+            f"the scanner cannot see an indented {style} fence")
+
+
+#: A compiler invoked to produce a BINARY — a link, not a compile. `-c` is
+#: deliberately absent from this pattern, which is the whole point:
+#: `test_the_incremental_skills_do_not_raw_compile` requires ` -c ` between the
+#: driver and `-o`, so it is blind to a link line by construction, and the four
+#: skills' Full Compilation Paths were exactly link lines. Review restored
+#: `<compiler> <flags> -o <binary> <source>` to `exec-trace` and every lint in the
+#: repo stayed green — a binding design constraint ("the raw `<compiler> <flags>
+#: -o` lines → rebuild via the recipe's `full_build`") with nothing behind it.
+_RAW_LINK = re.compile(
+    r"(?:<compiler>|\$\{?CC\}?|\$\(CC\)"
+    r"|\b(?:arm-none-eabi|aarch64-linux-gnu|tricore-elf)-(?:g(?:cc|\+\+)|ld)"
+    r"|\bg(?:cc|\+\+)\b|\bclang(?:\+\+)?\b|\biccarm\b|\barmclang\b"
+    r"|\bld\b|\bcc\b|\bc\+\+\b|\barmlink\b|\bilinkarm\b)"
+    # Backticks are ordinary in this prose (`-o` is written in code spans), so
+    # they cannot end the run — only a newline can, and `_joined` has already
+    # folded continuations into one line by the time this runs.
+    r"[^\n]{0,200}?\s-o\s",
+    re.M)
+
+
+def test_no_skill_links_a_binary_with_a_compiler_line():
+    """No `loci` verb links, and the recipe records no link line — so a skill that
+    spells one is telling the model to invent the command the design says it may
+    not invent, and to produce a binary whose flags nothing vouches for.
+
+    Scoped to the skills that build (the four Pattern-B ones plus the two that
+    compile). The exemption is the same shape as the raw-compile lint's: prose that
+    FORBIDS the line has to be able to name it, so a negation positioned before the
+    command on the same line is allowed.
+    """
+    offenders: list[str] = []
+    for name in ARTIFACT_CONSUMERS:
+        path, raw = _doc(name)
+        text = _joined(raw)
+        for m in _RAW_LINK.finditer(text):
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            eol = text.find("\n", m.start())
+            line = text[line_start:eol if eol != -1 else len(text)]
+            before = line[:m.start() - line_start]
+            # The exemption must cover how a PROHIBITION is written and nothing
+            # else. `without`, `is not` and `are not` were on this list and are
+            # ordinary English: review exempted a plain instruction to hand-link
+            # with "Reproduce the image **without** the recipe: <compiler> … -o".
+            # They are gone. What remains is explicit refusal vocabulary, and it
+            # must sit within ~90 characters of the command rather than anywhere
+            # earlier on a line — an unbounded window is how a fold, or a long
+            # sentence, lends its negation to a command that has none.
+            near = before[-90:]
+            if re.search(r"\bnot a raw\b|\bnever\b|\bdo not\b|\bdon't\b"
+                         r"|\binstead of\b|\brather than (?:assembl|writ|invent)"
+                         r"|\bno `?loci`? verb links\b|\bmay not\b"
+                         r"|\bis not something you may\b|\bforbidden\b",
+                         near, re.I):
+                continue
+            offenders.append(
+                f"  {_rel(path)}:{text.count(chr(10), 0, m.start()) + 1}"
+                f" -> {line.strip()[:90]}")
+    assert not offenders, (
+        "these skills spell a compiler line that produces a binary. The build is "
+        "the recipe's `build.full_build`, and where the recipe has none the answer "
+        "is to say so — not to assemble a link:\n" + "\n".join(offenders))
+
+
+def test_the_raw_link_lint_would_catch_the_line_it_exists_for():
+    """It passes today because no skill spells one, which is indistinguishable
+    from a pattern that matches nothing. Drive both directions."""
+    for spelling in ("<compiler> <flags> -o <binary> <source>",
+                     "arm-none-eabi-gcc -g -O0 -Wl,-T,x.ld a.c -o kernel.elf",
+                     "clang++ -target aarch64 main.cpp -o app.elf",
+                     "arm-none-eabi-ld -T fixture.ld a.o -o app.elf",
+                     "$(CC) $(LDFLAGS) objs -o firmware.elf",
+                     "cc main.c -o a.out"):
+        assert _RAW_LINK.search(spelling), f"the lint misses {spelling!r}"
+    # The folded form, which is how the house style writes it — INSIDE a fence,
+    # because that is the only place a trailing backslash is shell syntax.
+    fenced = ("```\n"
+              "arm-none-eabi-gcc <flags> <objects> -T <linker.ld> \\\n"
+              "    -o <binary>\n"
+              "```\n")
+    assert _RAW_LINK.search(_joined(fenced)), (
+        "a backslash continuation inside a fence still hides a link line")
+    # …and OUTSIDE a fence the same backslash is a Markdown hard break, so folding
+    # it would manufacture the proximity the negation exemption honours. Review
+    # defeated both compiler screens exactly that way.
+    prose = ("Where the recipe records no `full_build`, this is not a guess: \\\n"
+             "`arm-none-eabi-gcc <flags> <objects> -o <binary>` is the link.\n")
+    folded = _joined(prose)
+    assert "\n" in folded.rstrip("\n"), (
+        "a hard line break in prose is being folded into one line, which lends "
+        "the first line's negation to a command on the second")
+    for legal in ("loci build compile --source x.c --loci-target armv6-m",
+                  "`build.full_build` out of the recipe",
+                  "loci elf memmap --elf <PREV> --comparing-elf <OBJ>"):
+        assert not _RAW_LINK.search(legal), f"the lint flags the legal {legal!r}"
 
 
 def test_every_consumer_names_where_its_paths_come_from():
     """Five skills were rewritten to stop assembling paths; each has to say what
     replaced that, or the rewrite reads as an unexplained deletion and the next
     editor puts the flat path back. `loci-preflight` satisfies this by naming the
-    script to explain why it is the one that does NOT use it."""
+    script to explain why it is the one that does NOT use it; `loci-post-edit` by
+    naming `loci analyse prepare`, whose envelope is where its paths come from."""
     missing = [
         name for name in ARTIFACT_CONSUMERS
         if "compile-and-read-back" not in _doc(name)[1]
+        and "loci analyse prepare" not in _doc(name)[1]
     ]
     assert not missing, (
-        "these skills consume compile artifacts but never mention "
-        "compile-and-read-back: " + ", ".join(missing)
+        "these skills consume compile artifacts but never say where their paths "
+        "come from (compile-and-read-back or loci analyse prepare): " + ", ".join(missing)
     )
 
 
@@ -210,206 +476,106 @@ def test_no_skill_tells_the_model_to_pass_meta_prev():
     )
 
 
-def test_the_contract_anchor_the_skills_link_to_still_exists():
-    text = CONTRACT.read_text(encoding="utf-8")
-    assert 'id="compile-and-read-back"' in text, (
-        "the compile-and-read-back anchor is gone from the runtime contract; six "
-        "SKILL.md files reference it"
-    )
+_VALUELESS_FLAGS: frozenset[str] = frozenset()
 
 
-def test_the_contract_says_values_do_not_cross_fences():
-    """Every fenced block the model runs is a separate Bash call, so nothing the
-    script sets survives into the next one — which is why it prints. Two withdrawn
-    rounds shipped skills that set `$OBJ` in one fence and *branched on it* in
-    another, where nothing had ever printed the value."""
-    text = CONTRACT.read_text(encoding="utf-8")
-    body = text[text.index('id="compile-and-read-back"'):]
-    # `\**` tolerates the markdown emphasis the prose actually carries
-    # (`a *separate* Bash call`); spelling the phrase without it made an earlier
-    # version of this assertion unsatisfiable, which is how that was caught.
-    assert re.search(r"separate\**\s+Bash call", body), (
-        "the contract no longer warns that values do not survive between fenced "
-        "blocks — the defect that withdrew phase 02 twice"
-    )
 
 
-def test_the_contract_does_not_paste_optional_syntax_into_a_command():
-    """`[--phase <phase>]` inside a runnable block reaches argparse verbatim:
-    `unrecognized arguments: [--phase post-edit]`, exit 2, and no envelope to
-    explain it. Optionality belongs in prose, not in the command."""
-    text = CONTRACT.read_text(encoding="utf-8")
-    body = text[text.index('id="compile-and-read-back"'):]
-    fences = re.findall(r"^```\n(.*?)^```$", body, re.S | re.M)
-    assert fences, "the recipe section has no fenced command"
-    offenders = [
-        line.strip()
-        for fence in fences[:1]
-        for line in fence.splitlines()
-        if re.search(r"\[--[a-z-]+|<[a-z-]+\|[a-z-]+>", line)
-    ]
-    assert not offenders, (
-        "the invocation contains optional-syntax brackets or an alternation that a "
-        "model will paste verbatim into a shell:\n  " + "\n  ".join(offenders)
-    )
+def test_no_shipped_fence_drives_the_leaf_verbs_the_pair_replaced():
+    """Two routes used to be prose-driven leaf calls: post-edit's header route
+    (`build affected`, the script with `--reconstruct`) and exec-trace's whole run
+    (`elf asm`, `elf diff`, `loci timing`, `build fresh`, `stats measure`). Both are
+    `prepare` → `measure` now; a fence that sends a model back to a leaf is the
+    ping-pong returning."""
+    banned = ("loci build affected", "--reconstruct", "--baseline", "loci timing",
+              "loci elf asm", "loci build fresh", "stats measure", "compile-and-read-back")
+    for name in ("loci-post-edit", "exec-trace"):
+        path, text = _doc(name)
+        for fence in _fences(text):
+            for token in banned:
+                assert token not in fence, f"{_rel(path)}: a fence invokes `{token}`"
+    skill = _doc("loci-post-edit")[1]
+    assert "data.headers" in skill and "data.units" in skill, (
+        "post-edit's Step 0b no longer reads the header account `prepare` returns")
+    assert 'id="header-edits"' in CONTRACT.read_text(encoding="utf-8") and "#header-edits" in skill
 
 
-# ---------------------------------------------------------------------------
-# The documented invocation itself
+def test_exec_trace_runs_the_pair_and_nothing_else():
+    text = _doc("exec-trace")[1]
+    verbs = {m.group(1) for f in _fences(text)
+             for m in re.finditer(r"\bloci (analyse \w+|stats \w+|\w+ \w+)", f)}
+    # `stats record` left the fences in 051 — the call is written once in
+    # `_shared/verdicts.md` and this skill links to it — so it is checked as a link
+    # rather than as a fence. The property here is unchanged: no OTHER verb.
+    assert verbs == {"analyse prepare", "analyse measure"}, verbs
+    assert "verdicts.md#recording-the-verdict" in text, (
+        "exec-trace no longer routes to the shared recording section, so its verdicts "
+        "and its sentence never reach the record")
+    for token in ("--elf", "--functions", "fabricated", "data.not_found",
+                  "Artifact provenance (mandatory)"):
+        assert token in text, f"exec-trace lost {token!r}"
+
+
+def test_no_skill_reads_a_bare_exit_number_as_stale():
+    """`measure` exited 3 on a stale manifest and 4 on a bad `--select` — the same
+    numbers as `auth_required` and `quota_exceeded`. A skill told "3 → re-run
+    prepare" looped on an expired login. Stale/invalid are 6/7 with `error.code`s
+    now, and every skill branches on the code before the number."""
+    for name in ("loci-post-edit", "loci-preflight", "exec-trace"):
+        path, text = _doc(name)
+        assert "manifest_stale" in text, f"{_rel(path)} never names error.code manifest_stale"
+        assert "Branch on `$?` first" not in text and \
+               "Branch on `$?` before you parse anything" not in text, (
+            f"{_rel(path)} still branches on the exit number before the envelope")
+        for stale_as_3 in re.finditer(r"(\| `3` \|[^\n]*[Ss]tale|`3` the tree moved)", text):
+            raise AssertionError(f"{_rel(path)}: {stale_as_3.group(0)!r}")
+    contract = CONTRACT.read_text(encoding="utf-8")
+    assert "manifest_stale" in contract and "exit 6" in contract
+
+
+# ── the legacy build root in prose ───────────────────────────────────────────
 #
-# Five skills retype this command, so the *document's* syntax is as load-bearing as
-# the script's code — and it was unguarded. An independent campaign deleted the
-# quotes around every value, deleted `--project-root` outright, and left `--turn`
-# with no value, and all nine lints stayed green. The last of those lands on a
-# real hang, and unquoting `<source>` re-creates the original phase-02 defect one
-# level up: with a Windows-normal root the model writes
-# `--source /c/Users/First Last/proj/blink.c` and the script's own parser answers
-# `FAILED - unknown argument: Last/proj/blink.c`.
-# ---------------------------------------------------------------------------
+# The CLI writes under `.loci/build/` since the layout moved, read `.loci-build/`
+# beside it for one soak, and since T14 (Phase 4) reads nothing there: the
+# directory is a pre-move CLI's litter. Prose that names it as a place anything
+# is read from or written to is wrong — and the merge of the pair branch once put
+# two such sentences back (post-edit's `analyse cfg` out-dir, the contract's
+# bug-report plumbing line) after the lint that would have noticed them went out
+# with Pattern B. So: every `.loci-build` in shipped prose must sit in a sentence
+# that is ABOUT the legacy root being unread. The allow-list is by phrase rather
+# than by file so a sentence that changes has to be re-read.
 
-# Values that are file paths or free-form tokens: a space in any of them is ordinary
-# on Windows, so each must be quoted wherever it is shown.
-_MUST_QUOTE = ("<source>", "<project-context>", "<project_root>", "<turn-id>",
-               "<plugin-dir>")
+LEGACY_ROOT_MENTIONS = {
+    # bug-report: the turn-tree walk names the one root and says what the other is
+    "A `.loci-build/` beside it is a pre-move CLI's\n    leftover; nothing reads it",
+    # bug-report check 7: the artifact glob does not descend into it
+    "A `.loci-build/` beside it is a pre-move CLI's leftover and is not searched",
+    # the contract: what to tell a user whose `loci` predates the `set` verb —
+    # THAT CLI reads only the pre-move location, and the sentence is about it
+    "`.loci-build/flags.json`, not `.loci/build/flags.json`",
+}
 
-# Flags the script needs on every call. `--turn` is deliberately absent: it is
-# legitimately omitted when there is no id.
-_REQUIRED_FLAGS = ("--source", "--loci-target", "--project-root")
 
-
-def _invocation_fences() -> list[tuple[str, str]]:
-    """Every fenced block that invokes the script, across the contract and the skills
-    that call it. Returns (label, fence-text)."""
-    out: list[tuple[str, str]] = []
-    docs = [(_rel(CONTRACT), CONTRACT)] + [
-        (f"skills/{n}/SKILL.md", SKILLS_DIR / n / "SKILL.md")
-        for n in ("loci-post-edit", *INCREMENTAL_SKILLS)
-    ]
-    for label, path in docs:
+def test_the_legacy_root_is_named_only_where_the_sentence_is_about_it():
+    offenders: list[str] = []
+    for path in sorted(SKILLS_DIR.rglob("*.md")):
         text = path.read_text(encoding="utf-8")
-        for m in re.finditer(r"```[a-z]*\n(.*?)^\s*```", text, re.S | re.M):
-            if SCRIPT_REL in m.group(1):
-                out.append((label, m.group(1)))
-    return out
-
-
-def test_every_documented_invocation_exists_and_is_found():
-    """A guard that scans nothing passes for the wrong reason. Six documents call the
-    script; if the fence-matching regex or the tag convention drifts, say so here
-    rather than silently linting an empty list."""
-    fences = _invocation_fences()
-    labels = {label for label, _ in fences}
-    expected = {"skills/_shared/loci-runtime-contract.md"} | {
-        f"skills/{n}/SKILL.md" for n in ("loci-post-edit", *INCREMENTAL_SKILLS)
-    }
-    assert labels == expected, (
-        f"the invocation was not found in every caller. found={sorted(labels)} "
-        f"expected={sorted(expected)}"
-    )
-
-
-def test_every_documented_invocation_quotes_its_path_values():
-    offenders: list[str] = []
-    for label, fence in _invocation_fences():
-        for token in _MUST_QUOTE:
-            for m in re.finditer(re.escape(token), fence):
-                lo = fence.rfind("\n", 0, m.start()) + 1
-                line = fence[lo:fence.find("\n", m.start())]
-                # Quoted if the placeholder is inside a double-quoted run on its line.
-                quoted = re.search(r'"[^"\n]*' + re.escape(token) + r'[^"\n]*"', line)
-                if not quoted:
-                    offenders.append(f"  {label}: {line.strip()[:88]}")
-    assert not offenders, (
-        "these documented commands leave a path value unquoted, so any project or "
-        "user directory containing a space splits into two arguments — ordinary on "
-        "Windows (`C:\\Users\\First Last\\…`):\n" + "\n".join(sorted(set(offenders)))
-    )
-
-
-def test_every_documented_invocation_passes_the_required_flags():
-    offenders: list[str] = []
-    for label, fence in _invocation_fences():
-        missing = [f for f in _REQUIRED_FLAGS if f not in fence]
-        if missing:
-            offenders.append(f"  {label}: missing {', '.join(missing)}")
-    assert not offenders, (
-        "these documented commands omit a flag the script needs. Without "
-        "`--project-root` the CLI falls back to the shell's own directory, so a "
-        "skill whose shell sits anywhere else writes a second `.loci-build/` tree "
-        "and reports the real baseline as absent:\n" + "\n".join(offenders)
-    )
-
-
-# Flags of `compile-and-read-back.sh` that genuinely take NO value. Named explicitly
-# rather than inferred, and deliberately short: this list is the only thing standing
-# between the lint and the defect it exists for, so every entry has to be checked
-# against the script's own `case` arm. A flag listed here that really does take a
-# value gets its broken spelling blessed in prose — which is precisely the half-edit
-# that hung the script forever with zero bytes on stdout and stderr.
-_VALUELESS_FLAGS = frozenset({"--reconstruct"})
-
-
-def test_the_valueless_flags_really_are_valueless_in_the_script():
-    """The exemption above is only safe while it matches the script. A `case` arm
-    that shifts twice takes a value, and one that shifts once does not."""
-    text = (PLUGIN_ROOT / SCRIPT_REL).read_text(encoding="utf-8")
-    for flag in _VALUELESS_FLAGS:
-        m = re.search(re.escape(flag) + r"\)[^\n]*", text)
-        assert m, f"{flag} is exempted from the value lint but the script has no arm for it"
-        assert "shift 2" not in m.group(0), (
-            f"{flag} is exempted from the value lint but its arm shifts twice, so it "
-            f"DOES take a value: {m.group(0).strip()}"
-        )
-        assert "need_value" not in m.group(0), (
-            f"{flag} is exempted from the value lint but its arm requires a value"
-        )
-
-
-def test_no_documented_invocation_leaves_a_flag_without_a_value():
-    """A trailing flag used to hang the script forever with no output at all. It now
-    answers `FAILED  -  <flag> needs a value`, but a document that ships the broken
-    call is still shipping a failure."""
-    offenders: list[str] = []
-    for label, fence in _invocation_fences():
-        joined = re.sub(r"\\\n\s*", " ", fence)
-        for line in joined.splitlines():
-            if SCRIPT_REL not in line and not line.strip().startswith("--"):
+        for m in re.finditer(r"\.loci-build", text):
+            window = text[max(0, m.start() - 90): m.end() + 90]
+            flat = window.replace("\r\n", "\n")
+            if any(phrase in flat for phrase in LEGACY_ROOT_MENTIONS):
                 continue
-            toks = line.split()
-            for i, tok in enumerate(toks):
-                if not tok.startswith("--") or tok in _VALUELESS_FLAGS:
-                    continue
-                nxt = toks[i + 1] if i + 1 < len(toks) else None
-                if nxt is None or nxt.startswith("--"):
-                    offenders.append(f"  {label}: {tok} has no value in: {line.strip()[:80]}")
+            line = text.count("\n", 0, m.start()) + 1
+            offenders.append(f"  {_rel(path)}:{line} -> …{' '.join(window.split())[:120]}…")
     assert not offenders, (
-        "a documented command leaves a flag with no value:\n" + "\n".join(offenders)
-    )
+        "`.loci-build` named in prose that is not about the legacy root -- the CLI "
+        "writes under `.loci/build/` now; spell that, or register the sentence in "
+        "LEGACY_ROOT_MENTIONS after reading it:\n" + "\n".join(offenders))
 
 
-def test_the_header_route_ships_a_copyable_reconstruct_invocation():
-    """The one fenced command in shipped prose that spells `--reconstruct`.
-
-    Everything about the header route is prose a model retypes, and the campaign
-    found that half unguarded: deleting `--reconstruct` from this fence, deleting
-    Step 0b's heading, and changing "at most three" to "at most thirty" all left the
-    suite green. A model following the fence without `--reconstruct` compiles the
-    translation unit with no Before at all and reports an After-only measurement —
-    which looks exactly like a header edit that changed nothing.
-
-    `--turn` rides with it because the CLI's `--baseline` refuses without one, so a
-    fence carrying the flag but not the id documents a call that cannot work."""
-    text = CONTRACT.read_text(encoding="utf-8")
-    fences = [f for _label, f in _invocation_fences() if "--reconstruct" in f]
-    assert fences, (
-        "no documented invocation passes --reconstruct, so the header route has no "
-        "copyable spelling anywhere in shipped prose"
-    )
-    for fence in fences:
-        assert "--turn" in fence, (
-            "a --reconstruct fence without --turn documents a call the CLI refuses: "
-            "the pre-edit copies are stored per turn"
-        )
-    assert "#header-edits" in text, (
-        "the anchor the compile section and the post-edit skill both link to is gone"
-    )
+def test_every_registered_legacy_mention_still_exists():
+    """The allow-list must not outlive the sentences it allows."""
+    corpus = "\n".join(p.read_text(encoding="utf-8").replace("\r\n", "\n")
+                       for p in sorted(SKILLS_DIR.rglob("*.md")))
+    stale = sorted(p for p in LEGACY_ROOT_MENTIONS if p not in corpus)
+    assert not stale, f"registered legacy-root sentences no longer exist: {stale}"

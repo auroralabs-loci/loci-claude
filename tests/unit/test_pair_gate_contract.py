@@ -13,25 +13,24 @@ against `arm-none-eabi-gcc` 15.2 (Cortex-M4, `-O1 -g`), and reproduced end to en
 * `uint32_t pool[16]` → `pool[4096]` — +16 320 B static RAM, `{0,0,0,0}`;
 * `char scratch[64]` → `[128]` — worst-case frame 72 → 136 B, `{0,0,0,0}`.
 
-So the contract carries a second recipe, and this file pins it the way the diff recipes
-are pinned: the fence is **extracted from the shipped document and run**, against a stub
-`loci`, from a directory with a space in it that is not where the artifacts are. A regex
-can say the recipe still mentions `summary_delta`; only running it can say the recipe
-still prints a number.
+So the contract carries a second recipe. Todo 044 made it two commands: `elf memmap`
+already compared a pair, and `elf stack --comparing-elf` now does too, answering with
+`data.frame_deltas` — the functions whose own frame moved, and only those. The
+assembling that used to happen in a `jq` program in this document happens in the CLI,
+where it is pinned by
+`tests/unit/test_elf_handlers.py::test_stack_comparing_elf_reports_only_the_frames_that_moved`
+in the CLI repo.
 
-The expectations are **derived** from the same envelopes the stub serves, by building
-the lines in Python rather than by listing them — a hand-written expectation can be
-emptied by the same mutation that empties the fixture, which is the failure this repo's
-own lints have hit twice.
-
-Two shapes here are not hypothetical. `symbol_deltas` comes back `null` from a real
-`loci elf memmap` on some pairs — the recipe guards that at two levels, and note that the
-two guards are collectively necessary but individually removable (`null | (.rom // [])`
-is already `[]`), so no test here pins either one alone; they are defence, not coverage.
-And a frame
+What this file pins is what only this repo can answer: that the recipe is those two
+calls and nothing metered, that it passes no `--out-dir`, and that every field a
+consumer is told to read is a field the pair actually returns — including the two
+shapes that are not hypothetical. `symbol_deltas` comes back `null` from a real
+`loci elf memmap` on some pairs, and a `removed` symbol's entry carries `size` and no
+`delta` at all, so a document naming only `delta` puts a null in a report. And a frame
 comparison against a CLI older than 0.1.107 reports every frame as the push size, so
-both sides agree and "unchanged" means nothing — which is why a `NOTE` is a distinct
-answer from a zero delta, and why the tests below never accept silence as a pass.
+both sides agree and `frame_deltas` comes back empty — which is why a refusal is a
+distinct answer from an empty list, and why the prose below may never accept silence
+as a pass.
 """
 
 from __future__ import annotations
@@ -131,30 +130,77 @@ def test_the_recipe_runs_both_halves_and_neither_is_metered():
     `loci elf asm` / `loci timing` appearing here would put the gate's own escape
     hatch on the metered path."""
     fence = _pair_fences()[0]
-    assert "loci elf memmap --elf" in fence and "--comparing-elf" in fence
-    assert fence.count("loci elf stack --elf") == 2, (
-        "the frame half compares two artifacts; one call cannot answer it"
+    assert "loci elf memmap --elf" in fence
+    assert "loci elf stack --elf" in fence
+    assert fence.count("--comparing-elf") == 2, (
+        "both halves compare a PAIR: two `elf stack` runs answer a different "
+        "question, and reading their two analyses back is the work `--comparing-elf` "
+        "exists to remove"
     )
     for metered in ("loci timing", "loci elf asm"):
         assert metered not in fence, f"the unmetered recipe calls `{metered}`"
+    assert "--out-dir" not in fence, (
+        "the recipe passes `--out-dir`; the CLI keys each dump directory on the "
+        "artifact's full path, and a Before and an After sharing a basename then "
+        "collide"
+    )
+
+
+def test_the_recipe_names_every_field_its_readers_are_sent_to():
+    """The prose after the recipe is the whole instruction now — there is no jq
+    projecting the answer into labelled lines. A field named in the reading rules and
+    absent from the pair's envelopes is a model reading `null`."""
+    section = _section(CONTRACT.read_text(encoding="utf-8"),
+                       "## What the differ does not answer")
+    for field in ("data.summary_delta", "rom_total", "ram_static_total",
+                  "data.symbol_deltas", "data.frame_deltas"):
+        assert field in section, (
+            f"the recipe's reading rules never name `{field}`, so the model has no "
+            f"documented source for that half of the answer")
+
+
+def test_the_reading_rules_keep_the_three_traps_the_fields_carry():
+    """Each was a real wrong report, and none of them is visible in the field name.
+
+    A `removed` symbol's entry has `size` and no `delta`; `symbol_deltas` itself
+    comes back `null`; and a function missing from one side reports `null`, which is
+    not a zero frame."""
+    section = _section(CONTRACT.read_text(encoding="utf-8"),
+                       "## What the differ does not answer")
+    assert re.search(r"`size`[^.]{0,80}no `delta`|no `delta`[^.]{0,80}`size`", section), (
+        "the rules do not say an arrived/departed symbol carries `size` and no "
+        "`delta`, so a report quoting `delta` prints a null")
+    assert re.search(r"absent or `null`|`null`[^.]{0,40}absent", section), (
+        "the rules do not say `symbol_deltas` is sometimes absent or null, so its "
+        "absence reads as contradicting a non-zero total")
+    assert re.search(r"`null` on either\s+side is \*\*not a zero frame\*\*", section), (
+        "the rules do not say a `null` frame means the function is not in that "
+        "artifact, so it reads as a frame that shrank to nothing")
 
 
 def test_the_recipe_reads_no_variable_it_does_not_set():
     """A harness that supplies what the shipped text lacks defeats "run the fence" —
-    `/bug-report`'s recipe read a `$PROJECT_ROOT` the skill assigned nowhere, and six
+    `/loci:bug-report`'s recipe read a `$PROJECT_ROOT` the skill assigned nowhere, and six
     tests passed over a program that reports nothing for every project. The
-    environment the model has is `loci`, `jq` and the placeholders."""
+    environment the model has is `loci` and the placeholders."""
     fence = _pair_fences()[0]
     assigned = set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=", fence, re.M))
-    # Single-quoted spans are the jq programs, and jq has `$s` / `$x` variables of its
-    # own that the shell never sees. Scanning them as shell variables reported five
-    # unset ones on a recipe that has none.
-    shell_only = re.sub(r"'[^']*'", "", fence)
-    read = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", shell_only))
+    read = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", fence))
     unset = read - assigned - {"PATH"}
     assert not unset, (
         f"the recipe reads {sorted(unset)}, which nothing in it sets and no skill "
         f"assigns; it will run against empty strings"
+    )
+
+
+def test_the_recipe_captures_nothing_into_a_shell_variable():
+    """Each fenced block is its own Bash call. A recipe that captures its envelopes
+    puts both answers somewhere the next fence cannot reach — and the reading rules
+    below it then name fields nothing printed."""
+    fence = _pair_fences()[0]
+    assert "=$(" not in fence, (
+        "the recipe captures an envelope instead of letting it print; the fields the "
+        "rules below it name are then in a shell variable and not in the transcript"
     )
 
 
@@ -302,9 +348,9 @@ def test_the_gate_step_separates_a_deletion_from_the_quiet_answer():
     and an empty list. Skipping the metered half is right; calling it "no function
     changed" is a lost measurement wearing the words of a clean run."""
     gate = _section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
-    assert 'status == "removed"' in gate, (
-        f"{GATE_STEP} does not tell the model how to name the deleted functions — the "
-        f"filter is the instruction, and 'mentions removed' is not")
+    assert "data.functions.removed" in gate, (
+        f"{GATE_STEP} does not tell the model where the deleted function names are — "
+        f"the field is the instruction, and 'mentions removed' is not")
     assert "summary.removed" in gate, (
         f"{GATE_STEP} never reads `data.summary.removed`, so a deletion cannot be told "
         f"from the quiet answer at all")
@@ -318,12 +364,12 @@ def test_the_gate_step_separates_a_deletion_from_the_quiet_answer():
     assert "removed" in condition, (
         "the quiet-answer branch's condition does not require `removed` to be zero, so "
         f"a delete-only edit satisfies it:\n{condition}")
-    # A `NOTE` means a check did not run, and an absent `FRAME` line then proves
+    # A refusal means a check did not run, and an empty `frame_deltas` then proves
     # nothing — so the quiet condition has to exclude it too, or a failed `elf stack`
     # (a stripped baseline, an expired session) reads as "no frame moved".
-    assert "NOTE" in condition, (
-        "the quiet-answer branch's condition ignores `NOTE` lines, so a check that "
-        f"never ran satisfies it:\n{condition}")
+    assert re.search(r"ok:true|answered", condition), (
+        "the quiet-answer branch's condition ignores whether the two calls answered, "
+        f"so a check that never ran satisfies it:\n{condition}")
 
 
 def test_the_gate_step_states_the_frame_instruments_limit():
@@ -340,6 +386,9 @@ def test_the_gate_step_states_the_frame_instruments_limit():
 
 
 # ── the recipe, actually run ─────────────────────────────────────────────────
+# Two commands and no filter, so what is left to run is the SHELL: a dropped `\` on
+# a continuation, an unquoted path, a verb that is not the one the prose names. The
+# numbers the pair reports are the CLI's, and are pinned there.
 
 def _find_bash() -> str | None:
     if sys.platform == "win32":
@@ -357,113 +406,7 @@ def _to_bash_path(p: Path) -> str:
 
 
 requires_bash = pytest.mark.skipif(
-    _find_bash() is None or shutil.which("jq") is None,
-    reason="bash and jq required to run the documented fence",
-)
-
-
-def _memmap(rom: tuple[int, int], ram: tuple[int, int],
-            symbols: list[dict] | None = None, ram_symbols: list[dict] | None = None,
-            symbol_deltas_null: bool = False) -> dict:
-    def totals(pair: tuple[int, int]) -> dict:
-        return {"base": pair[0], "current": pair[1], "delta": pair[1] - pair[0],
-                "delta_pct": 0.0}
-    data: dict = {
-        "mode": "delta",
-        "summary_delta": {"rom_total": totals(rom), "ram_static_total": totals(ram)},
-        "symbol_deltas": None if symbol_deltas_null else {
-            "rom": symbols or [], "ram": ram_symbols or []},
-    }
-    return {"ok": True, "data": data}
-
-
-def _stack(frames: dict[str, int]) -> dict:
-    # `worst_case_depth` is deliberately NOT equal to `frame_size`. With the two set to
-    # the same number no test could tell which key the recipe reads, and rewriting the
-    # join to `worst_case_depth` — the one field choice the contract calls out as
-    # load-bearing — survived a campaign against the version that did.
-    return {fn: {"frame_size": size, "worst_case_depth": size + 1000, "warnings": []}
-            for fn, size in frames.items()}
-
-
-def _expected(mm: dict, prev: dict[str, int] | None,
-              curr: dict[str, int] | None) -> list[str]:
-    """What the recipe must print, built independently of the jq that prints it."""
-    out: list[str] = []
-    if mm.get("ok"):
-        s = mm["data"]["summary_delta"]
-        for label, key in (("ROM", "rom_total"), ("RAM", "ram_static_total")):
-            t = s[key]
-            out.append(f"{label}\t{t['base']}\t{t['current']}\t{t['delta']}")
-        deltas = mm["data"].get("symbol_deltas") or {}
-        for sym in (deltas.get("rom") or []) + (deltas.get("ram") or []):
-            # A changed symbol carries `delta`; one that arrived or went carries `size`
-            # and no `delta` at all — measured against a real `elf memmap`, and the
-            # reason the recipe cannot simply print `\(.delta)`.
-            bytes_ = sym.get("delta", sym.get("size", 0))
-            out.append(f"SYM\t{sym['name']}\t{sym['status']}\t{bytes_}")
-    else:
-        out.append(f"NOTE\tfootprint not compared: {mm['error']['message']}")
-    if prev is not None and curr is not None:
-        for fn in sorted(set(prev) | set(curr)):
-            # `-`, not 0: a function absent from one artifact has no frame there, and a
-            # zero would read as "its frame shrank to nothing".
-            before = prev.get(fn, "-")
-            after = curr.get(fn, "-")
-            if before != after:
-                out.append(f"FRAME\t{fn}\t{before}\t{after}")
-    return out
-
-
-# The stub answers from its ARGUMENTS, not from a fixed file, and both halves are
-# deliberately faithful to a real CLI in the ways that have bitten:
-#
-# * `elf memmap` serves a file named for the (--elf, --comparing-elf) pair, so swapping
-#   the two — which inverts the sign of every delta, turning "+224 B ROM" into "-224" —
-#   misses and fails loudly. A stub that `cat`s one fixed envelope cannot see that, and
-#   that mutation survived the version of this file that had one.
-# * `elf stack` writes its analysis INTO `--out-dir` and reports that path, falling back
-#   to the released CLI's bare-stem default (`elf/<stem>/`) when the flag is absent. That
-#   fallback is the point: every released CLI keys the default on the stem, so a Before
-#   and an After sharing a basename collide, the second overwrites the first, and no
-#   FRAME line can print. Dropping `--out-dir` from the recipe reproduces that here.
-_STUB = r"""#!/usr/bin/env bash
-verb="$1 $2"; shift 2
-elf=""; comparing=""; outdir=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --elf|--comparing-elf|--out-dir)
-            [ $# -ge 2 ] || { echo "$1 with no value" >&2; exit 8; }
-            case "$1" in
-                --elf) elf="$2" ;;
-                --comparing-elf) comparing="$2" ;;
-                --out-dir) outdir="$2" ;;
-            esac
-            shift 2 ;;
-        *) shift ;;
-    esac
-done
-side() { basename "$(dirname "$1")"; }     # the two artifacts share a basename
-if [ "$verb" = "elf memmap" ]; then
-    f="__DIR__/memmap-$(side "$elf")-$(side "$comparing").json"
-    [ -f "$f" ] || { echo "no memmap fixture for ($elf, $comparing)" >&2; exit 7; }
-    cat "$f"
-    exit 0
-fi
-if [ "$verb" = "elf stack" ]; then
-    err="__DIR__/stackerr-$(side "$elf").json"
-    [ -f "$err" ] && { cat "$err"; exit 0; }
-    src="__DIR__/frames-$(side "$elf").json"
-    [ -f "$src" ] || { echo "no frame fixture for $elf" >&2; exit 7; }
-    dir="${outdir:-__DIR__/elf/$(basename "${elf%.*}")}"
-    mkdir -p "$dir"
-    cp "$src" "$dir/stack-analysis.json"
-    printf '{"ok":true,"data":{"stack_analysis_file":"%s/stack-analysis.json"}}\n' "$dir"
-    exit 0
-fi
-echo "unexpected call: $verb $*" >&2
-exit 9
-"""
+    _find_bash() is None, reason="bash required to run the documented recipe")
 
 
 #: the basename both artifacts share, so the out-dir collision this recipe has to avoid
@@ -472,41 +415,46 @@ exit 9
 #: `.loci-build/<target>/src/blink.o`.
 SHARED_BASENAME = "blink.o"
 
+# The stub answers from its ARGUMENTS, not from a fixed file: it records the pair each
+# verb was given, in order, so an inverted `--elf` / `--comparing-elf` — which flips
+# the sign of every delta — fails loudly rather than passing on a fixed envelope.
+_STUB = r"""#!/usr/bin/env bash
+verb="$1 $2"; shift 2
+elf=""; comparing=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --elf) elf="$2"; shift 2 ;;
+        --comparing-elf) comparing="$2"; shift 2 ;;
+        --out-dir) echo "the recipe passed --out-dir" >&2; exit 8 ;;
+        *) shift ;;
+    esac
+done
+case "$verb" in
+    "elf memmap"|"elf stack") ;;
+    *) echo "unexpected call: $verb" >&2; exit 9 ;;
+esac
+[ -n "$elf" ] && [ -n "$comparing" ] || { echo "$verb got no pair" >&2; exit 7; }
+printf '%s\t%s\t%s\n' "$verb" "$(basename "$(dirname "$elf")")" \
+    "$(basename "$(dirname "$comparing")")"
+"""
 
-def _run_fence(tmp_path: Path, mm: dict,
-               prev_frames: dict[str, int] | None, curr_frames: dict[str, int] | None,
-               *, prev_error: str | None = None, curr_error: str | None = None,
-               ) -> subprocess.CompletedProcess:
-    """Run the shipped fence with a stub `loci`, from a directory with a space in its
-    name that is **not** where the artifacts are — the two CWD/quoting traps this repo
-    has already paid for — with the Before and the After **sharing a basename**."""
-    stub_dir = tmp_path / "stub dir"
-    stub_dir.mkdir()
+
+@requires_bash
+def test_the_shipped_recipe_runs_and_asks_both_verbs_for_the_same_ordered_pair(
+        tmp_path: Path):
+    """Run whole, from a directory with a space in its name that is not where the
+    artifacts are, with the Before and the After **sharing a basename** — the two
+    CWD/quoting traps this repo has already paid for."""
     before = tmp_path / "art dir" / "before" / SHARED_BASENAME
     after = tmp_path / "art dir" / "after" / SHARED_BASENAME
-    for p in (before, after):
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(b"\x7fELF stub")
-    # Keyed on (before, after) IN ORDER: swapping `--elf` and `--comparing-elf` inverts
-    # the sign of every delta, and a stub serving one fixed envelope cannot see it.
-    # A `str` is written verbatim so a caller can serve raw bytes — `""` is the
-    # produced-no-envelope case, which must reach the recipe as genuinely empty stdout.
-    (stub_dir / "memmap-before-after.json").write_text(
-        mm if isinstance(mm, str) else json.dumps(mm), encoding="utf-8")
-    for side, frames, error in (("before", prev_frames, prev_error),
-                                ("after", curr_frames, curr_error)):
-        if error is not None:
-            (stub_dir / f"stackerr-{side}.json").write_text(
-                json.dumps({"ok": False, "error": {"message": error}}), encoding="utf-8")
-        elif frames is not None:
-            (stub_dir / f"frames-{side}.json").write_text(
-                json.dumps(_stack(frames)), encoding="utf-8")
+    for path in (before, after):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x7fELF stub")
 
     bindir = tmp_path / "bin dir"
     bindir.mkdir()
     stub = bindir / "loci"
-    stub.write_text(_STUB.replace("__DIR__", _to_bash_path(stub_dir)),
-                    encoding="utf-8", newline="\n")
+    stub.write_text(_STUB, encoding="utf-8", newline="\n")
     stub.chmod(0o755)
 
     elsewhere = tmp_path / "some where else"
@@ -514,213 +462,62 @@ def _run_fence(tmp_path: Path, mm: dict,
     root = tmp_path / "proj root"
     root.mkdir()
 
-    fence = _pair_fences()[0]
-    script = (fence.replace("<PREV>", _to_bash_path(before))
-                   .replace("<OBJ>", _to_bash_path(after))
-                   .replace("<project_root>", _to_bash_path(root))
-                   .replace("<loci_target>", "armv7e-m"))
-    jq_dir = _to_bash_path(Path(shutil.which("jq")).parent)
-    path = f"{_to_bash_path(bindir)}:{jq_dir}:/usr/bin:/bin"
-    return subprocess.run(
+    script = (_pair_fences()[0]
+              .replace("<PREV>", _to_bash_path(before))
+              .replace("<OBJ>", _to_bash_path(after))
+              .replace("<project_root>", _to_bash_path(root))
+              .replace("<turn-id>", "t1")
+              .replace("<loci_target>", "armv7e-m"))
+    proc = subprocess.run(
         [_find_bash(), "-s"],
-        input=f'export PATH="{path}"\n{script}',
+        input=f'export PATH="{_to_bash_path(bindir)}:/usr/bin:/bin"\nset -e\n{script}',
         capture_output=True, text=True, encoding="utf-8", cwd=elsewhere,
     )
-
-
-# Each case: memmap envelope, the two frame maps (None = that call failed), and what
-# the branch is *for*. Every one of the first four is a real measurement.
-CASES = {
-    "rodata table grew": (
-        _memmap((137, 361), (0, 0), symbols=[{"name": "lut", "status": "changed",
-                                              "delta": 224}]),
-        {"frame_user": 72}, {"frame_user": 72}),
-    "string literal grew": (
-        _memmap((137, 181), (0, 0)), {"banner": 8}, {"banner": 8}),
-    "static array grew": (
-        _memmap((24, 24), (64, 16384),
-                ram_symbols=[{"name": "pool", "status": "changed", "delta": 16320}]),
-        {"pool_fill": 8}, {"pool_fill": 8}),
-    "frame grew": (
-        _memmap((137, 137), (0, 0)), {"frame_user": 72, "banner": 8},
-        {"frame_user": 136, "banner": 8}),
-    "nothing moved": (
-        _memmap((137, 137), (0, 0)), {"frame_user": 72}, {"frame_user": 72}),
-    "symbol_deltas is null": (
-        _memmap((24, 280), (0, 0), symbol_deltas_null=True),
-        {"f": 0}, {"f": 0}),
-    "a function was added and removed": (
-        _memmap((100, 120), (0, 0)), {"gone": 40}, {"fresh": 24}),
-    # A removed symbol's entry has `size` and NO `delta`. Printing `\(.delta)` puts the
-    # literal `null` in the report — the same shape phase 09 removed from the diff
-    # recipes, reached here through a different producer.
-    "a symbol went, so its entry has size and no delta": (
-        {"ok": True, "data": {
-            "summary_delta": {
-                "rom_total": {"base": 157, "current": 149, "delta": -8},
-                "ram_static_total": {"base": 64, "current": 64, "delta": 0}},
-            "symbol_deltas": {"rom": [{"name": "scaled", "status": "removed",
-                                       "size": 6},
-                                      {"name": "banner", "status": "changed",
-                                       "base_size": 16, "current_size": 14,
-                                       "delta": -2}],
-                              "ram": []}}},
-        {"scaled": 0, "banner": 8}, {"banner": 8}),
-}
-
-
-def test_no_case_expects_a_null_in_the_report():
-    """Belt and braces on the shape above: `jq -r` prints a missing key as the literal
-    string `null`, and a model pasting `SYM scaled removed null` into a report has
-    written a number nobody produced."""
-    for name, (mm, prev, curr) in CASES.items():
-        for line in _expected(mm, prev, curr):
-            assert "null" not in line, f"{name}: expectation itself carries a null: {line}"
-
-
-@requires_bash
-@pytest.mark.parametrize("case", sorted(CASES))
-def test_the_shipped_fence_prints_what_the_contract_says_it_prints(
-        tmp_path: Path, case: str):
-    mm, prev, curr = CASES[case]
-    proc = _run_fence(tmp_path, mm, prev, curr)
     assert proc.returncode == 0, (
-        f"{case}: the shipped fence exits {proc.returncode}\n{proc.stderr}")
+        f"the shipped recipe exits {proc.returncode}\n{proc.stderr}")
     assert not proc.stderr.strip(), (
-        f"{case}: the fence writes to stderr, which a model reads as a failure:\n"
+        f"the recipe writes to stderr, which a model reads as a failure:\n"
         f"{proc.stderr}")
-    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-    assert lines == _expected(mm, prev, curr), (
-        f"{case}: the fence printed\n  {lines}\nexpected\n  {_expected(mm, prev, curr)}"
-    )
-
-
-@requires_bash
-def test_an_unchanged_pair_prints_two_zero_deltas_rather_than_nothing(tmp_path: Path):
-    """The all-quiet answer is the one the skill turns into "the edit changed
-    nothing", so it has to be *stated*. A fence that printed nothing at all would be
-    indistinguishable from a fence that crashed before its first command, and the
-    report either way would be the silent skip this plan exists to remove."""
-    mm, prev, curr = CASES["nothing moved"]
-    proc = _run_fence(tmp_path, mm, prev, curr)
-    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-    assert len(lines) == 2 and all(ln.endswith("\t0") for ln in lines), (
-        f"an unchanged pair must still print both totals with a zero delta: {lines}")
-    assert not any(ln.startswith("FRAME") for ln in lines)
-
-
-@requires_bash
-@pytest.mark.parametrize("failing", ["before", "after"])
-def test_a_failed_frame_call_is_a_note_and_not_an_unchanged_answer(
-        tmp_path: Path, failing: str):
-    """The distinction the whole branch rests on. A `NOTE` says nobody looked; an
-    absent `FRAME` line says somebody looked and nothing moved. Collapsing the two
-    hands back "frames unchanged" for a comparison that never ran — and the CLI this
-    reaches first is the one that cannot size a frame at all."""
-    mm, _prev, _curr = CASES["nothing moved"]
-    proc = _run_fence(
-        tmp_path, mm,
-        None if failing == "before" else {"frame_user": 72},
-        None if failing == "after" else {"frame_user": 72},
-        prev_error=f"cannot analyze {failing}" if failing == "before" else None,
-        curr_error=f"cannot analyze {failing}" if failing == "after" else None)
-    assert proc.returncode == 0, proc.stderr
-    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-    notes = [ln for ln in lines if ln.startswith("NOTE")]
-    assert len(notes) == 1 and f"cannot analyze {failing}" in notes[0], (
-        f"a failed `elf stack` on the {failing} side must name itself in a NOTE: {lines}")
-    assert any(ln.startswith("ROM") for ln in lines), (
-        "one half failing must not take the other half's answer with it")
-    assert not any(ln.startswith("FRAME") for ln in lines)
-
-
-@requires_bash
-def test_a_failed_footprint_call_is_a_note_and_the_frames_still_answer(tmp_path: Path):
-    mm = {"ok": False, "error": {"message": "not an ELF"}}
-    proc = _run_fence(tmp_path, mm, {"frame_user": 72}, {"frame_user": 136})
-    assert proc.returncode == 0, proc.stderr
-    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-    assert lines == ["NOTE\tfootprint not compared: not an ELF",
-                     "FRAME\tframe_user\t72\t136"], lines
-
-
-@requires_bash
-def test_a_footprint_call_that_prints_nothing_is_a_note_and_not_silence(tmp_path: Path):
-    """`jq` over empty stdin prints nothing and exits 0 — so an `elf memmap` that
-    produces no envelope at all (argparse error, `loci` absent, killed process) erased
-    the entire footprint half without a word, and the branch's quiet condition was
-    satisfied by a check that never ran. Reproduced against the recipe before the
-    `[ -n "$mm" ]` guard existed."""
-    proc = _run_fence(tmp_path, "", {"frame_user": 72}, {"frame_user": 72})
-    assert proc.returncode == 0, proc.stderr
-    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-    assert lines and lines[0].startswith("NOTE\tfootprint not compared:"), (
-        f"an empty envelope must become a NOTE, not silence: {lines}")
-    assert lines[0].strip() != "NOTE\tfootprint not compared:", (
-        "the NOTE carries no message, so the report cannot say what failed")
-
-
-@requires_bash
-def test_each_frame_call_gets_its_own_out_dir(tmp_path: Path):
-    """Every released CLI keys `elf stack`'s default output directory on the artifact's
-    bare **stem**, so a Before and an After sharing a basename — which is exactly what
-    the header route produces — both write `.loci-build/elf/<stem>/stack-analysis.json`.
-    The second overwrites the first, both envelopes name one file, the comparison reads
-    one side twice, and **no FRAME line can ever print**. Measured on 0.1.102.
-
-    The stub reproduces that default when `--out-dir` is absent, so this test fails by
-    the same mechanism the real CLI would."""
-    mm, _prev, _curr = CASES["nothing moved"]
-    proc = _run_fence(tmp_path, mm, {"frame_user": 72}, {"frame_user": 136})
-    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-    assert "FRAME\tframe_user\t72\t136" in lines, (
-        "the two frame calls collided: the pair shares a basename, so without a "
-        f"per-side `--out-dir` the comparison reads one file twice. Got: {lines}")
+    assert [ln for ln in proc.stdout.splitlines() if ln.strip()] == [
+        "elf memmap\tbefore\tafter",
+        "elf stack\tbefore\tafter",
+    ], (
+        "both verbs must be asked for the same pair, Before first — swapping the two "
+        f"inverts the sign of every delta. Got:\n{proc.stdout!r}")
 
 
 @requires_bash
 def test_the_stub_rejects_a_call_the_recipe_should_not_make(tmp_path: Path):
-    """The positive control. Every assertion above reads "the fence printed the right
-    lines" — none of them can tell that from a fence whose commands were never the
-    ones the contract documents, because the stub would have answered anyway. Here the
-    stub is loud, and this test proves it — including for an inverted pair, which the
-    earlier fixed-envelope stub could not see at all."""
-    mm, prev, curr = CASES["nothing moved"]
+    """The positive control. The assertion above reads "the recipe printed the right
+    lines", which it could not tell from a recipe whose commands were never the ones
+    the contract documents — the stub would have answered anyway. Here the stub is
+    loud, and this proves it."""
+    before = tmp_path / "art dir" / "before" / SHARED_BASENAME
+    after = tmp_path / "art dir" / "after" / SHARED_BASENAME
+    for path in (before, after):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x7fELF stub")
+    bindir = tmp_path / "bin ctl"
+    bindir.mkdir()
+    stub = bindir / "loci"
+    stub.write_text(_STUB, encoding="utf-8", newline="\n")
+    stub.chmod(0o755)
+
     for label, mangle in (
             ("an undocumented verb", lambda f: f.replace("elf memmap", "elf sections")),
-            ("an inverted pair", lambda f: f.replace("--elf", "\x00")
-                                            .replace("--comparing-elf", "--elf")
-                                            .replace("\x00", "--comparing-elf")),
+            ("a dropped comparison", lambda f: f.replace("--comparing-elf", "--ignore")),
     ):
-        stub_dir = tmp_path / f"stub {label}"
-        stub_dir.mkdir()
-        (stub_dir / "memmap-before-after.json").write_text(json.dumps(mm),
-                                                          encoding="utf-8")
-        for side, frames in (("before", prev), ("after", curr)):
-            (stub_dir / f"frames-{side}.json").write_text(
-                json.dumps(_stack(frames)), encoding="utf-8")
-        bindir = tmp_path / f"bin {label}"
-        bindir.mkdir()
-        stub = bindir / "loci"
-        stub.write_text(_STUB.replace("__DIR__", _to_bash_path(stub_dir)),
-                        encoding="utf-8", newline="\n")
-        stub.chmod(0o755)
-        before = tmp_path / "art dir" / "before" / SHARED_BASENAME
-        after = tmp_path / "art dir" / "after" / SHARED_BASENAME
-        for p in (before, after):
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(b"\x7fELF stub")
-        jq_dir = _to_bash_path(Path(shutil.which("jq")).parent)
-        script = mangle(_pair_fences()[0])
+        script = (mangle(_pair_fences()[0])
+                  .replace("<PREV>", _to_bash_path(before))
+                  .replace("<OBJ>", _to_bash_path(after))
+                  .replace("<project_root>", _to_bash_path(tmp_path))
+                  .replace("<turn-id>", "t1")
+                  .replace("<loci_target>", "armv7e-m"))
         proc = subprocess.run(
             [_find_bash(), "-s"],
-            input=f'export PATH="{_to_bash_path(bindir)}:{jq_dir}:/usr/bin:/bin"\n'
-                  + (script.replace("<PREV>", _to_bash_path(before))
-                           .replace("<OBJ>", _to_bash_path(after))
-                           .replace("<project_root>", _to_bash_path(tmp_path))
-                           .replace("<loci_target>", "armv7e-m")),
+            input=f'export PATH="{_to_bash_path(bindir)}:/usr/bin:/bin"\n{script}',
             capture_output=True, text=True, encoding="utf-8", cwd=tmp_path,
         )
         assert proc.stderr.strip(), (
-            f"the stub answered {label} without complaint, so every execution test "
+            f"the stub answered {label} without complaint, so the execution test "
             f"above proves nothing:\n{proc.stdout}")
