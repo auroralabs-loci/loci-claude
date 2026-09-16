@@ -1111,7 +1111,7 @@ ALLOWED_GUARDED_MENTIONS = {
         # section describes a guarded file and instructs no write. Re-hashed again by the
         # merge with the version bump, which moves the `LOCI version:` line this chunk
         # opens with, a third time by 0.2.14's bump, a fourth by 0.2.15's, a
-        # fifth by 0.2.16's (F17), a sixth by 0.2.19's (F11) and an eighth by
+        # fifth by 0.2.16's (F17), a sixth by 0.2.20's (F11) and an eighth by
         # 0.2.22's (AAD-7607). There is no seventh or eighth entry because 0.2.20
         # (PR #300) and 0.2.21 (PR #301) each bumped the stamp and did NOT re-hash
         # here, so `main` carried this test red from both merges until this one.
@@ -1121,14 +1121,16 @@ ALLOWED_GUARDED_MENTIONS = {
         # time, the stamp this chunk opens with moved. Two releases landed on 0.2.26
         # independently and both re-hashed to the same value, which is the clearest
         # sign yet that this registry is a consequence of the version bump and not a
-        # decision anyone makes.
-        "1b1d407a56",  # LOCI: install and setup ======================= LOCI version: 0.
+        # decision anyone makes. 0.2.29 (PR #312) bumped the stamp and again did not
+        # re-hash here, so `main` was red on arrival; this is 0.2.30's value.
+        "7252be01b9",  # LOCI: install and setup ======================= LOCI version: 0.
     },
     "PORTAL.md": {
         "350d3af802",  # ## Getting Started 1. Create your LOCI account and open the port
     },
     "README.md": {
-        "266de16a7e",  # ## Quick Start Run `/loci:init` once per checkout. It records ho
+        # Re-hashed: Quick Start now opens on the sign-in step.
+        "95f7ff143c",  # ## Quick Start Sign in once per machine. Every analysis skill is
         # Re-hashed: the section now says to open the cockpit in a separate
         # terminal, because it takes over the one it runs in.
         "e6f493718f",  # ## Cockpit `loci cockpit` is a live terminal view of this machin
@@ -1137,7 +1139,11 @@ ALLOWED_GUARDED_MENTIONS = {
         # USER where a bound comes from — `.loci/contract.yaml`, `/loci:contract`,
         # or their own request — and says LOCI never supplies one.
         "dd719ee547",  # ## Verdicts A LOCI report closes on one of two word sets, and wh
-        "9cdf88787d",  # ## Skills Guardian — human-on-the-loop. LOCI predicts, warns, an
+        # Re-hashed: the table gained the setup, help and bug-report rows.
+        "93c094a2bf",  # ## Skills Guardian — human-on-the-loop. LOCI predicts, warns, an
+        # Newly guarded: the hooks table now names the two files the PreToolUse
+        # guard denies, as the guard's subject. It instructs nobody to write them.
+        "7d13e63ac0",  # ## Hooks | Hook | Trigger | Action | |------|---------|--------|
     },
     "hooks/contract-guard.sh": {
         "700717b625",  # The build recipe (.loci/build.yaml) is written by 'loci init', n
@@ -1352,7 +1358,7 @@ ALLOWED_GUARDED_MENTIONS = {
 # 43 -> 44 on 2026-09-12 (F16): `contract-guard.sh` now declares the three files
 # route 1 walks in one variable, and this screen reads every line-start
 # assignment. It is a list of names, not a sentence, and it instructs nothing.
-_REVIEWED_SECTIONS = 44
+_REVIEWED_SECTIONS = 45
 
 
 def test_every_mention_of_a_guarded_file_is_registered():

@@ -1,7 +1,7 @@
 LOCI: install and setup
 =======================
 
-LOCI version: 0.2.29
+LOCI version: 0.2.30
 Canonical source: agents.txt in the loci-claude repository root.
 
 This file is the machine-readable install guide for LOCI. A coding agent can

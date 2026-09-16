@@ -33,11 +33,26 @@ Skills that work without a cross-compiler or MCP: `/loci:stack-depth`, `/loci:me
 ```
 /plugin marketplace add auroralabs-loci/loci-claude
 /plugin install loci@loci
+/loci:setup
 ```
+
+`/loci:setup` installs the `loci` CLI as a `uv` tool and verifies the
+environment. The plugin also starts that install in the background at session
+start, so it often finishes on its own; running the skill makes it deterministic
+and names whatever is missing. It is idempotent — run it again any time analysis
+fails with `loci: not found`.
 
 ## Quick Start
 
-Run `/loci:init` once per checkout. It records how the project builds — target
+Sign in once per machine. Every analysis skill is gated on a session, including
+the ones that never reach the backend:
+
+```
+! loci login          # opens a browser, so it runs in your terminal, not the agent's
+loci auth status      # must report signed_in
+```
+
+Then run `/loci:init` once per checkout. It records how the project builds — target
 ISA, compiler, build system, artifact — into `.loci/build.yaml`, and every
 measurement after that resolves its flags from that file instead of guessing.
 Both it and LOCI's own build output (`.loci/build/`) are machine-local and
@@ -45,7 +60,6 @@ gitignored, so a fresh clone needs its own `/loci:init`.
 
 Then try these in any C/C++/Rust project with compiled binaries.
 
-Coding agents write code. LOCI thinks ahead.
 1. **Timing & energy** — ask: *"What's the execution cost of main()?"*
 2. **Memory footprint** — ask: *"How much ROM/RAM does my build use?"*
 3. **Stack safety** — ask: *"Is my stack safe for TaskMain?"*
@@ -71,6 +85,9 @@ Guardian — human-on-the-loop. LOCI predicts, warns, and guides; you review the
 | **control-flow** | User-invoked | Annotated control-flow graphs optimized for LLM analysis |
 | **trends** | User-invoked | Per-function measurement history and optimization progress on the current branch. |
 | **contract** | User-invoked | Authors and inspects `.loci/contract.yaml` — the stack, timing, energy, memory and structural bounds every measurement is judged against. LOCI drafts, you apply. |
+| **setup** | User-invoked | Installs the `loci` CLI and verifies the environment; repairs a broken or stale install. No sign-in needed. |
+| **help** | User-invoked | Lists every skill and shows this checkout's recorded target, compiler and recipe path. No sign-in needed. |
+| **bug-report** | User-invoked | Writes a timestamped forensic diagnostic when a skill fails or never fires. No sign-in needed. |
 
 ## Verdicts
 
@@ -92,8 +109,11 @@ means for your project.
 
 | Hook | Trigger | Action |
 |------|---------|--------|
-| `SessionStart` | startup | project detection, venv setup, context injection |
-| `PreToolUse` | Edit, Write | call-graph safety check, `.o` snapshot for delta analysis |
+| `SessionStart` | startup, resume | project detection, CLI install, context injection, build-state cleanup |
+| `UserPromptSubmit` | every prompt | stamps the turn id every measurement is filed under |
+| `PreToolUse` | Edit, Write, Bash | keeps `.loci/contract.yaml` and `.loci/build.yaml` read-only to the agent; `.o` snapshot for delta analysis |
+| `PostToolUse` | Edit, Write, Bash | asks whether the edit can change a compiled function, and reminds `loci-post-edit` if so |
+| `Stop` | end of turn | flushes impact records, nudges on a pending contract draft, cleans the turn's build state |
 
 ## Cockpit
 
@@ -190,4 +210,4 @@ Run `/loci:bug-report` to generate a full diagnostic report.
 - [LOCI Portal](PORTAL.md) — sessions, binary analysis results, Guardian verdicts, PR review, and account plans
 - [agents.txt](agents.txt) — this setup path as one downloadable plain-text file a coding agent can follow
 - [setup/setup.sh](setup/setup.sh) — full setup script with platform-specific install logic
-- [LICENSE](LICENSE) — Aurora Labs Proprietary License
+- [LICENSE](LICENSE.md) — Aurora Labs Proprietary License
