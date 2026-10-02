@@ -1,35 +1,12 @@
-# What the user hears
+# What init says while it works
 
-Reference for `/loci:init`, read once at Step 1. It governs the lines this skill
-**prints** — what you say on recognising the project, when you ask to run something,
-while it runs, and when it is done. It changes nothing about what init runs or asks:
-every fact a step requires is still required, and no honesty below is traded for a
-shorter sentence.
+Reference for `/loci:init`, read once at Step 1: what *this* skill prints, step by
+step. Outcome before machinery, and two things never shrink — a refusal's own
+`message` and `detail`, and anything saying the result is less than it looks. It
+changes nothing about what init runs or asks: every fact a step requires is still
+required.
 
-## Outcome first, machinery where they must act on it
-
-The user typed one command to find out what LOCI can tell them about their code, and
-what they meet first is a build-system investigation: tools, databases, translation
-units, tiers. Keep all of it. Say it **second**, in their terms first.
-
-| Say this | Not this, unprompted |
-|---|---|
-| the exact flags your code is really compiled with | compile database, `bear`/`compiledb`, synthesized |
-| the file that gets compiled | translation unit |
-| checked against your real build | replay-compare, validation tier |
-| what LOCI recorded about this project | recipe, envelope, integrity record |
-
-The right column is not banned, it is **second**. Name the machinery the moment the
-user has to act on it — a tool of theirs to install, a command to approve, a build of
-theirs that is broken — the moment they ask for it, and in anything they will type
-into a terminal. A name they cannot act on is narration: drop it.
-
-Two things never shrink. A **refusal's own `message` and `detail`**: it names the fix
-in the CLI's words, and paraphrasing it is how a user ends up fixing the wrong thing.
-And anything saying a measurement would be **less than it looks** — Step 4's notes,
-warnings and `!` lines.
-
-## Step 1 — say what you recognised
+## Step 1: say what you recognised
 
 One line, before any build-system talk, out of `.data` alone: the kind of project,
 its target, its language, its build. No probe mechanics, no candidate ladder, no
@@ -78,6 +55,24 @@ on disk carries no `Build configuration captured`.
 Reprint when a tick changes, and only then: once per stage, never twice for the same
 state, and never a sentence of commentary between two prints.
 
+**Which call earns which tick**, so there is never a question of when to reprint:
+
+| Line | Ticked by |
+|---|---|
+| Project detected | `loci init probe`'s envelope (Step 1) |
+| Target detected | the same envelope — both land on one reprint |
+| Build configuration captured | the compile database being in hand (Step 2); absent from the list where the project needs none |
+| Build verified | `loci init` returning `ok` (Step 3), which is the call that runs their build |
+| LOCI execution model ready | `loci init --confirmed` returning `ok` (Step 4) |
+
+So the block is printed **four times** on a full run, not once: pending, after probe,
+after the build, after the confirmation. The last three are the ones a run drops when
+it prints the list at the start and never returns to it — which leaves the user
+watching a checklist that stopped at two ticks while the work went on around it.
+
+The wait for the user's confirmation sits between the third print and the fourth. Ask
+there, and reprint once they answer; do not reprint while waiting.
+
 Where the project is not firmware, the opening line's noun follows the project — its
 binary, its library, its crate. The stage names do not change with it.
 
@@ -95,7 +90,7 @@ saying the details are there for the asking (the captured flags, the build outpu
 commands you ran). On a failure the offer is not enough: the command that failed and
 its own error text go in the transcript, whole.
 
-## Step 4 — ready, then the caveats, then the setup
+## Step 4: ready, then the caveats, then the setup
 
 Order: what they can now do → what qualifies it → the setup itself.
 
@@ -112,7 +107,7 @@ Order: what they can now do → what qualifies it → the setup itself.
 4. **Close with one invitation**, not a command list: name what this recipe records —
    the artifact, the target — and offer the measurement that fits it, with
    `/loci:exec-trace` and `/loci:stack-depth` as the words they can type. One
-   sentence, and **not** an `AskUserQuestion`: Step 3 and Step 4 spend this skill's
+   sentence, and **not** a question-tool call: Step 3 and Step 4 spend this skill's
    one question between them.
 
 Name no function of theirs. You have not read their code, and a plausible-sounding

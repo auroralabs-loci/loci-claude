@@ -71,6 +71,21 @@ pytestmark = pytest.mark.skipif(
     reason="bash and jq required",
 )
 
+# The host the hook runs under (AAD-7790). The whole module is NOT doubled: at
+# ~100 s for one host it would cost another hundred, and most of it — the
+# first-edit marker's atomicity, the context-file shapes, the upward walk, the
+# path spellings — is about this hook's own logic, which no host changes. The
+# tests whose premise a host CAN change carry `@pytest.mark.usefixtures("host")`
+# and run as `[claude]` and `[copilot]`: what the hook sends the verb (the
+# respelled `tool_input`, `tool_result` for `tool_response`), what it reads to
+# decide an edit was applied, the turn id it resolves from the session record
+# when the payload carries none, and the reply both hosts read. `_run` and
+# `_run_plugin` read the active host, so a test that does not opt in runs
+# exactly as it did.
+from tests.fixtures.copilot_payloads import current as _host
+
+_BOTH_HOSTS = pytest.mark.usefixtures("host")
+
 
 def _to_bash_path(p: Path) -> str:
     s = Path(p).as_posix()
@@ -106,7 +121,15 @@ class Result:
         """The additionalContext the hook emitted, or None if it stayed silent."""
         if not self.out.strip():
             return None
-        return json.loads(self.out)["hookSpecificOutput"]["additionalContext"]
+        # Read where the host reads it: the nested field under Claude Code; under
+        # Copilot the top-level one, checked against the nested text beside it.
+        return _host().context(json.loads(self.out))
+
+    @property
+    def system_message(self) -> str | None:
+        if not self.out.strip():
+            return None
+        return json.loads(self.out).get("systemMessage")
 
     def stdin(self, i: int = 0) -> str:
         """Invocation `i`'s stdin, CR-normalised for convenience. Use
@@ -206,10 +229,17 @@ def _run(home: Path, payload: dict, *, stub: str,
     if not drop_home:
         env["HOME"] = _to_bash_path(home)
 
+    # The host: Copilot's spelling of the same payload, its exports, the turn
+    # record it has on file for the `prompt_id` the payload lost, and the plugin
+    # root as the working directory. Under Claude Code every line is a no-op.
+    host = _host()
+    payload = host.respell(payload)
+    env.update(host.env(project=_to_bash_path(root)))
+    host.seed(sdir)
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(HOOK)],
         input=json.dumps(payload), capture_output=True, text=True, timeout=30,
-        env=env,
+        env=env, cwd=host.cwd(None),
     )
     if expect_zero:
         assert proc.returncode == 0, (
@@ -225,6 +255,11 @@ def _run(home: Path, payload: dict, *, stub: str,
 # Stub behaviours.
 _MEASURABLE = "echo '{\"ok\":true,\"data\":{\"measurable\":true}}'"
 _NOT_MEASURABLE = "echo '{\"ok\":true,\"data\":{\"measurable\":false}}'"
+# What the CLI answers for an edit the host reports as failed in a shape only
+# it reads: Copilot's `tool_result.result_type: failure` (AAD-7782, `_edit_applied`
+# in loci-cli's `hook.py`). The hook's own applied check sees `tool_response.error`
+# and the top-level `error`, and nothing in a `tool_result`.
+_UNAPPLIED = "echo '{\"ok\":true,\"data\":{\"applied\":false,\"measurable\":true}}'"
 # A `loci` predating --content-kind: argparse writes usage to stderr and exits 2.
 _OLD_CLI = (
     'if [[ "$*" == *--content-kind* ]]; then\n'
@@ -282,6 +317,7 @@ def _write(path: str, content: str = "int g(void){ return 1; }",
 
 # ── the regression ───────────────────────────────────────────────────────────
 
+@_BOTH_HOSTS
 def test_a_one_line_body_edit_reaches_the_verb_whole(tmp_path):
     """THE regression, at the boundary this hook owns since todo 044.
 
@@ -289,16 +325,28 @@ def test_a_one_line_body_edit_reaches_the_verb_whole(tmp_path):
     the CLI's job now — `_edit_code` in `hook.py`, pinned by
     `tests/unit/test_hook_edit_scan.py` in loci-cli. What this side must not
     break is that the patch ARRIVES: the payload goes over the pipe whole, and
-    nothing on the argv claims to have classified it."""
+    nothing on the argv claims to have classified it.
+
+    Copilot sends no patch at all: the outcome is a `tool_result` sentence and
+    the edit's text is in `tool_input` under its own names. What must arrive
+    there is that object, whole, beside a `tool_input` the adapter has respelled
+    to the names the verb reads (AAD-7782)."""
     r = _run(tmp_path, _edit("/p/blink.c", patch=_ONE_LINE_PATCH), stub=_MEASURABLE)
 
     assert r.calls[0] == "hook edit-scan", f"got {r.calls[0]!r}"
     sent = json.loads(r.stdin())
-    assert [ln for ln in sent["tool_response"]["structuredPatch"][0]["lines"]
-            if ln[:1] in "+-"] == [
-        "-        acc += i * 3;",
-        "+        acc += i * 7;",
-    ], f"got {r.stdin()!r}"
+    if _host().copilot:
+        assert sent["tool_result"]["result_type"] == "success", sent
+        assert "tool_response" not in sent, sent
+        assert sent["tool_input"]["file_path"] == "/p/blink.c", sent["tool_input"]
+        assert sent["tool_input"]["new_string"] == "x", sent["tool_input"]
+        assert "path" not in sent["tool_input"], sent["tool_input"]
+    else:
+        assert [ln for ln in sent["tool_response"]["structuredPatch"][0]["lines"]
+                if ln[:1] in "+-"] == [
+            "-        acc += i * 3;",
+            "+        acc += i * 7;",
+        ], f"got {r.stdin()!r}"
     assert r.context is not None and "loci-post-edit" in r.context
 
 
@@ -319,6 +367,7 @@ def test_the_payload_survives_as_raw_bytes(tmp_path):
         f"lines merged or reordered: {raw!r}")
 
 
+@_BOTH_HOSTS
 def test_the_reminder_names_the_file_and_forbids_deferring(tmp_path):
     r = _run(tmp_path, _edit("/p/blink.c", patch=_ONE_LINE_PATCH), stub=_MEASURABLE)
     ctx = r.context
@@ -328,6 +377,7 @@ def test_the_reminder_names_the_file_and_forbids_deferring(tmp_path):
     assert "loci-preflight" in ctx
 
 
+@_BOTH_HOSTS
 def test_no_reminder_when_the_classifier_says_unmeasurable(tmp_path):
     """The gate must still gate — the half that must not regress while fixing the
     false negative."""
@@ -339,6 +389,7 @@ def test_no_reminder_when_the_classifier_says_unmeasurable(tmp_path):
 
 # ── fail open, and only one question ────────────────────────────────────────
 
+@_BOTH_HOSTS
 def test_an_older_cli_that_rejects_the_flag_makes_the_hook_fail_open(tmp_path):
     """A flagless retry is NOT a fallback: the CLI would default to whole-file
     mode, re-apply the brace rule to a brace-less diff, answer "no", and the
@@ -382,12 +433,17 @@ def test_a_broken_cli_is_silent_and_never_fails_the_tool_call(tmp_path, stub, la
     (_write("/p/newfile.c"), "int g(void){ return 1; }"),
     (_edit("/p/blink.c", patch=None, new_string="  acc += 1;"), "  acc += 1;"),
 ])
+@_BOTH_HOSTS
 def test_every_edit_shape_reaches_the_verb_whole(tmp_path, payload, expect):
     r = _run(tmp_path, payload, stub=_MEASURABLE)
     assert r.calls == ["hook edit-scan"], f"calls={r.calls!r}"
     sent = json.loads(r.stdin())
+    # Under Copilot the text left the host as `file_text` / `new_str`; the names
+    # the verb reads are the ones the adapter put back (AAD-7782).
     got = sent["tool_input"].get("content", sent["tool_input"].get("new_string"))
     assert got == expect
+    if _host().copilot and "tool_response" in payload:
+        assert "tool_result" in sent and "tool_response" not in sent, sent
     assert r.context is not None
 
 
@@ -431,17 +487,29 @@ def test_a_non_object_tool_response_is_handled_without_leaking_jq_errors(tmp_pat
     assert r.calls == ["hook edit-scan"], f"calls={r.calls!r}"
 
 
+@_BOTH_HOSTS
 def test_a_failed_edit_is_not_announced_as_a_modification(tmp_path):
     """PostToolUse is not supposed to fire on failure, but the payload shape is
     undocumented. A response carrying an error applied nothing, so claiming the file
-    "was modified" would be false."""
+    "was modified" would be false.
+
+    Copilot reports the same failure as `tool_result.result_type: failure`, a
+    shape this hook does not read: the verb is the backstop that does (AAD-7782),
+    so under Copilot the one call is made and its `applied: false` is what ends
+    the hook — still silent, still one spawn at most."""
+    copilot = _host().copilot
     r = _run(tmp_path, _edit("/p/blink.c",
                              response={"error": "String to replace not found in file"}),
-             stub=_MEASURABLE)
-    assert r.calls == [], "nothing was applied; there is nothing to classify"
+             stub=_UNAPPLIED if copilot else _MEASURABLE)
+    if copilot:
+        assert r.calls == ["hook edit-scan"], (
+            f"the failure is in a shape only the verb reads; calls={r.calls!r}")
+    else:
+        assert r.calls == [], "nothing was applied; there is nothing to classify"
     assert r.context is None
 
 
+@_BOTH_HOSTS
 def test_a_relative_file_path_starting_with_a_dash_is_not_parsed_as_an_option(tmp_path):
     """The path must be BARE, not `/p/-weird.c`: after `basename` an absolute path is
     already `-weird.c`, but `basename` itself received `/p/-weird.c`, which is not
@@ -500,6 +568,7 @@ def test_a_multi_hunk_patch_contributes_every_hunk(tmp_path):
 
 # ── what must never reach the CLI at all ────────────────────────────────────
 
+@_BOTH_HOSTS
 @pytest.mark.parametrize("path", ["/p/notes.md", "/p/build.py", "/p/Makefile", "/p/x"])
 def test_a_non_source_path_never_invokes_loci(tmp_path, path):
     r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), stub=_MEASURABLE)
@@ -507,14 +576,20 @@ def test_a_non_source_path_never_invokes_loci(tmp_path, path):
     assert r.context is None
 
 
+@_BOTH_HOSTS
 @pytest.mark.parametrize("path", [
     "/p/.claude/plans/plan.c",
     "/p/.claude/settings.c",
+    "/home/u/.copilot/session-state/5c8187c0-862b/draft.c",
+    r"C:\Users\u\.copilot\session-state\5c8187c0-862b\files\rb.c",
 ])
 def test_plan_and_settings_files_are_skipped(tmp_path, path):
     """Both paths carry a SOURCE extension deliberately. `.claude/settings.json`
     would be rejected by the extension filter several lines earlier, so it would
-    assert silence produced by a different branch than the one named here."""
+    assert silence produced by a different branch than the one named here.
+
+    The Copilot pair is its plan mode's session folder (AAD-7787), in both path
+    spellings, kept in step with `pre-edit-hook.sh`."""
     r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), stub=_MEASURABLE)
     assert r.calls == []
     assert r.context is None
@@ -591,17 +666,21 @@ def _edit_with_turn(path: str, *, prompt_id: str | None = _TURN_ID,
     return payload
 
 
+@_BOTH_HOSTS
 def test_the_reminder_carries_the_turn_id(tmp_path):
+    # Under Copilot the payload carries no `prompt_id`; the id is the one the
+    # session's `turn-<session_id>` record holds (lib/loci_host.sh, AAD-7781).
     r = _run(tmp_path, _edit_with_turn("app.c"), stub=_MEASURABLE)
     ctx = r.context
     assert ctx is not None, "the reminder was not emitted at all"
-    assert _TURN_ID in ctx, f"the turn id is not in the reminder: {ctx!r}"
+    assert _host().turn(_TURN_ID) in ctx, f"the turn id is not in the reminder: {ctx!r}"
     assert "--turn" in ctx, (
         "the reminder names the id but not what to do with it; the skill has to be "
         f"told it is the --turn value: {ctx!r}"
     )
 
 
+@_BOTH_HOSTS
 def test_the_reminder_still_works_when_the_payload_has_no_prompt_id(tmp_path):
     """Degrading is the whole design: no id means the skill omits `--turn` and the
     compile simply does not verify the turn — the behaviour before this channel
@@ -617,6 +696,7 @@ def test_the_reminder_still_works_when_the_payload_has_no_prompt_id(tmp_path):
     assert "turn id" not in ctx, ctx
 
 
+@_BOTH_HOSTS
 def test_an_empty_prompt_id_is_treated_as_absent(tmp_path):
     """`.prompt_id // ""` yields the empty string for an explicit `null` too, and an
     empty id must take the same path as a missing one rather than producing
@@ -672,6 +752,7 @@ def test_the_turn_id_the_reminder_carries_is_the_one_the_pre_edit_hook_stamps(tm
     assert _TURN_ID in (post.context or ""), post.context
 
 
+@_BOTH_HOSTS
 def test_no_reminder_means_no_turn_id_leaked(tmp_path):
     """An unmeasurable edit emits nothing, so there is no half-message carrying a turn
     id with no instruction attached to it."""
@@ -695,6 +776,7 @@ _MEASURABLE_SELF = (
     "echo '{\"ok\":true,\"data\":{\"measurable\":true,\"measure_via\":\"self\"}}'")
 
 
+@_BOTH_HOSTS
 def test_a_header_reminder_says_to_measure_through_its_dependents(tmp_path):
     r = _run(tmp_path, _edit("/p/api.h", patch=_ONE_LINE_PATCH),
              stub=_MEASURABLE_HEADER)
@@ -704,6 +786,7 @@ def test_a_header_reminder_says_to_measure_through_its_dependents(tmp_path):
     assert "Step 0b" in r.context, r.context
 
 
+@_BOTH_HOSTS
 def test_an_ordinary_source_reminder_does_not(tmp_path):
     """The control. A route hint on every edit is one every reader learns to skip,
     and it would send a `.c` down a path that cannot apply to it."""
@@ -713,6 +796,7 @@ def test_an_ordinary_source_reminder_does_not(tmp_path):
     assert "emits no object of its own" not in r.context, r.context
 
 
+@_BOTH_HOSTS
 def test_a_cli_that_does_not_report_a_route_still_reminds(tmp_path):
     """`measure_via` is new, and the pin is an exact `==`, so a CLI without it is a
     normal state. The reminder must degrade to its previous text rather than
@@ -757,6 +841,7 @@ def test_a_subagent_is_told_to_relay_the_verdict(tmp_path):
     assert "final report" in ctx, ctx
 
 
+@_BOTH_HOSTS
 def test_the_main_agent_gets_no_such_sentence(tmp_path):
     """The other half. Without it, a change that appended the sentence
     unconditionally passes the test above while telling the main agent it is a
@@ -785,6 +870,7 @@ def test_a_subagent_carries_the_parent_turn_id(tmp_path):
     assert _TURN_ID in r.context
 
 
+@_BOTH_HOSTS
 def test_a_post_tool_use_failure_payload_produces_no_reminder(tmp_path):
     """The probed shape, verbatim: a top-level `error`, `is_interrupt`, and NO
     `tool_response`. Nothing registers this hook on that event — but the guard is
@@ -802,6 +888,7 @@ def test_a_post_tool_use_failure_payload_produces_no_reminder(tmp_path):
     assert r.context is None, r.out
 
 
+@_BOTH_HOSTS
 def test_an_error_alone_is_enough(tmp_path):
     """Each arm of the guard, alone. A failure whose event name were ever changed
     to `PostToolUse` — the shape this hook would then actually receive — must still
@@ -824,6 +911,7 @@ def test_a_missing_event_name_still_reminds(tmp_path):
     assert r.context is not None, r.out
 
 
+@_BOTH_HOSTS
 def test_a_null_error_field_is_not_a_failure(tmp_path):
     """`has("error")` alone would read an explicit `"error": null` as a failure and
     drop the reminder for a successful edit. JSON producers emit null fields all the
@@ -834,6 +922,7 @@ def test_a_null_error_field_is_not_a_failure(tmp_path):
     assert r.context is not None, r.out
 
 
+@_BOTH_HOSTS
 def test_a_failure_event_alone_is_enough(tmp_path):
     """Guard arm 3, in isolation. `test_a_post_tool_use_failure_payload_produces_no
     _reminder` sets a top-level `error` AND the event name, so arm 2 satisfied it on
@@ -848,6 +937,7 @@ def test_a_failure_event_alone_is_enough(tmp_path):
     assert r.context is None, r.out
 
 
+@_BOTH_HOSTS
 def test_an_unrecognised_event_still_reminds(tmp_path):
     """The arm is a DENY-list, and this is why. Naming the success event instead
     (`!= "PostToolUse"`) silences the hook on every edit the moment that event is
@@ -861,6 +951,7 @@ def test_an_unrecognised_event_still_reminds(tmp_path):
     assert "MUST invoke" in r.context
 
 
+@_BOTH_HOSTS
 def test_a_null_error_inside_the_tool_response_is_not_a_failure(tmp_path):
     """Both `error` arms test `!= null`, not `has`. The top-level arm was written
     that way and the `tool_response` arm was not, so a successful edit whose response
@@ -871,12 +962,19 @@ def test_a_null_error_inside_the_tool_response_is_not_a_failure(tmp_path):
     assert r.context is not None, r.out
 
 
+@_BOTH_HOSTS
 def test_a_real_tool_response_error_is_still_a_failure(tmp_path):
     """The other half of the null change: relaxing `has` to `!= null` must not stop
-    a genuine error being recognised."""
+    a genuine error being recognised.
+
+    Under Copilot the error is a `tool_result.result_type: failure` the hook does
+    not read; the verb's `applied: false` is what silences it (AAD-7782)."""
+    copilot = _host().copilot
     payload = _edit_with_turn("app.c")
     payload["tool_response"]["error"] = "EACCES"
-    r = _run(tmp_path, payload, stub=_MEASURABLE)
+    r = _run(tmp_path, payload, stub=_UNAPPLIED if copilot else _MEASURABLE)
+    if copilot:
+        assert r.calls == ["hook edit-scan"], r.calls
     assert r.context is None, r.out
 
 
@@ -906,17 +1004,19 @@ def _nudged(result: Result) -> bool:
     return result.context is not None and _NUDGE_TEXT in result.context
 
 
+@_BOTH_HOSTS
 def test_an_uninitialized_project_is_nudged_on_its_first_edit(tmp_path):
     r = _run(tmp_path, _C_EDIT, stub=_MEASURABLE, recipe=False,
              init_status="uninitialized")
 
     assert _nudged(r), f"no nudge: {r.context!r}"
-    assert "LOCI is not initialized for this project" in r.context
+    assert "LOCI is not initialized for " in r.context
     assert _markers(tmp_path / "state") == [
         f"init-nudge-{_ctx_key(tmp_path)}"
     ], "the marker is not keyed the way the context file is"
 
 
+@_BOTH_HOSTS
 def test_the_nudge_fires_exactly_once_across_two_sessions(tmp_path):
     """Acceptance criterion 3. Two hook runs against one state directory is what
     two sessions look like from here: nothing else in a session is carried between
@@ -968,13 +1068,13 @@ def test_only_an_uninitialized_status_nudges(tmp_path, status):
 
     `ok` is initialized. `unsupported` and `needs_user` are what the CLI records
     once it has already decided, so `/loci:init` sends the user at a question that
-    was asked and answered. `failed` is the interesting one and the hostile brief
-    asks for a decision: it is TRANSIENT (§6.2) — session-init re-arms the project
-    and the next analysis routes whichever coded error the compile answers with,
-    which will not be `not_initialized` — so a nudge naming `/loci:init` would be a
-    guess about a state the CLI is about to correct. An unrecognised value takes
-    the same quiet path, because the nudge is a claim and nothing in a hook can
-    check it."""
+    was asked and answered. `failed` is the interesting one: it was excluded
+    because session-init re-armed the project and its next analysis routed the
+    coded error. Nothing arms at session start since AAD-7531, so this pins the
+    current behaviour (a `failed` project with no recipe hears nothing), and
+    AAD-7747 decides whether it should be nudged. An unrecognised value takes the
+    same quiet path, because the nudge is a claim and nothing in a hook can check
+    it."""
     r = _run(tmp_path, _C_EDIT, stub=_MEASURABLE, recipe=False, init_status=status)
 
     assert not _nudged(r), f"init_status={status!r} nudged: {r.context!r}"
@@ -985,12 +1085,10 @@ def test_only_an_uninitialized_status_nudges(tmp_path, status):
 
 
 def test_a_context_file_with_no_init_status_nudges(tmp_path):
-    """Not an oversight — the population the nudge exists for. session-init writes
-    `init_status: uninitialized` only in the ARMED branch; a project the cheap gate
-    declined (`no_project`, `multi_project`, a detector that could not run) gets a
-    context file with no such key at all. Report §6.3 hands exactly that project to
-    `/loci:init`, since a project with sources and no declared build no longer arms
-    on its own."""
+    """Not an oversight — the population the nudge exists for. Nothing has
+    recorded a decision about this project: `loci init` never writes a context
+    without an `init_status`, so this is a file an older session-init left
+    behind. Report §6.3 hands exactly that project to `/loci:init`."""
     r = _run(tmp_path, _C_EDIT, stub=_MEASURABLE, recipe=False, init_status=None)
 
     assert _nudged(r), f"no nudge for a status-less context: {r.context!r}"
@@ -1004,6 +1102,7 @@ def test_a_project_with_no_context_file_at_all_nudges(tmp_path):
     assert _nudged(r)
 
 
+@_BOTH_HOSTS
 def test_the_nudge_reaches_an_edit_the_classifier_calls_unmeasurable(tmp_path):
     """The nudge is about the PROJECT, not about this edit. A user whose first
     edit is a comment change is exactly the user who has never seen a LOCI
@@ -1040,6 +1139,7 @@ def test_an_unmeasurable_edit_in_an_initialized_project_is_still_silent(tmp_path
     assert r.out == "", f"expected silence, got {r.out!r}"
 
 
+@_BOTH_HOSTS
 def test_the_nudge_is_appended_to_the_reminder_as_a_second_sentence(tmp_path):
     """Both at once is the common first edit. They must not run together into one
     word, and the reminder must keep its own opening."""
@@ -1067,6 +1167,7 @@ def test_a_non_source_edit_never_nudges(tmp_path, path):
     assert _markers(tmp_path / "state") == []
 
 
+@_BOTH_HOSTS
 def test_a_failed_edit_never_nudges_and_leaves_the_nudge_available(tmp_path):
     """A `PostToolUseFailure` payload applied nothing, so there is no first edit
     yet. Burning the marker there would spend the project's one nudge on an edit
@@ -1243,11 +1344,17 @@ def test_the_nudge_says_what_to_run_and_stays_short(tmp_path):
     r = _run(tmp_path, _C_EDIT, stub=_NOT_MEASURABLE, recipe=False,
              init_status="uninitialized")
 
-    line = r.context
+    # The project path is data, not sentence, so it is measured out — in both of
+    # its spellings. The hook prints the path this fixture hands it (the
+    # `CLAUDE_PROJECT_DIR` rung), which on Windows is MSYS's `/c/…`, not the `C:/…`
+    # of `as_posix()`; taking out only the one left the path in twice there and
+    # read 288 B against this budget.
+    line = (r.context.replace(tmp_path.as_posix(), "<p>")
+            .replace(_to_bash_path(tmp_path), "<p>"))
     assert "/loci:init" in line
-    # The task's budget is ~200 B ADDED; the shipped line is 87 B standalone and
-    # adds 81 when appended. A 200 B ceiling here left 2.3x slack, so a sentence
-    # that doubled in length would still have passed the test meant to stop it.
+    # The task's budget is ~200 B ADDED; the shipped line is 82 B standalone with
+    # the path as `<p>`. A 200 B ceiling here left 2.3x slack, so a sentence that
+    # doubled in length would still have passed the test meant to stop it.
     assert len(line.encode("utf-8")) <= 120, f"{len(line)} bytes: {line!r}"
 
 
@@ -1360,12 +1467,10 @@ def test_a_recipe_above_the_session_is_still_initialization(tmp_path):
     """The CRITICAL. A `.loci/build.yaml` two directories up is initialization,
     and the single-level `[ -f ]` could not see it.
 
-    The state file cannot rescue that. `detect_and_write_context` records NO
-    `init_status` in its `initialized_degraded`/`state` branch \u2014 a recipe on disk
-    that `loci init` has not seen, or a wiped state directory \u2014 and its mirror
-    only copies when a context file already exists under the recipe root. Add
-    that `session-init.sh` is registered `startup` only, so a `--continue`
-    session never repairs it, and a subdirectory session reads "nothing
+    The state file cannot rescue that. Only `loci init` writes one (session-init
+    has written none since AAD-7531), so a recipe on disk that `loci init` has
+    not seen on this machine, or a wiped state directory, leaves no
+    `init_status` under any key, and a subdirectory session reads "nothing
     recorded" and is told its initialized project is not initialized.
 
     Reproduced against the pre-fix hook: nudged. This asserts the opposite."""
@@ -1423,9 +1528,7 @@ def test_an_unreadable_context_is_not_the_same_answer_as_an_absent_one(
     that nudges.
 
     The worst of them: a context file truncated mid-write over a recorded
-    `unsupported` produced exactly the line the task forbids outright. A
-    directory at that path is not hypothetical either \u2014 `lib/setup-steps.sh`
-    carries its own guard for it, so the authors have met it."""
+    `unsupported` produced exactly the line the task forbids outright."""
     state = tmp_path / "state"
     state.mkdir()
     ctx = state / f"project-context-{_ctx_key(tmp_path)}.json"
@@ -1504,7 +1607,15 @@ def _deny_writes(directory: Path) -> bool:
 
     POSIX has `chmod`; Windows does not honour it, and a read-only bit does not
     stop a directory entry being created. An explicit DENY ace does, and it works
-    for the current user without elevation."""
+    for the current user without elevation.
+
+    Then PROVE it, because the caller's next move is to assert on the refusal.
+    A host that cannot be refused — root, whom a mode of 0555 does not bind; a
+    GitHub Windows runner, whose job runs as a full administrator and claimed
+    the marker on the first run with the ace in place — read "absent, claim,
+    nudge" once and reported the hook's O_EXCL claim as broken (AAD-7772). On
+    such a host the test has nothing to measure; `False` makes it skip and say
+    so, instead of failing over a refusal the host never produced."""
     if sys.platform == "win32":
         user = os.environ.get("USERNAME")
         if not user:
@@ -1513,9 +1624,22 @@ def _deny_writes(directory: Path) -> bool:
             ["icacls", str(directory), "/deny", f"{user}:(WD,AD)"],
             capture_output=True, text=True,
             env={**os.environ, "MSYS_NO_PATHCONV": "1"})
-        return proc.returncode == 0
-    directory.chmod(0o555)
-    return True
+        if proc.returncode != 0:
+            return False
+    else:
+        directory.chmod(0o555)
+    probe = directory / ".write-probe"
+    try:
+        with open(probe, "x"):
+            pass
+    except OSError:
+        return True
+    try:
+        probe.unlink()
+    except OSError:
+        pass
+    _allow_writes(directory)
+    return False
 
 
 def _allow_writes(directory: Path) -> None:
@@ -1607,7 +1731,10 @@ def _plugin_with_a_spying_walk(tmp_path: Path,
     (plugin / "lib").mkdir(parents=True)
     (plugin / "hooks" / "post-edit-hook.sh").write_bytes(
         (PLUGIN_ROOT / "hooks" / "post-edit-hook.sh").read_bytes())
-    for name in ("loci_log.sh", "loci_json.sh"):
+    # `loci_host.sh` too: it is what reads a Copilot payload's `path` as the
+    # `file_path` the extension gate decides on, and without it the copy would
+    # skip every Copilot edit before the walk this spy watches (AAD-7782).
+    for name in ("loci_log.sh", "loci_json.sh", "loci_host.sh"):
         (plugin / "lib" / name).write_bytes((PLUGIN_ROOT / "lib" / name).read_bytes())
     spy = tmp_path / "walk-was-called"
     lib = (PLUGIN_ROOT / "lib" / "setup-steps.sh").read_text(encoding="utf-8")
@@ -1638,17 +1765,28 @@ def _run_plugin(plugin: Path, payload: dict, home: Path, state: Path,
         "#!/usr/bin/env bash\ncat >/dev/null\n" + stub + "\n", encoding="utf-8")
     (bin_dir / "loci").chmod(0o755)
     state.mkdir(parents=True, exist_ok=True)
+    # The hook under test lives in the COPY, so that is the plugin root the host
+    # exports and (under Copilot) starts the hook in. No `CLAUDE_PROJECT_DIR`
+    # under either host, and under Claude Code the working directory this helper
+    # always had (the test process's): these tests name the project by the
+    # payload's `cwd` alone, which is in bash spelling and no directory to Python.
+    host = _host()
+    payload = host.respell(payload)
+    env = {"PATH": f"{_to_bash_path(bin_dir)}:{_base_path()}",
+           "HOME": _to_bash_path(home),
+           "LOCI_STATE_DIR": _to_bash_path(state)}
+    env.update(host.env(plugin_root=_to_bash_path(plugin)))
+    host.seed(state)
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(plugin / "hooks" / "post-edit-hook.sh")],
         input=json.dumps(payload), capture_output=True, text=True, timeout=60,
-        env={"PATH": f"{_to_bash_path(bin_dir)}:{_base_path()}",
-             "HOME": _to_bash_path(home),
-             "LOCI_STATE_DIR": _to_bash_path(state)},
+        env=env, cwd=host.cwd(None, plugin_root=plugin),
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
 
 
+@_BOTH_HOSTS
 def test_the_authority_is_not_consulted_when_no_recipe_is_anywhere_above(tmp_path):
     """The budget fix, pinned on behaviour rather than on a stopwatch.
 
@@ -1672,6 +1810,7 @@ def test_the_authority_is_not_consulted_when_no_recipe_is_anywhere_above(tmp_pat
         "above the session; that is a `stat` per level on every first edit")
 
 
+@_BOTH_HOSTS
 def test_the_authority_is_consulted_when_a_candidate_exists(tmp_path):
     """The other half: the scan is deliberately more permissive than the rule, so
     it must hand every candidate to the authority rather than deciding itself. A
@@ -1732,8 +1871,7 @@ def test_two_concatenated_objects_are_unreadable_not_silent(tmp_path):
     `{}{}` produced two lines, matched no arm, and went quiet \u2014 where "nothing
     recorded" must nudge and "I cannot read this" must not.
 
-    `lib/setup-steps.sh`'s own reader guards this exact hazard for the same file,
-    which is why it is worth guarding here: it is a shape that reaches production
+    It is worth guarding here because it is a shape that reaches production
     (an interrupted write, a doubled append)."""
     state = tmp_path / "state"
     state.mkdir()
@@ -1775,42 +1913,6 @@ def test_a_recorded_empty_status_reads_as_nothing_recorded(tmp_path):
     r = _run(tmp_path, _C_EDIT, stub=_MEASURABLE, recipe=False, state_dir=state)
 
     assert _nudged(r), r.context
-
-
-def test_the_state_migration_carries_the_marker_with_the_context(tmp_path):
-    """A key change must not buy the project a second first nudge.
-
-    `_migrate_legacy_state` re-keys the context, the measurements and the stats.
-    The marker means "this project has already been told" and is keyed the same
-    way, so leaving it behind gives one project two nudges and orphans a file
-    under a key nothing will ever look up again."""
-    state = tmp_path / "state"
-    state.mkdir()
-    project = tmp_path / "proj"
-    project.mkdir()
-    legacy = "deadbeef1234"
-    (state / f"project-context-{legacy}.json").write_text(
-        json.dumps({"project_root": _to_bash_path(project),
-                    "init_status": "uninitialized"}), encoding="utf-8")
-    (state / f"init-nudge-{legacy}").write_text("", encoding="utf-8")
-
-    script = (
-        'PLUGIN_DIR="$1"; STATE_DIR="$2"; export LOCI_STATE_DIR="$STATE_DIR"; '
-        'cd "$3" || exit 1; '
-        '. "$PLUGIN_DIR/lib/setup-steps.sh" >/dev/null 2>&1; '
-        '_migrate_legacy_state "$4" main'
-    )
-    key = _ctx_key(project)
-    subprocess.run(
-        [_find_bash(), "-c", script, "bash", _to_bash_path(PLUGIN_ROOT),
-         _to_bash_path(state), _to_bash_path(project), key],
-        capture_output=True, text=True, timeout=60)
-
-    assert (state / f"project-context-{key}.json").is_file(), (
-        "the fixture did not exercise the migration at all")
-    assert _markers(state) == [f"init-nudge-{key}"], (
-        "the marker did not move with the context, so this project will be "
-        f"nudged again under its new key: {_markers(state)}")
 
 
 def test_a_prefix_of_the_cwd_is_never_keyed_when_the_read_shifted(tmp_path):
@@ -1998,3 +2100,87 @@ def test_the_nudge_is_not_what_silences_it(tmp_path):
     assert not _nudged(r)
     assert _markers(tmp_path / "state") == [], (
         "an initialized project must not burn a first-edit marker")
+
+
+# ── AAD-7531: the edited file decides, not the session's launch directory ───
+
+def _governed_stub(governed, *, project_root="", checkout_root="") -> str:
+    data = {"measurable": True, "artifact_only": False, "governed": governed,
+            "project_root": project_root, "checkout_root": checkout_root}
+    return "echo '" + json.dumps({"ok": True, "data": data}) + "'"
+
+
+def test_an_edit_no_recipe_governs_is_not_reminded(tmp_path):
+    r = _run(tmp_path, _C_EDIT, stub=_governed_stub(False), recipe=False)
+
+    assert r.context is None or "You MUST invoke" not in r.context, (
+        f"an ungoverned edit was still reminded: {r.context!r}")
+
+
+def test_a_governed_edit_is_reminded(tmp_path):
+    """The non-vacuity control: same payload, one field different."""
+    r = _run(tmp_path, _C_EDIT, stub=_governed_stub(True, project_root="/p"))
+
+    assert r.context is not None and "You MUST invoke" in r.context
+
+
+@pytest.mark.parametrize("stub", [_MEASURABLE, _governed_stub(None)],
+                         ids=["field-absent", "field-null"])
+def test_governance_it_cannot_read_fails_open(tmp_path, stub):
+    """Under-triggering loses a measurement invisibly."""
+    r = _run(tmp_path, _C_EDIT, stub=stub)
+
+    assert r.context is not None and "You MUST invoke" in r.context
+
+
+@_BOTH_HOSTS
+def test_a_governed_file_is_never_called_uninitialized_from_a_foreign_session(tmp_path):
+    session = tmp_path / "session-dir"
+    r = _run(tmp_path, _C_EDIT, stub=_governed_stub(True, project_root="/p"),
+             recipe=False, project=session, init_status="uninitialized")
+
+    assert r.context is not None and "You MUST invoke" in r.context
+    assert not _nudged(r), f"a governed edit was nudged toward /loci:init: {r.context!r}"
+    assert _markers(tmp_path / "state") == [], (
+        "a governed edit must not burn the launch directory's first-edit marker")
+
+
+@_BOTH_HOSTS
+def test_the_nudge_is_anchored_on_the_files_checkout(tmp_path):
+    checkout = tmp_path / "their-repo"
+    checkout.mkdir()
+    session = tmp_path / "session-dir"
+    r = _run(tmp_path, _C_EDIT,
+             stub=_governed_stub(False, checkout_root=checkout.as_posix()),
+             recipe=False, project=session)
+
+    assert _nudged(r)
+    assert _markers(tmp_path / "state") == [f"init-nudge-{_ctx_key(checkout)}"], (
+        "the marker was keyed by the session, not by the edited file's checkout")
+
+
+@_BOTH_HOSTS
+def test_the_nudge_names_the_project_and_reaches_the_user(tmp_path):
+    """Adopting a repo is the user's decision, so they see it — not only the model."""
+    checkout = tmp_path / "their-repo"
+    checkout.mkdir()
+    r = _run(tmp_path, _C_EDIT,
+             stub=_governed_stub(False, checkout_root=checkout.as_posix()),
+             recipe=False, project=tmp_path / "session-dir")
+
+    assert checkout.as_posix() in r.context
+    assert r.system_message is not None
+    assert f"run /loci:init {checkout.as_posix()}" in r.system_message
+
+
+@_BOTH_HOSTS
+def test_only_the_nudge_reaches_the_user(tmp_path):
+    r = _run(tmp_path, _C_EDIT, stub=_governed_stub(True, project_root="/p"))
+
+    assert "You MUST invoke" in r.context
+    assert r.system_message is None
+    # The reminder is the model's: nested under Claude Code and, under Copilot,
+    # also top-level (AAD-7783) — never a `systemMessage` on either host.
+    keys = set(json.loads(r.out))
+    assert keys == ({"hookSpecificOutput", "additionalContext"} if _host().copilot
+                    else {"hookSpecificOutput"}), keys

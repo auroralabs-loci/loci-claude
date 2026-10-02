@@ -67,8 +67,8 @@ became a data structure that makes the mistake unavailable.
 
 With no entries it proposes nothing, and the skill decides for itself whether to
 run `analyse stack` / `analyse memory` with `--parent-run`: an escalation nobody
-wrote a bound for is argued from what the run showed, and the child is metered,
-so one the skill cannot justify is spent budget.
+wrote a bound for is argued from what the run showed. The child is unmetered: the
+case for one is what it tells you, not what it spends.
 
 ## Why some rows must be omitted rather than zeroed
 

@@ -3,17 +3,18 @@ name: contract
 description: >
   Author and inspect this repository's Contract Envelope (.loci/contract.yaml) —
   the stack, timing, energy, memory and structural bounds that let LOCI judge a
-  measurement rather than merely report it.
+  measurement rather than merely report it. Use when the user states a limit as
+  a requirement: "set a budget", "add a bound", "cap X at N", "X must not exceed
+  N", "fail the build if timing regresses"; also "what are my limits", "show the
+  contract".
 when_to_use: >
-  When user states a limit as a requirement: "set a budget", "add a bound", "no
-  more than N bytes of stack for X", "max limit of N", "cap X at N", "X must not
-  exceed N", "I want function X to stay under N", "fail the build if timing
-  regresses". Also "what are my limits", "show the contract", or /loci:contract; and
-  when the user asks why a report judged nothing, or how to make LOCI enforce
-  something. Requirement vs. measurement: if the user states a
-  limit, use this skill (draft a bound). If they ask what the current usage or
-  worst case actually is, that is /loci:stack-depth, /loci:exec-trace or /loci:memory-report
-  instead — those measure, this one authors the bound they are judged against.
+  Also "no more than N bytes of stack for X", "max limit of N", "I want function
+  X to stay under N", or /loci:contract; and when the user asks why a report
+  judged nothing, or how to make LOCI enforce something. Requirement vs.
+  measurement: if the user states a limit, use this skill (draft a bound). If
+  they ask what the current usage or worst case is, that is /loci:stack-depth,
+  /loci:exec-trace or /loci:memory-report instead — those measure, this one
+  authors the bound they are judged against.
 ---
 
 # LOCI Contract Envelope
@@ -48,11 +49,18 @@ means you never resolve a failing bound by moving it.
 Every `loci` call prints one JSON envelope (`{ok,data}`); let it print and branch
 on `ok`. These verbs need no sign-in.
 
-## Step 1 — Read before proposing
+## Step 1: Read before proposing
 
 ```
-loci contract show
+loci project [--project-root <the project the user named>]
+loci contract show --project-root <project_root>
 ```
+
+`loci project` is the house rules' **Resolving the project**. A contract is authored
+without a recipe, so show or draft it either way; on `not_initialized`, close with
+`/loci:init <project_root>` — what lets these bounds be measured — never a measurement.
+Carry `--project-root <project_root>` on every `loci contract` call below: without it
+they resolve from the shell's directory, not the project the user named.
 
 - `data.exists: false` or `data.counts.enabled == 0` → **no active contract**
   (missing, empty, or everything disabled); go to Step 5.
@@ -67,7 +75,7 @@ loci contract show
   true, the contract moved underneath it: run `loci contract draft clear` and
   start over.
 
-## Step 2 — Structure the sentence
+## Step 2: Structure the sentence
 
 This is the one part only you can do. Turn what the user said into an entry
 object:
@@ -97,10 +105,13 @@ Rules, in order of how often they are got wrong:
   | `stack_depth`, `stack_frame_size`, `rom_size`, `ram_size` | `B` |
   | `hot_path_time`, `worst_path_time` | `ns` |
   | `energy` | `uWs` |
-- **Never draft `exec_time`** — it is deprecated and `loci contract lint` warns on
-  it. Draft `hot_path_time` for the normal case, `worst_path_time` for the worst
-  case. An existing entry keeps working until the removal; do not rewrite one
-  without asking.
+- **Never draft `exec_time`**, and **tell the user to migrate an existing one.**
+  Draft `hot_path_time` for the normal case, `worst_path_time` for the worst case.
+  `loci contract lint` reports the old spelling, and the entry is **not enforced
+  in practice**: no measuring skill recognises the signal, so nothing supplies a
+  measurement for it and every run files it unjudged. Say that plainly rather than
+  "it keeps working" — a bound that enforces nothing is the thing the user most
+  needs to hear about. Rewriting their file is still their call, not yours.
 - **A timing bound covers the function's own code — say so when you draft one.**
   Every LOCI timing signal is callee-excluded: a `bl` costs the call, never the
   callee body. Tell the user that in the draft, so they know the budget does not
@@ -135,7 +146,7 @@ Rules, in order of how often they are got wrong:
   | should, can, prefer, try to, ideally, nice to have, just warn me | `caution` |
   | no modal at all — "cap it at 2 KB", "budget is 200 ns" | omit it |
   Omitted means `caution`. There is no `defaults:` block; never write one.
-  Never draft `warn`: it is the pre-2026-09-03 spelling, read as `caution` with a
+  Never draft `warn`: it is the retired spelling, read as `caution` with a
   lint notice. An existing one still enforces its bound — report the notice, and
   change the file only if the user asks.
   Two ways this goes wrong: a sentence carrying both ("should never exceed") is
@@ -148,7 +159,7 @@ Rules, in order of how often they are got wrong:
   `signal` to make an entry look finished — a text-only entry is judged by you at
   review time, which is the point.
 
-## Step 3 — Draft it
+## Step 3: Draft it
 
 ```
 echo '<entry json>' | loci contract draft add
@@ -168,10 +179,15 @@ Do not re-send it unchanged. Two rejections are worth recognising:
 by a model rather than computed. Say so plainly; don't silently swap the signal
 for one that happens to exist.
 
-## Step 4 — Review gate
+**Offer the suggested bounds once per draft.** When `loci contract suggested` shows
+`data.missing` > 0, ask (the question tool), listing each `text` not `present`:
+**Add them** → `loci contract draft add --suggested`; **Only mine** → the user's
+alone.
+
+## Step 4: Review gate
 
 Show each drafted entry in full — the sentence and every field — as a short list,
-one entry per line. Then **stop and ask with `AskUserQuestion`**, not with prose.
+one entry per line. Then **stop and ask with the question tool**, not with prose.
 A drafted bound buried in a paragraph gets skipped; a question box does not.
 
 One question, header `Draft`, options in this order:
@@ -185,15 +201,15 @@ decides your next move, and applying the draft is still a command the user runs.
 An option labelled "Accept" reads as the decision, so they approve it, feel done,
 and the bound never lands.
 
-Put the entries in the question text (or an option `preview` if they are long
-enough to need side-by-side reading) so the user is deciding on what they can see.
+Put the entries in the question text so the user is deciding on what they can see.
+With nobody to answer (print mode), give the hand-over line below and stop.
 
 Then, by answer:
 
 - **Looks right** → give exactly one line and nothing else:
 
   ```
-  ! loci contract accept
+  ! loci contract accept --project-root <project_root>
   ```
 
 - **Change something** → ask what to change, then re-draft (`draft clear` and
@@ -218,7 +234,7 @@ git diff --stat -- .loci/contract.yaml
 Two confirmations, doing different jobs: `accept` authorizes the content, the
 commit shares it with the team and the portal.
 
-## Step 5 — No active contract
+## Step 5: No active contract
 
 1. Say what the envelope is, in two sentences: the bounds LOCI judges every
    measurement against, committed so the whole team gets the same verdicts.
@@ -226,22 +242,23 @@ commit shares it with the team and the portal.
    this code, in their own words — "comms_task must stay under 2 KB of stack",
    "execution time must not regress more than 10%" — and turn each sentence
    into a draft (Steps 2–4). An open-ended ask on an empty contract often gets
-   no answer, so offer a starting point with `AskUserQuestion` (header
-   `First bound`, `multiSelect: true`): stack depth, execution time, energy,
+   no answer, so offer a starting point with the question tool (header
+   `First bound`, multi-select): stack depth, execution time, energy,
    ROM/RAM. Their pick chooses the *signal* only — you still ask for the number
    and still use their sentence verbatim.
 3. **Never invent their numbers.** A budget needs a limit only this project
    knows. If the user does not have one yet, `/loci:stack-depth` or `/loci:exec-trace`
-   will measure a real value to bound.
+   will measure a real value to bound — after `/loci:init` if Step 1 answered
+   `not_initialized`.
 4. If entries exist but are all disabled, say so and show them — re-enabling
    (`draft enable --index <n>`) may be all that is needed.
 5. Nothing is written until they accept a draft.
 
-Do not mention `loci contract init` — that flow is internal (it seeds a new
-file's entries) and not user-facing yet. There is no built-in set of bounds
+Do not mention `loci contract init` — that flow is internal and not
+user-facing yet. There is no built-in set of bounds
 either: a repo with no contract file is judged against nothing.
 
-## Step 6 — On the way out
+## Step 6: On the way out
 
 If the draft carried more than one op, or you changed anything structural:
 
@@ -256,5 +273,15 @@ what the user asked.
 
 Keep it short. Show the entry as it will read in the file, not as JSON, unless
 the user asked for the object. Cite indices so a follow-up can address an entry.
-One remark per report, max 15 words, grounded in what is actually in the file —
-"six bounds, four of them structural" beats "your contract looks good".
+One remark per report, [as `voice.md` says](../_shared/voice.md#voice-remark),
+and here the number comes from the file rather than from a run — "six bounds,
+four of them structural" beats "your contract looks good".
+
+**Where the user has just accepted their first bound**, close with one more line,
+offered and never instructed, in [the cockpit's
+words](../_shared/house-rules.md#cockpit-line):
+
+> Run `loci cockpit` in a separate terminal to see what LOCI catches that your coding agent might miss during planning and coding.
+
+Once, on the first accept only; a contract they were already running
+against needs no introduction to it. You never run it yourself.

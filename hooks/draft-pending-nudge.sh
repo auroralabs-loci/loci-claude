@@ -12,6 +12,11 @@
 #     printing it.
 #   * NEVER exit 2. On Stop that blocks the stop and continues the conversation —
 #     a pending draft would become an infinite loop. This hook always exits 0.
+# The bash this runs under is decided first, while the payload is still on
+# stdin: on bash 3 (stock macOS) this re-executes under a newer bash when one
+# is installed, else sets `_LOCI_BASH_LEGACY=1` (AAD-7771; lib/bash-compat.sh).
+. "${0%/*}/../lib/bash-compat.sh" 2>/dev/null || :
+
 set -u
 
 # The shared logger and the forkless JSON reader. Stubbed when the logger is
@@ -22,13 +27,18 @@ case "$0" in
         . "${0%/*}/../lib/loci_log.sh" 2>/dev/null || true
         . "${0%/*}/../lib/loci_json.sh" 2>/dev/null || true
         . "${0%/*}/../lib/loci_failfast.sh" 2>/dev/null || true
+        . "${0%/*}/../lib/loci_host.sh" 2>/dev/null || true
         ;;
 esac
 command -v loci_log >/dev/null 2>&1 \
     || { loci_log() { :; }; loci_log_session_from_payload() { :; }; }
 command -v loci_fail_fast >/dev/null 2>&1 || loci_fail_fast() { return 1; }
+command -v loci_host_carry_add >/dev/null 2>&1 || loci_host_carry_add() { return 1; }
 
 payload=$(cat)
+# The fast-fail notice and the Copilot carry (lib/loci_host.sh, AAD-7783) read
+# the session off the document this hook read, from here.
+LOCI_HOOK_PAYLOAD="$payload"
 
 # The session id comes off the payload just read — stdin is consumed by now and
 # nothing may read it again.
@@ -38,7 +48,8 @@ _dn_state="no draft in reach"
 trap 'loci_log INFO draft-nudge "end: $_dn_state (hook rc=$?)"' EXIT
 
 # The reader gates everything: it reads the count and it writes the escaped
-# `systemMessage`. Without it, stay silent rather than risk a malformed payload.
+# `systemMessage` (`loci_json_system_message`, which this gate also vouches
+# for). Without it, stay silent rather than risk a malformed payload.
 command -v loci_json_load >/dev/null 2>&1 \
     || { _dn_state="skipped (lib/loci_json.sh did not source)"; exit 0; }
 
@@ -163,6 +174,11 @@ _dn_state="pending=${pending:-0} stale=$stale"
 # disables one. When the four recognised verbs do not account for every op, the
 # summary is dropped and the count below speaks instead.
 _dn_total=$(loci_json_count op)
+# A cut envelope under-counts. `loci_json_load` keeps a prefix (16 KB; 4 KB
+# under bash 3 — lib/bash-compat.sh), and a tally over part of the ops is a
+# wrong number said confidently, so the summary is dropped and the count below
+# speaks (AAD-7771).
+[ -z "${_LOCI_JSON_TRUNCATED:-}" ] || _dn_total=0
 _dn_sum=0
 summary=""
 for _dn_pair in add:added edit:changed disable:retired enable:restored; do
@@ -191,6 +207,9 @@ else
     msg="LOCI: contract draft not applied — $summary. Nothing is in force until you run:  ! loci contract accept"
 fi
 
-printf '{"systemMessage":"%s"}\n' "$(loci_json_escape "$msg")"
+loci_json_system_message Stop "$msg"
+# Copilot's Stop reply shows the user nothing; under it the host adapter carries
+# the message to the next prompt (lib/loci_host.sh, AAD-7783). Nothing elsewhere.
+loci_host_carry_add draft "$msg" "$payload" || :
 _dn_state="nudged (pending=$pending stale=$stale)"
 exit 0

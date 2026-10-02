@@ -89,6 +89,8 @@ Guardian — human-on-the-loop. LOCI predicts, warns, and guides; you review the
 | **help** | User-invoked | Lists every skill and shows this checkout's recorded target, compiler and recipe path. No sign-in needed. |
 | **bug-report** | User-invoked | Writes a timestamped forensic diagnostic when a skill fails or never fires. No sign-in needed. |
 
+**Under GitHub Copilot CLI.** Copilot shows the model a skill's `description` only, so every skill's frontmatter `description` carries its own trigger clause; Claude Code also reads the richer `when_to_use` key. Skill prose names tools as Claude Code does — Edit/Write, Bash, Read, and *the question tool* for `AskUserQuestion` — and the session context's `host:` line maps them to Copilot's `edit`/`create`, `bash` or `powershell`, `view` and `ask_user`; neither host's `-p` mode has a question tool, so a headless `/loci:init` reports instead of asking. Plugin skills are addressed as `/loci:<skill>` — Copilot's built-in `/init` and `/help` are its own commands, not ours. In programmatic mode (`copilot -p`) a bare `/init` or `/setup` resolves to the plugin skill. Copilot does not substitute `$ARGUMENTS`; a skill reads the words after its command from the prompt itself, which is how `/loci:setup doctor` works on both hosts.
+
 ## Verdicts
 
 A LOCI report closes on one of two word sets, and which one tells you how much it
@@ -113,11 +115,12 @@ means for your project.
 | `UserPromptSubmit` | every prompt | stamps the turn id every measurement is filed under |
 | `PreToolUse` | Edit, Write, Bash | keeps `.loci/contract.yaml` and `.loci/build.yaml` read-only to the agent; `.o` snapshot for delta analysis |
 | `PostToolUse` | Edit, Write, Bash | asks whether the edit can change a compiled function, and reminds `loci-post-edit` if so |
+| `SubagentStart` | a subagent spawned | under GitHub Copilot CLI, lets the subagent's edits inherit the parent turn's id |
 | `Stop` | end of turn | flushes impact records, nudges on a pending contract draft, cleans the turn's build state |
 
 ## Cockpit
 
-`loci cockpit` is a live terminal view of this machine's LOCI data — no browser, no sign-in.
+`loci cockpit` shows what LOCI catches that your coding agent might miss during planning and coding — live, in your terminal, no browser, no sign-in.
 It reads the same measurement store the skills write to, so what it shows is what the session reported.
 Open it in a separate terminal: it takes over the one it runs in, so it will not share a terminal with a Claude Code session.
 

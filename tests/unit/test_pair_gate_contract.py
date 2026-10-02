@@ -46,8 +46,11 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS_DIR = PLUGIN_ROOT / "skills"
-CONTRACT = SKILLS_DIR / "_shared" / "loci-runtime-contract.md"
+# The compile route moved to its own file on 22 Sep (todo [082]): only a skill that
+# BUILDS or DIFFS an artifact reads it, so the three leaf skills stopped loading it.
+COMPILE_ROUTE = SKILLS_DIR / "_shared" / "compile-route.md"
 POST_EDIT = SKILLS_DIR / "loci-post-edit" / "SKILL.md"
+QUIET_RUN = SKILLS_DIR / "loci-post-edit" / "quiet-run.md"
 
 CONTRACT_ANCHOR = "beyond-the-diff"
 GATE_STEP = "Step 2a"
@@ -105,7 +108,7 @@ def _denied_before(text: str, pos: int) -> bool:
 
 def _pair_fences() -> list[str]:
     """Fences that compare the pair's footprint and frames — the phase 11 recipe."""
-    return [f for f in _fences(CONTRACT.read_text(encoding="utf-8"))
+    return [f for f in _fences(COMPILE_ROUTE.read_text(encoding="utf-8"))
             if "elf memmap" in f and "elf stack" in f]
 
 
@@ -120,7 +123,7 @@ def test_the_contract_carries_exactly_one_pair_recipe():
         f"expected exactly one footprint+frame recipe in the contract, found "
         f"{len(found)}"
     )
-    assert f'id="{CONTRACT_ANCHOR}"' in CONTRACT.read_text(encoding="utf-8"), (
+    assert f'id="{CONTRACT_ANCHOR}"' in COMPILE_ROUTE.read_text(encoding="utf-8"), (
         f"the recipe has no `{CONTRACT_ANCHOR}` anchor, so nothing can link to it"
     )
 
@@ -150,7 +153,7 @@ def test_the_recipe_names_every_field_its_readers_are_sent_to():
     """The prose after the recipe is the whole instruction now — there is no jq
     projecting the answer into labelled lines. A field named in the reading rules and
     absent from the pair's envelopes is a model reading `null`."""
-    section = _section(CONTRACT.read_text(encoding="utf-8"),
+    section = _section(COMPILE_ROUTE.read_text(encoding="utf-8"),
                        "## What the differ does not answer")
     for field in ("data.summary_delta", "rom_total", "ram_static_total",
                   "data.symbol_deltas", "data.frame_deltas"):
@@ -165,7 +168,7 @@ def test_the_reading_rules_keep_the_three_traps_the_fields_carry():
     A `removed` symbol's entry has `size` and no `delta`; `symbol_deltas` itself
     comes back `null`; and a function missing from one side reports `null`, which is
     not a zero frame."""
-    section = _section(CONTRACT.read_text(encoding="utf-8"),
+    section = _section(COMPILE_ROUTE.read_text(encoding="utf-8"),
                        "## What the differ does not answer")
     assert re.search(r"`size`[^.]{0,80}no `delta`|no `delta`[^.]{0,80}`size`", section), (
         "the rules do not say an arrived/departed symbol carries `size` and no "
@@ -206,12 +209,20 @@ def test_the_recipe_captures_nothing_into_a_shell_variable():
 
 # ── the step that consumes it ────────────────────────────────────────────────
 
+def _gate() -> str:
+    """Step 2a plus the branch file it routes to. The step was split in two: SKILL.md
+    keeps the route and the reference file holds the three report templates, so a
+    reader on this branch has both and neither alone is the step."""
+    return (_section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
+            + "\n" + QUIET_RUN.read_text(encoding="utf-8"))
+
+
 def test_the_gate_slice_is_the_whole_step():
     """Every assertion below is about what a step slice does **not** contain, and a
     slice that stops early contains nothing. The step ends with the sentence about the
     footer; if that has moved, the slicing is wrong and the two tests after this one
     are worthless rather than failing."""
-    gate = _section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
+    gate = _gate()
     assert len(_fences(gate)) >= 3, (
         f"{GATE_STEP} should carry both report templates and the escalation call; the "
         f"slice has {len(_fences(gate))} fenced blocks, so it stops short of them"
@@ -243,7 +254,7 @@ def test_the_gate_step_spends_nothing_and_delegates_the_measurement():
     """What makes this branch a gate is that it reaches neither metered call. What
     keeps it from being a silent skip is that it links to the recipe rather than
     describing it — one statement, in the file every consumer reads."""
-    gate = _section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
+    gate = _gate()
     for fence in _fences(gate):
         for metered in ("loci timing", "loci elf asm"):
             assert metered not in fence, (
@@ -268,7 +279,7 @@ def test_the_gate_step_never_sends_this_units_footprint_to_the_contract():
     Asserted twice, because the fence half alone is not the instruction: deleting the
     whole prose rule — the sentence carrying "never send them to `loci contract check`"
     — left this green while removing the only thing a model reads."""
-    gate = _section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
+    gate = _gate()
     for fence in _fences(gate):
         assert "contract check" not in fence, (
             "the gate step pipes a measurement into `loci contract check`; this "
@@ -290,7 +301,7 @@ def test_the_gate_step_states_its_own_scope_and_what_it_skips():
     reaching `elf asm`, the failure the routing test exists to prevent, arriving by the
     route that test does not cover. Without the second, Case B — which has no `PREV` —
     is routed into a fence that compares a pair."""
-    gate = _section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
+    gate = _gate()
     assert re.search(r"Case A only", gate), (
         f"{GATE_STEP} no longer scopes itself to Case A, so a run with no baseline can "
         f"reach a fence that needs one")
@@ -316,7 +327,7 @@ def test_the_quiet_answer_still_names_the_gap_all_four_checks_have():
     be derived from — and only that one. A derivable bound is now measured; an
     underivable one, a threshold, a timeout and a retuned `const` table are all still
     invisible, so the caveat stays and must still say that every check misses them."""
-    gate = _section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
+    gate = _gate()
     quiet = [f for f in _fences(gate) if "no measurable change" in f]
     assert len(quiet) == 1, (
         f"the no-change report template is not where this test can see it "
@@ -346,14 +357,19 @@ def test_the_gate_step_separates_a_deletion_from_the_quiet_answer():
     `removed` entries are filtered out of it, because a deleted function has no After to
     extract. Measured: removing one leaf gives `{"added":0,"removed":1,"modified":0}`
     and an empty list. Skipping the metered half is right; calling it "no function
-    changed" is a lost measurement wearing the words of a clean run."""
-    gate = _section(POST_EDIT.read_text(encoding="utf-8"), f"## {GATE_STEP}")
-    assert "data.functions.removed" in gate, (
+    changed" is a lost measurement wearing the words of a clean run.
+
+    The field moved on 22 Sep (todo [087]): the names came off a SECOND `elf diff` the
+    branch ran itself, and `prepare` — which already ran the differ — now carries them.
+    The assertion is the same one either way: name the field, because the field is the
+    instruction and "mentions removed" is not."""
+    gate = _gate()
+    assert "data.removed_functions" in gate, (
         f"{GATE_STEP} does not tell the model where the deleted function names are — "
         f"the field is the instruction, and 'mentions removed' is not")
-    assert "summary.removed" in gate, (
-        f"{GATE_STEP} never reads `data.summary.removed`, so a deletion cannot be told "
-        f"from the quiet answer at all")
+    assert "data.removed_functions` is absent" in gate, (
+        f"{GATE_STEP} never states the quiet answer's own condition, so a deletion "
+        f"cannot be told from it at all")
     quiet_branch = gate.split("**Nothing moved**", 1)
     assert len(quiet_branch) == 2, "the quiet-answer branch is not where this can see it"
     # The CONDITION is the first sentence, not the paragraph: the sentences after it
@@ -377,8 +393,7 @@ def test_the_gate_step_states_the_frame_instruments_limit():
     for both sides answers "unchanged" for every frame change there is. Measured: a
     528-byte frame reads as 4 B on CLI 0.1.102. The version the fix landed in is the
     fact a reader needs, so it has to be *in* the documents, not in this test."""
-    docs = [CONTRACT.read_text(encoding="utf-8"),
-            POST_EDIT.read_text(encoding="utf-8")]
+    docs = [COMPILE_ROUTE.read_text(encoding="utf-8"), _gate()]
     assert all("0.1.107" in d for d in docs), (
         "the frame-sizing threshold is missing from the contract or the skill, so an "
         "install that cannot answer the frame question reports it as unchanged"

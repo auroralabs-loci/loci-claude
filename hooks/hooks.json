@@ -6,8 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-init.sh",
-            "timeout": 120
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/session-init.sh\"'",
+            "timeout": 120,
+            "timeoutSec": 120
           }
         ]
       },
@@ -15,8 +16,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-clean.sh\"",
-            "timeout": 15
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-clean.sh\"'",
+            "timeout": 15,
+            "timeoutSec": 15
           }
         ]
       }
@@ -26,8 +28,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/prompt-submit-turn.sh\"",
-            "timeout": 10
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/prompt-submit-turn.sh\"'",
+            "timeout": 10,
+            "timeoutSec": 10
           }
         ]
       }
@@ -38,8 +41,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/contract-guard.sh\"",
-            "timeout": 5
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/contract-guard.sh\"'",
+            "timeout": 5,
+            "timeoutSec": 5
           }
         ]
       },
@@ -48,8 +52,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/pre-edit-hook.sh\"",
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/pre-edit-hook.sh\"'",
             "timeout": 8,
+            "timeoutSec": 8,
             "statusMessage": "LOCI — execution-aware analysis..."
           }
         ]
@@ -61,8 +66,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-hook.sh\"",
-            "timeout": 5
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-hook.sh\"'",
+            "timeout": 5,
+            "timeoutSec": 5
           }
         ]
       },
@@ -71,8 +77,21 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-bypass.sh\"",
-            "timeout": 5
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-bypass.sh\"'",
+            "timeout": 5,
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/subagent-start.sh\"'",
+            "timeout": 5,
+            "timeoutSec": 5
           }
         ]
       }
@@ -82,8 +101,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/stats-flush.sh\"",
-            "timeout": 10
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/stats-flush.sh\"'",
+            "timeout": 10,
+            "timeoutSec": 10
           }
         ]
       },
@@ -91,8 +111,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/draft-pending-nudge.sh\"",
-            "timeout": 10
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/draft-pending-nudge.sh\"'",
+            "timeout": 10,
+            "timeoutSec": 10
           }
         ]
       },
@@ -100,8 +121,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/manifest-status-nudge.sh\"",
-            "timeout": 10
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/manifest-status-nudge.sh\"'",
+            "timeout": 10,
+            "timeoutSec": 10
           }
         ]
       },
@@ -109,8 +131,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-clean.sh\"",
-            "timeout": 10
+            "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/turn-clean.sh\"'",
+            "timeout": 10,
+            "timeoutSec": 10
           }
         ]
       }

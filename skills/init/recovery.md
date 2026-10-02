@@ -2,7 +2,8 @@
 
 Reference for `/loci:init` Step 5. Read this when the project is already initialized —
 a target switch, a knob, a new source file, a migration — or when a LOCI refusal named
-one of these as its recovery.
+one of these as its recovery. A recipe whose toolchain is in a container (`build.exec`)
+has codes of its own: [`container-toolchain.md`](container-toolchain.md).
 
 Every command here takes `--project-root "<root>"`, the root the skill established in
 Step 1. Left out, the CLI resolves against the shell's own directory, which in a
@@ -13,7 +14,7 @@ session opened below the project root is a different project.
 | variant | what it does | the rule |
 |---|---|---|
 | `loci init --refresh` | re-derives with the recorded answers as defaults; how a target is switched (`--target=<isa>`), and the recovery `recipe_stale`, `recipe_tampered`, `recipe_invalid` and `compiler_missing` name | `confirmed_by_user` survives only if nothing the user was shown changed; when it drops, `.data.notes` names the fields — ask again, then re-run with `--confirmed`. `--target=auto` re-detects rather than defaulting to the recorded answer. For `recipe_stale`, regenerate the compile database **before** re-running (see `compdb.md`) |
-| `loci init set <key>=<value>` | records one knob: `rust.features`, `rust.no_default_features`, `rust.bin`, `rust.profile`, `go.tags`, `go.gcflags`, `go.ldflags`, `go.package`, `go.tinygo_target`, `go.cgo_enabled`, `fidelity.lto`, `fidelity.unity_build`, `build.compdb.select.prefer_output`, `artifacts.elf`, `artifacts.map`, `staleness.watch`, `env.setup` | **confirm the value with the user before invoking**: this replaces hand-editing build config, so the consent is your question, not the flag; `set` does not mark the recipe confirmed. `target` is not settable — `--refresh --target=<isa>` switches it. **A `go.*` knob needs `loci init --refresh` after it**: a Go recipe freezes its knobs into the recorded build command, so `set` alone records a knob that reaches no build |
+| `loci init set <key>=<value>` | records one knob: `rust.features`, `rust.no_default_features`, `rust.bin`, `rust.profile`, `go.tags`, `go.gcflags`, `go.ldflags`, `go.package`, `go.tinygo_target`, `go.cgo_enabled`, `fidelity.lto`, `fidelity.unity_build`, `build.compdb.select.prefer_output`, `artifacts.elf`, `artifacts.map`, `staleness.watch`, `env.setup`, and the container toolchain's `build.exec.kind`, `build.exec.image`, `build.exec.container`, `build.exec.compose_service`, `build.exec.compose_file`, `build.exec.compose_project`, `build.exec.platform`, `build.exec.user`, `build.exec.timeout_s`, `build.exec.mounts`, `build.exec.warm`, `build.exec.warm_idle_s`, `build.exec.entrypoint`, and the `build.exec.env.<NAME>` family — the variables a container's toolchain reads, whose names are the project's (`ROS_DOMAIN_ID`, `CC`, `CMAKE_PREFIX_PATH`) rather than LOCI's, so they are a family and not an enumerable key (`container-toolchain.md`) | **confirm the value with the user before invoking**: this replaces hand-editing build config, so the consent is your question, not the flag; `set` does not mark the recipe confirmed. `target` is not settable — `--refresh --target=<isa>` switches it. **A `go.*` knob needs `loci init --refresh` after it**: a Go recipe freezes its knobs into the recorded build command, so `set` alone records a knob that reaches no build |
 | `loci init add-file <src>` | derives one compile-database entry for a new source from its nearest neighbour | **synthesized** databases only; on a `generated` one it refuses and names the regeneration command in `.error.regen` — which is **null** when the recipe records none, and then the message says only "regenerate it the way this project generates it", so ask rather than invent one |
 | `loci init --from-existing` | forces seeding from the build records LOCI already wrote here | plain init consults them anyway; the flag makes it explicit and *requires* them. A seeded recipe records the compiler installed **now** — possibly a later toolchain than the records the seed came from name — so say which compiler it will use |
 
@@ -26,8 +27,8 @@ checkout reports "the architectures it builds for (host) are not ones LOCI predi
 just as a genuine host-only project does. Pass that caveat on: "build the target image
 and run `/loci:init` again" is often the whole fix, and it is the half the user acts on.
 
-What "permanent" means precisely: LOCI will not re-arm init for this project on its
-own. It does **not** mean the project can never be initialized. So do not hunt for
+What "permanent" means precisely: the project stays recorded `unsupported` until
+someone runs `/loci:init` again. It does **not** mean the project can never be initialized. So do not hunt for
 another target and do not retry in this session — and do not tell the user the project
 is permanently unsupported when the message says an unbuilt image is indistinguishable
 from one.
@@ -109,15 +110,16 @@ against, which is what a pattern is written from. A re-derivation carries this k
 forward unchanged, so `--refresh` returns `ok` and the very next measurement refuses
 identically — which reads as LOCI ignoring the recovery it just recommended.
 
-**`arch_mismatch` has four causes and only one of them is that knob.** Read
+**`arch_mismatch` has five causes and only one of them is that knob.** Read
 `.error.message`: it names its own fix, and these are genuinely different problems.
 
 | what the message says | the fix |
 |---|---|
 | no compile-database entry for this file builds for the target (a Debug or host entry beside the firmware's) | `set build.compdb.select.prefer_output=<pattern>`, as above — `.error.detail` lists the rejected entries |
-| this compile asked for one target but the recipe was initialized for another | measure the recipe's target, or `--refresh --target=<isa>` to switch the checkout. This is what a **mid-session target switch** produces: the recipe and the hooks move at once, the measurement skills still send the session-start target, and the compile refuses |
+| this compile asked for one target but the recipe was initialized for another | measure the recipe's target, or `--refresh --target=<isa>` to switch the checkout. Skills pass no target, so only an explicit `--loci-target` reaches this |
 | a `flags.json` `mode:"replace"` pin disagrees with the recipe | the pin outranks the recipe by design, and it is the **user's** file — a hook denies your writing it, so say what disagrees and ask them to fix or remove it. Re-initializing will not touch it |
 | a cargo project's `rust.triple` disagrees with the compile target | `--refresh` (with `--target=<isa>` if the board changed). There is no compile database here, so `prefer_output` has nothing to filter |
+| an ELF named with `--elf` is for another ISA than the target (a measuring verb, not a compile) | not the recipe's fault and not this skill's to fix: name a build for the target, or pass `--loci-target` with that binary's ISA |
 
 Do **not** edit `.loci/build.yaml` by hand for any of them — a hook denies it, and
 that is only the second line of defence. The recipe's integrity

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # LOCI plugin — shared bash logger. Appends to $LOCI_STATE_DIR/loci.log, using
-# Claude Code's debug-log line shape so timestamps correlate against
-# ~/.claude/debug/<session>.txt:
+# Claude Code's debug-log line shape so timestamps correlate against the host's
+# own record — ~/.claude/debug/<session>.txt under Claude Code, the ISO stamps
+# of ~/.copilot/session-state/<session>/events.jsonl under GitHub Copilot CLI:
 #
 #   2026-05-05T11:29:03.107Z [INFO] [loci.<source>] [session=<id>] message
 #

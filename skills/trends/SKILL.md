@@ -2,29 +2,26 @@
 name: trends
 description: >
   Per-function measurement history on the current branch: timing, energy,
-  stack, and memory trends over time from LOCI analysis.
+  stack, and memory trends over time from LOCI analysis. Use when the user says
+  "show trends", "optimization progress", "what changed on this branch" (in
+  LOCI data), "how are my functions doing", or asks about performance trajectory.
 when_to_use: >
-  When user says "show trends", "optimization progress", "what changed on
-  this branch", "how are my functions doing", "/loci:trends". Also when user asks
-  about performance trajectory or whether an optimization sprint is working.
+  Also /loci:trends, or whether an optimization sprint is working.
 ---
 
 # LOCI Trends
 
 This skill calls the bare `loci` command (on PATH via the session bootstrap)
-and reads `<project-context>` from the session context — see Step 0. Every
+and resolves `<project-context>` with `loci project` — see Step 0. Every
 `loci` call prints one JSON envelope (`{ok,data}`); let it print and read `ok`.
 
-## Step 0: Check session context
+## Step 0: Resolve the project
 
-Read the recorded project facts from the `<project-context>` path (the
-per-session keyed file, listed as `project context:` in this session's
-context). Extract `git_branch` for the report header.
-
-If the file does not exist, stop and tell the user:
-
-> LOCI session context not found. Please restart Claude Code so the plugin
-> setup runs and detects the project environment.
+Run `loci project`, passing `--project-root` if the user named one, and read the
+file its `context_file` names — that is `<project-context>`. Extract `git_branch`
+for the report header. No file there means this project has no recorded history:
+say so and stop — offering `/loci:init <project_root>` when the answer was
+`not_initialized`. `not_resolved`: ask which project.
 
 ## Step 1: Retrieve trend summary
 
@@ -35,7 +32,7 @@ loci trends --context-file "<project-context>"
 
 If `data.count` is 0 (no measurements), respond with:
 
-> No measurements on this branch.
+> Nothing recorded on this branch yet.
 
 Nothing more. Do not suggest running other skills or explain how to generate
 measurements.
@@ -81,20 +78,20 @@ Render `data.report` (the chronological output) under a heading:
 
 ## LOCI voice remark
 
-End the report with one short LOCI voice remark (max 15 words). The remark
-should reinforce the value of measuring — help the user see why tracking
-matters and nudge them to keep going.
+One line, at the **end** of the report rather than before a footer:
+[The voice remark](../_shared/voice.md#voice-remark). This skill's own slant is
+that the remark reinforces the value of measuring — why tracking matters, and a
+nudge to keep going.
 
-When there are improvements or regressions, ground the remark in a specific
-number:
+With improvements or regressions, ground it in a specific number:
 - "3 functions faster since branch start. The data is paying off."
 - "process_data down 25% from peak — you caught that early."
 - "All stable. That's the baseline locked in for the next change."
 
 When there are only baselines (single measurements), highlight what comes
 next:
-- "First measurements captured. Next edit shows the delta."
-- "Baseline locked. Every future change gets measured against this."
+- "Baseline captured — LOCI flags the next edit that moves it."
+- "Baseline locked. Your next edit shows the delta."
 - "1 function tracked. LOCI will show the impact of your next edit."
 
 No footer separator lines after the remark.

@@ -2,7 +2,7 @@
 
 A project contract can cover every signal, every entry can compute, and every one can
 pass — and the report still closes on a concern, because
-`loci-runtime-contract.md`'s `lower_bound` rule keeps a `≥` figure off ✅ whatever
+`house-rules.md`'s `lower_bound` rule keeps a `≥` figure off ✅ whatever
 headroom the bound had. `check_entries` offers the agent only the entries it could not
 judge, so on that run `data.agent_judged` is empty and `--agent-judged` has no
 `entry_key` to take the word. It reached the record as prose in `--agent-note`, which
@@ -25,7 +25,19 @@ import pytest
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS = PLUGIN_ROOT / "skills"
 VERDICTS = SKILLS / "_shared" / "verdicts.md"
-CONTRACT = SKILLS / "_shared" / "loci-runtime-contract.md"
+# The shared contract is two files since 22 Sep (todo [082]): the house rules,
+# and `compile-route.md` for the sections only a skill that builds or diffs an
+# artifact reads. A check about what "the shared contract" says reads both.
+HOUSE_RULES = SKILLS / "_shared" / "house-rules.md"
+COMPILE_ROUTE = SKILLS / "_shared" / "compile-route.md"
+
+class _Both:
+    """The two shared files as one document, for a whole-file membership check."""
+    def read_text(self, encoding="utf-8"):
+        return (HOUSE_RULES.read_text(encoding=encoding) + "\n"
+                + COMPILE_ROUTE.read_text(encoding=encoding))
+
+SHARED = _Both()
 
 #: `control-flow` joined them in PR #291, which gave it the two structural
 #: signals its own graph determines to judge; it routes to the recording
@@ -67,7 +79,7 @@ def test_the_lower_bound_rule_routes_to_the_record():
     """The trigger, at the rule that produces it. A `≥` figure keeps the report off ✅
     while every bound passes, so the gate word and the printed word part company right
     here — and this is where the skill has to be told to record the difference."""
-    text = CONTRACT.read_text(encoding="utf-8")
+    text = SHARED.read_text(encoding="utf-8")
     marker = "never claim a ✅\non a number that can only grow"
     assert marker in text, "the `lower_bound` rule moved; re-anchor this test"
     window = text[text.index(marker):text.index(marker) + 700]

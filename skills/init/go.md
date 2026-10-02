@@ -1,9 +1,9 @@
 # Go and TinyGo projects
 
-Read this when Step 2 reports `.data.build_system` as `go`. (It is never
-`tinygo` there — `detect_build_system` answers `go` for every module, and
-`tinygo` is written into the recipe only at the end of init, from what the
-module imports. `.data.go.tinygo` is the flag that says which it will be.) It
+Reference for `/loci:init`. Read this when Step 2 reports `.data.build_system` as
+`go`. (It is never `tinygo` there — `detect_build_system` answers `go` for every
+module, and `tinygo` is written into the recipe only at the end of init, from what
+the module imports. `.data.go.tinygo` is the flag that says which it will be.) It
 replaces `compdb.md`, which does not apply: a Go project has no compile
 database and never will.
 

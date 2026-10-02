@@ -22,11 +22,11 @@ sitting right there. Before running anything:
 
 - `.data.binaries[]` names object files by full path, and a database usually sits at
   the build root a few levels above them. If one is there, hand it straight over — no
-  build, no consent needed, and being `generated` it cannot record `unvalidated`. (Which
-  tier it *does* reach is the tree's business: a release build with no `-g` stops at
-  `compile-check`, and the report says so.)
+  build, no consent needed, and being `generated` it cannot record `unvalidated`.
 - An initialized project records its database path in the recipe; `loci init` names it
   in the refusal when it has gone.
+- Built in a container, or baked into an image? No database lands here: `loci init`
+  asks `compdb_regen` → [`compdb-container.md`](compdb-container.md).
 
 This is reading probe's own output, not a search. Do not walk the tree looking for
 build directories.
@@ -101,8 +101,7 @@ Three outcomes, and they are three different jobs:
   from the *current directory*, not the cache, so from anywhere but the project root it
   fails: either "does not appear to contain CMakeLists.txt", or — from a subdirectory
   that has its own `CMakeLists.txt` — "does not match the source … used to generate
-  cache", which is rule 2's trigger. Blaming the user's tree for your cwd is the worst
-  outcome on this page.
+  cache", which is rule 2's trigger.
 - **`Visual Studio` or `Xcode` generator** → the flag is accepted and ignored; these
   generators never write a compile database. Say so, and offer either a **separate**
   Ninja build directory built from the project's own configure line plus `-G Ninja`
@@ -230,7 +229,8 @@ it; never having asked is not.
 **A linked binary is enough to be initialized.** With no database and the project
 linked once, `loci init` records an **artifact-only recipe** — target, compiler and
 `artifacts.elf`, no database, `validated: unvalidated`. Plain `loci init` (or
-`--auto`) writes it on that shape; nothing extra is passed.
+`--auto`) writes it on that shape; nothing extra is passed — except a container build,
+whose no is `compdb-container.md`'s.
 
 | | under an artifact-only recipe |
 | --- | --- |

@@ -38,7 +38,10 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(_find_bash() is None, reason="bash required")
+from tests.fixtures.copilot_payloads import current as _host
+
+pytestmark = [pytest.mark.skipif(_find_bash() is None, reason="bash required"),
+              pytest.mark.usefixtures("host")]
 
 
 def _to_bash_path(p: Path) -> str:
@@ -64,10 +67,16 @@ def _run(project_dir: Path, *, fake_loci: str | None = None,
         stub.chmod(0o755)
         env["PATH"] = f"{_to_bash_path(bin_dir)}:{env['PATH']}"
 
+    host = _host()
+    payload = host.respell({"cwd": _to_bash_path(project_dir), "prompt_id": prompt_id},
+                           event="UserPromptSubmit")
+    env.update(host.env(project=_to_bash_path(project_dir)))
+    host.seed(home / ".loci" / "state")
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(HOOK)],
-        input=json.dumps({"cwd": _to_bash_path(project_dir), "prompt_id": prompt_id}),
+        input=json.dumps(payload),
         capture_output=True, text=True, timeout=30, env=env,
+        cwd=host.cwd(None),
     )
     out = proc.stdout.strip()
     if not out:
@@ -83,7 +92,7 @@ def _run(project_dir: Path, *, fake_loci: str | None = None,
 def test_absent_loci_fails_open_with_a_one_line_notice(tmp_path):
     code, out = _run(tmp_path)  # no stub on PATH
     assert code == 0
-    assert set(out) == {"systemMessage"}
+    assert set(out) == _host().user_message_keys("UserPromptSubmit")
     assert "loci" in out["systemMessage"].lower()
     assert "not found" in out["systemMessage"].lower()
 
@@ -106,7 +115,7 @@ def test_the_harness_payload_reaches_loci_on_stdin(tmp_path):
     code, out = _run(tmp_path, fake_loci=f"cat > {_to_bash_path(seen)}",
                       prompt_id="t-9")
     assert code == 0 and out is None
-    assert json.loads(seen.read_text(encoding="utf-8"))["prompt_id"] == "t-9"
+    assert _host().is_turn(json.loads(seen.read_text(encoding="utf-8"))["prompt_id"], "t-9")
 
 
 # ── the loop hazard: on UserPromptSubmit a blocking exit is worse than Stop ─

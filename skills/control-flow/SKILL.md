@@ -1,16 +1,18 @@
 ---
+name: control-flow
 description: >
   Annotated control-flow graphs for compiled C/C++/Rust/Go: per-function basic
   blocks, loops with derived trip counts, recursion and irreducible cycles, call
   sites, in text optimised for LLM analysis. Renders the graph and judges the two
-  structural signals it determines: recursion cycles and indirect calls.
+  structural signals it determines, recursion cycles and indirect calls, and the
+  contract's text-only rules on the functions it draws. Use when the user asks
+  what the control flow of compiled code looks like: call dependencies, function
+  impact, which branches and loops exist, where the hot path could run, or what
+  a change did to the shape of a function.
 when_to_use: >
-  When the user asks what the control flow of compiled code looks like: call
-  dependencies, function impact, which branches and loops exist, where the hot
-  path could run, or what a change did to the shape of a function. It judges the
-  signals the graph itself determines; the rest belong elsewhere — a stack budget,
-  whether a cycle is bounded, or a callee missing from the link is
-  `/loci:stack-depth`, a timing or footprint bound is `loci-post-edit`, and
+  It judges the signals the graph itself determines; the rest belong elsewhere —
+  a stack budget, whether a cycle is bounded, or a callee missing from the link
+  is `/loci:stack-depth`, a timing or footprint bound is `loci-post-edit`, and
   authoring a new bound is `/loci:contract`.
 ---
 
@@ -19,7 +21,8 @@ when_to_use: >
 One free CLI call answers this skill. `loci analyse cfg` compiles the touched
 translation units if they are stale, picks the artifact, cuts the annotated CFG
 for the functions you name, and returns the file paths plus a per-function loop
-table. You read the graph, judge the signals it determines, and present it.
+table. You read the graph, judge the signals it determines and the text-only
+rules on what it drew, and present it.
 
 **This skill renders, and it judges the two signals the graph determines.**
 `recursion_cycles` — a back-edge and an irreducible cycle are in the graph — and
@@ -34,42 +37,45 @@ you can see for one you cannot.
 row verdict is the two composed — see `<plugin-dir>/skills/_shared/verdicts.md`,
 which holds the matrix, the three assessment words and the display words they
 render as. Step 3 is the branch that says what this run earned. You supply no
-band and no threshold of your own: the graph supplies the number, a contract
-entry or the invariant supplies the `STATUS`, and you supply the assessment.
+band and no threshold of your own: the graph supplies the number, a contract entry
+supplies the `STATUS`, and where none covers the signal you supply the assessment
+and the `STATUS` follows from it.
 
-Apply the contract's **The Contract Envelope is input only**, **A measurement
-inherits a verdict from a bound, never from a band**, **Your verdicts are
-`flagged` / `cleared`** and **Structural invariants: which measurement answers
-which signal** sections. Judgements and gates are inputs — you render them, and
-exit `2` is a bound the contract calls a failure, not metadata to skip.
-`data.contract` is the string `project` or `none`, never an object: `none` is a
-repo with no contract file and it judges nothing, so there every row's `STATUS`
-is composed from your own assessment — **Needs attention** → `CAUTION`, **Looks
-good** → `PASS`, **As reported** → `—` — with the caption from `verdicts.md`'s
-[No contract: the agent fills `STATUS`](../_shared/verdicts.md#no-contract) under
-the table. On a **contracted** run a signal no entry covers keeps its `—`.
+Apply the house rules' **The Contract Envelope is input only**, **A measurement
+inherits a verdict from a bound, never from a band**, **[Your verdicts are
+`flagged` / `cleared`](../_shared/house-rules.md#agent-verdicts)** and
+**Structural invariants: which measurement answers which signal**.
+
+**This verb computes no verdict, and `data.contract` says whose bounds apply.**
+On `none`, every row's `STATUS` is the word your assessment composes to —
+**Needs attention** → `CAUTION`, **Looks good** → `PASS`, **As reported** → `—` —
+per [No contract: the agent fills `STATUS`](../_shared/verdicts.md#no-contract).
+On `project`, an entry on these two signals is judged by **stack-depth** (Step 3
+says why), and what comes to you is `data.agent_judged`: the text-only entries on
+the functions this run drew.
 
 **A hazard is provable at any scope; a zero is not.** A CFG is cut per function
 while every structural invariant covers the whole binary, so a cycle or an
 indirect call you found is evidence for the whole-binary entry and is reported as
 one — a non-zero count holds however few functions were cut, including from a
 single object. The reverse never holds, and a clean set of CFGs is not a scope
-this skill can clear: report a zero as **unmeasured** with its reason, the
-functions this run read not being the binary, and on an object not at all. Never
-report `0` against a whole-binary bound from the functions you happened to cut.
+this skill can clear. **Say the scope in the Note, every time** — *0 cycles
+across the N functions this run read* — and on an object say it is a single
+translation unit. That sentence is what keeps a clean row honest: the word beside
+it is your reading, and the reader can see exactly what it rests on. Never present
+it as a zero over the binary, and never put it against a whole-binary bound —
+that bound is stack-depth's to judge.
 
-**Shared runtime contract.** Read `<plugin-dir>/skills/_shared/loci-runtime-contract.md`
-and apply its **Session context placeholders**, **The turn id: one convention,
+**Shared house rules.** Read `<plugin-dir>/skills/_shared/house-rules.md`
+and apply its **Resolving the project**, **The turn id: one convention,
 every skill**, **Output: the JSON envelope**, **[Naming a path or a loop in the
-report](../_shared/loci-runtime-contract.md#naming-paths)** and **[The three `loci`
-commands a user ever sees](../_shared/loci-runtime-contract.md#user-commands)**
-sections. The target is the recipe's:
-take `<loci_target>` off the session context's `LOCI target:` line and
-pass it as `--loci-target` — the verb's own choices list is the gate, and a line
-that is missing is a fact about the session, never a value to derive. Artifact
+report](../_shared/house-rules.md#naming-paths)** and **[The three `loci`
+commands a user ever sees](../_shared/house-rules.md#user-commands)**
+sections. The target is the recipe's, and the verb reads it there — you never
+pass or derive one. Artifact
 selection is *not* yours either: the verb owns the freshness ladder,
 refuses a stale binary rather than measuring it, and names what it read in the
-envelope — **B2 — The artifact is the one the recipe names** says how it ranks
+envelope — [The artifact a run measures](../_shared/house-rules.md#the-artifact) says how it ranks
 (the recipe's recorded artifact first), and you never re-run that ranking in
 prose beside it.
 
@@ -77,12 +83,11 @@ prose beside it.
 `addr2line`, or `nm`. This skill needs the annotated CFG that binutils cannot
 produce.
 
-## Step 1 — one call
+## Step 1: one call
 
 ```
 loci analyse cfg --turn "<turn-id>" --caller control-flow \
-    --functions "<fn>[,<fn>]" --loci-target <loci_target> \
-    --project-root "<project_root>" --context-file "<project-context>" \
+    --functions "<fn>[,<fn>]" [--project-root <the project the user named>] \
     [--source "<edited-source>"] [--elf <path>]
 ```
 
@@ -109,9 +114,8 @@ artifact qualified, or a stage broke. `data.artifact.refused` names what was
 skipped and why; surface that verbatim rather than hunting for a binary yourself.
 
 A refusal is `ok: false` with an `error.code` from the shared **When a `loci` call
-refuses: the nine coded errors** — `not_initialized` (**it branches**: no recipe on
-disk means initializing is the user's call, so name `/loci:init` and stop; a recipe
-with degraded state is a repair the init skill runs), `recipe_stale`,
+refuses: the eleven coded errors** — `not_initialized` (**it branches — follow its
+row**), `recipe_stale`,
 `recipe_tampered` and the rest, each with the one recovery that table names.
 Relay the code and its recovery verbatim, and stop. The table is the procedure;
 it is not restated here, and nothing in it sends you looking for anything.
@@ -124,19 +128,20 @@ The envelope carries:
   `unknown_trip_count`, `recursion`, `uncounted_cycles`, and one `rows` entry per
   loop (`id`, `kind`, `header`, `latch`, `depth`, `in`, `blocks`, `trips`,
   `trips_known`).
-- `data.artifact` — B4's provenance line, as data.
+- `data.artifact` — the `Artifact:` line, as data.
 - `data.compiled` — one line per touched translation unit, and whether it was
   rebuilt.
 - `data.functions` / `data.not_found` — what was rendered, and what was asked for
   and is not in the artifact.
-- `data.contract`, `data.judgements`, `data.gates`, `data.verdict`,
-  `data.unjudged`, `data.agent_judged` and `data.rows` — the contract's answer on
-  the two signals this verb determined, in the shapes `analyse stack` returns them
-  and read the same way: `data.contract` first, then the rows. **An envelope
-  carrying none of them offered you no entry** — that is the no-contract branch in
-  Step 3, never a reason to read the contract yourself.
+- The contract block, in `analyse stack`'s shapes: `data.contract`,
+  `judgements`, `gates`, `verdict`, `unjudged`, `agent_judged`, `rows`. Nothing is
+  measured, so `judgements`, `gates` and `rows` are empty, `verdict` is null and the
+  exit is `0`. **`data.agent_judged`** is the part with work in it: each text-only
+  entry on a function in `data.functions`. `data.unjudged` holds the rest, each with
+  its reason — a function not drawn, a whole-binary rule, a structural entry
+  `stack-depth` measures — and is routine, never a row.
 
-## Step 2 — read the graph
+## Step 2: read the graph
 
 **One Read** of `data.files.control_flow`. That file is the analysis: blocks with
 their source lines, edges with their conditions, `iters` per block, the `loops:`
@@ -151,38 +156,48 @@ The two signals come off the same graph: `recursion_cycles` is `recursion` plus
 sites the CFG text leaves with no resolved target. Both are counts — the signals
 have no unit — and both are the whole binary's, never a per-function figure.
 
-## Step 3 — judge the two signals, and route the two you cannot
+## Step 3: judge the two signals, and route the two you cannot
 
-**Three branches, and the run closes on a word in every one of them.**
+**This skill observes the two signals the graph determines. It does not judge a
+contract entry on either.** A structural signal is whole-binary, and a CFG is cut
+per function: a cycle you find anywhere is real, but a zero over the functions you
+read is not a zero over the binary, and a bound of `0` is what people write. The
+CLI agrees and says so in data — `contract.ESCALATION_SKILLS` routes
+`recursion_cycles`, `indirect_calls`, `unbounded_recursion` and `unknown_callees`
+all to **`stack-depth`**, which reads the linked image and can discharge them.
 
-- **An enabled entry covers the signal** — `data.contract` is `project` and the
-  judgement carries an `entry_key`; with a null one it is LOCI's own comparison
-  and not the user's bound. The `STATUS` is the entry's and you render it, from
-  `judgements[].verdict` uppercased, quoting the requirement from that entry's
-  `text`. Never decide such a row yourself, and never soften it.
-- **No entry, and a hazard was directly observed.** The word is still measured,
-  because the invariant is zero by definition rather than by anyone's choice: a
-  non-zero count is `CAUTION` on its own authority. `FAIL` needs an entry whose
-  `severity` says so, which is the branch above. Name the signal, the count, and the
-  function it is in.
-- **No entry, and the count is clean or unmeasurable.** The row's word comes from
-  your assessment: **Looks good** where you raise nothing — which composes to
-  `PASS`, so the Note must name the gap, that no contract covers the signal and
-  that a zero over the functions this run read is not a zero over the binary — or
-  **Needs attention** where the graph gives you a specific concern you can point
-  at, which composes to `CAUTION`. On a `none` envelope that word fills the
-  `STATUS` cell too; on a contracted run the cell stays `—` and your assessment
-  carries the row beside it. An entry LOCI
-  could not compute arrives under `data.agent_judged` with the same empty
-  `STATUS` and takes one of the same words, `no_opinion` (**As reported**)
-  included.
+So: **a contract entry on any of the four is stack-depth's**, and what you found
+goes to it as evidence — the cycles, the call sites, the functions they are in.
+That is already what you do for `unbounded_recursion` and `unknown_callees`; it is
+now all four, which makes the hand-over consistent.
 
-The two signals you cannot see leave here as facts: hand `unbounded_recursion`
-and `unknown_callees` to **`stack-depth`** with the cycles and call sites you
+**Two branches here, and the run closes on a word in both.**
+
+- **An entry covers the signal.** Its word is the row's, and that entry is judged
+  by stack-depth, not here. Name the signal, the count, and the function it is in.
+- **The count is clean, or this scope cannot prove it.** The row's word comes from
+  your assessment: **Looks good** where you raise nothing, which composes to
+  `PASS`, so the Note must name the gap — that a zero over the functions this run
+  read is not a zero over the binary — or **Needs attention** where the graph gives
+  you a specific concern you can point at, which composes to `CAUTION`.
+
+**Where the composed word goes.** On `data.contract: none` it fills `STATUS`. On
+`project` the row keeps `—` and your assessment beside it, and an entry on the
+signal gets its word from stack-depth's run.
+
+**Text-only entries: `data.agent_judged`.** Each is a rule on a function this run
+drew. Judge it `flagged`, `cleared` or `no_opinion` against the graph and the
+source lines its blocks name — a loop rule by `data.loops` (`trips`,
+`trips_known`) and the loop's exit edges. `flagged` names the block, loop or call
+site; `cleared` only where the graph shows the rule holds, never because nothing
+looked wrong. Each is a row (Step 4).
+
+The other two signals leave here the same way: hand `unbounded_recursion` and
+`unknown_callees` to **`stack-depth`** with the cycles and call sites you
 found. Timing, energy and ROM/RAM on an edit go to **`loci-post-edit`**, and a
 bound the user is stating to **`contract`**.
 
-## Step 4 — report the CFG and the loop table
+## Step 4: report the CFG and the loop table
 
 Report, per function:
 
@@ -226,7 +241,7 @@ unit.
 Emit one line from `data.artifact`, at the end of the report body:
 
 ```
-Artifact: build/app.elf (linked 2026-07-28 09:14:02, sources current)
+Artifact: build/app.elf (linked <build time>, sources current)
 ```
 
 `freshness` is `current` / `unverified` (add `— <reason>`); a stale artifact
@@ -234,15 +249,15 @@ never reaches you, because the verb refused it. Never omit this line.
 
 `data.artifact.via` says how the binary was chosen, and the line carries that
 whenever it is not the ordinary case. `recipe` — the verb put the artifact the
-recipe records first (B2); this is the ordinary case and needs no remark.
+recipe records first; this is the ordinary case and needs no remark.
 `ranked` — nothing is recorded, or the recorded file is not on disk
 (`data.artifact.recipe.recorded_artifact_on_disk` says which), so the newest fresh
 candidate was taken: append `(ranked — no recorded artifact)`. `named` — the user
 named it, and a binary no recipe vouches for gets `(named by you — build settings
 unvouched)`. `data.artifact.recipe`, when present, is what the graph's shape rests
 on — the target and validation tier it was built under. This skill prints no
-`Recipe:` line: the two counts it judges are compared against an invariant of
-zero, not against a figure whose scale those flags set. But an `error` key there
+`Recipe:` line: the two counts it reports are compared against a contract entry or
+against nothing, not against a figure whose scale those flags set. But an `error` key there
 (a recipe that exists and refused to load) is said once, with its code, beside
 the `Artifact:` line, and `/loci:init` is what repairs it.
 
@@ -258,7 +273,9 @@ you compose them — one per (signal, function) you reasoned about — and never
 back to a stacked `ENTRY: … / FUNCTION: …` field list: a reader compares rows by
 scanning a column, and a list of fields cannot be scanned.
 
-Five columns, exactly as `verdicts.md` specifies them:
+Five columns, and the closed `ENTRY` vocabulary, exactly as [The conclusion table](../_shared/verdicts.md#conclusion-table) specifies
+them — of the eleven names this skill reaches `Safety (Recursion)` and
+`Safety (Indirect Calls)`:
 
 ```
 | ENTRY | FUNCTION | STATUS | AGENT ASSESSMENT | NOTE |
@@ -282,10 +299,15 @@ assessment — is not drawn; it is counted beside the verdict.
    graph answered it. The Note carries the count and the functions the cycles are
    in, or `unmeasured` with its reason in place of a zero this scope cannot prove.
    `STATUS` is `PASS`/`CAUTION`/`FAIL` against an enabled entry bounding
-   `recursion_cycles`, `CAUTION` on a hazard you observed with no entry behind it,
-   and `—` on an unmeasured one — where your assessment carries the row.
+   `recursion_cycles`, and otherwise `—` on a contracted run or your assessment's
+   word on a `none` one. **Spend no caution on a cycle**: whether anything bounds it
+   is `stack-depth`'s reading, so report the count and hand it over.
 2. **Indirect calls** — `Safety (Indirect Calls)`, same rules against
    `indirect_calls`, with the Note naming the call sites by source range.
+
+3. **Rules** — `<Gate> (Rule)` per text-only entry you judged, on its function:
+   `STATUS` `—`, your assessment beside it, the Note quoting its `text` then the
+   cause with its source range.
 
 `unbounded_recursion` and `unknown_callees` get no row. A `—` beside either reads
 as measured and clean, which is the one claim this skill cannot support.
@@ -295,46 +317,67 @@ Table footer, by what the run had to judge against:
 - **An entry bounds the signal.** `Verdict: **PASS** — 0 recursion cycles and 0
   indirect calls, against the invariant <entry text> sets at 0`, or
   `Verdict: **FAIL** — <N> indirect call sites past the 0 that entry requires`.
-- **No entry, a hazard observed.** `Verdict: **CAUTION** — <N> indirect call
-  sites in <fn>; the invariant is 0 by definition`.
-- **No entry, nothing to raise.** `Verdict: **PASS** — <K> loops across <N>
-  functions; no contract covers recursion_cycles or indirect_calls, and a zero
-  over the functions this run read is not a zero over the binary`. The clause is
-  not optional: it is what says the word rests on a reading, not on a bound.
-- **No entry, something to raise.** `Verdict: **CAUTION** — <cause naming the
-  block, loop or call site>`.
+- **No bound judged, something to raise.** `Verdict: **CAUTION** — <N> indirect
+  call sites in <fn>; no bound judged them here, and unresolved dispatch hides
+  call-graph depth`. The word is your assessment's, and the clause says what it rests on.
+- **No bound judged, nothing to raise.** `Verdict: **PASS** — <K> loops across
+  <N> functions; no bound judged recursion_cycles or indirect_calls here, and a
+  zero over the functions this run read is not a zero over the binary`. The clause is
+  not optional: it is what says the word rests on a reading, not on a bound. Where
+  cycles were found, this is still the bullet — say the count instead of the zero,
+  and name `stack-depth` as what reads the source: a cycle nobody has read the
+  source for is not yet a hazard.
+- **No bound judged, something to raise.** `Verdict: **CAUTION** — <cause naming
+  the block, loop or call site>`.
 
 The verdict line is the run's answer — the worst row verdict, with rows that
 reached no word left out of the worst-of and counted beside it
 (`(2 of 5 judged)`). It is never one row inside the table.
 
+**Under the table**, by `data.contract`: on `none`, the shared caption from [No
+contract](../_shared/verdicts.md#no-contract); on `project`:
+
+```
+No bound was computed here — an entry on recursion_cycles or indirect_calls is
+judged by `/loci:stack-depth`, and a Rule row's word is the agent's reading.
+```
+
 ### Example
 
 ```
-Artifact: build/app.elf (linked 2026-07-28 09:14:02, sources current)
+Artifact: build/app.elf (linked <build time>, sources current)
 
-| ENTRY                   | FUNCTION | STATUS  | AGENT ASSESSMENT | NOTE |
-|-------------------------|----------|:-------:|:----------------:|------|
-| Safety (Recursion)      | —        |  PASS   | Looks good       | 0 cycles across the 12 functions this run read |
-| Safety (Indirect Calls) | dispatch | CAUTION | Needs attention  | 3 call sites (sched.c:118, sched.c:121, sched.c:140), targets not in the graph |
+| ENTRY                   | FUNCTION   | STATUS  | AGENT ASSESSMENT | NOTE |
+|-------------------------|------------|:-------:|:----------------:|------|
+| Safety (Recursion)      | —          |    —    | Looks good       | 0 cycles across the 12 functions this run read — not a zero over the binary |
+| Safety (Indirect Calls) | dispatch   | CAUTION | Needs attention  | 3 call sites (sched.c:118, sched.c:121, sched.c:140), targets not in the graph |
+| Safety (Rule)           | sched_tick |    —    | Looks good       | "every loop in sched_tick stays bounded by n_tasks": the loop at sched.c:94-99 exits on i < n_tasks |
 
-Verdict: **CAUTION** — 3 indirect call sites in `dispatch`; the invariant is 0 by
-definition, and no contract entry covers indirect_calls
+No bound was computed here — an entry on recursion_cycles or indirect_calls is
+judged by `/loci:stack-depth`, and a Rule row's word is the agent's reading.
+
+Verdict: **CAUTION** — 3 indirect call sites in `dispatch`, targets not in the
+graph; no bound judged indirect_calls here, so the word is this run's reading
 ```
 
+The first row's `—` is a contracted run's: no bound was computed, and your
+**Looks good** composes it to `PASS` — a reading of twelve functions, not a claim
+about the binary. A repo that bounds `recursion_cycles` gets that answer from
+stack-depth.
+
 The `CAUTION` is a hazard observed with no entry behind it, which is why the word
-is your **Needs attention** beside a `STATUS` the graph itself set.
+is your **Needs attention** beside a `STATUS` the graph itself set. The Rule row's
+word is yours alone, and its Note names the exit test the rule rests on.
 
-## Step 5 — record it
+## Step 5: record it
 
-Apply **[Recording it: one call, on every run that printed a verdict](../_shared/verdicts.md#recording-the-verdict)**.
+Apply **[Recording it: one call, on every run that reaches a verdict](../_shared/verdicts.md#recording-the-verdict)**.
 `--run` is `data.run`, `--agent-note` carries the cause clause of the `Verdict:`
-line you just printed — copied, never recomposed — and `--agent-judged` carries
-whatever assessment you formed on an entry the CLI could not compute. Where what
-you printed is not what the arithmetic alone reached — a zero this scope reports
-unmeasured, on a run whose entries all passed — send `--agent-verdict` in the
-same call, or the run records the gate's `pass` alone and the cockpit contradicts
-your line.
+line you composed — copied, never recomposed — and `--agent-judged` carries
+your per-row assessments, each `data.agent_judged` entry's by its `entry_key`. **The run's own word.** Where your verdict rests on something LOCI did not
+compute — here, a zero this scope reports unmeasured — or the run is clean and no row says so, send
+`--agent-verdict`. Both cases, and which value, are in **[the shared
+rule](../_shared/verdicts.md#recording-the-verdict)**.
 
 ## Plumbing
 
@@ -343,7 +386,7 @@ independently runnable for one artifact, functions already known and nothing to
 compile:
 
 ```
-loci elf asm --elf <path> --functions <fn> --arch <loci_target> --project-root "<project_root>"
+loci elf asm --elf <path> --functions <fn>
 ```
 
 Same address-sorted sections, same demangling, same `control-flow.txt` — but no
@@ -352,12 +395,11 @@ CFG text alone.
 
 ## LOCI voice remark
 
-Before the footer, add one short LOCI voice remark (max 15 words) that
-acknowledges the user's work grounded in a specific number from the graph
-(a trip count, a block count, a nesting depth). Attribute good structure to the
-user ("tight loop", "clean shape"). For a shape worth a second look, be honest
-and specific — an observation, never a verdict. Skip if the run produced no
-functions or the user needs raw data only.
+One line before the footer: [The voice remark](../_shared/voice.md#voice-remark).
+Here the number comes from the graph — a trip count, a block count, a nesting
+depth — and a shape worth a second look is stated as an **observation, never a
+verdict**, because this skill judges two signals and the shape is not one of
+them.
 
 ## LOCI footer
 
@@ -369,23 +411,30 @@ NOT call `loci stats record --skill`, `loci stats measure` or `loci stats summar
 Append the footer as the last thing printed, **only if N > 0**. If no functions
 were rendered, do NOT emit the footer.
 
-One line. Icon-led, no surrounding bars, middle-dot separators:
+One form, always:
 
 ```
-<icon> LOCI control-flow · <N> fn · <shape>
+─── LOCI · control-flow ────────────────
+  <N> fn · <shape>
+  <icon> <PASS | CAUTION | FAIL | INCOMPLETE>
+────────────────────────────────────────
 ```
 
-- `<icon>` — mirrors the run verdict: `✅` PASS, `🔶` CAUTION, `❌` FAIL. A run
-  that reached no word at all is `INCOMPLETE` and takes no icon, just the word.
-  A `PASS` no bound was compared for still takes ✅ — the Note and the run's
-  `contract` field are what carry that, not a dimmer icon.
+- **N** — unique functions whose CFG was rendered — `data.functions`.
 - `<shape>` — the graph in three words or fewer: `no loops`, `<K> loops`,
   `<K> loops · <U> unknown trips`, `<K> loops · <C> cycles`, `recursion`.
-- **N** = unique functions whose CFG was rendered — `data.functions`.
+- `<icon>` — mirrors the run verdict: `✅` PASS, `🔶` CAUTION, `❌` FAIL.
+  `INCOMPLETE` takes the word and no icon. A `PASS` no bound was compared for
+  still takes ✅ — the Note and the run's `contract` field are what carry that,
+  not a dimmer icon.
 
-Worked examples:
+**The footer carries no sentence.** The run verdict is printed once, under the
+conclusion table, with this same icon in front of it.
+
+Worked example:
 ```
-✅ LOCI control-flow · 3 fn · 4 loops · 1 unknown trips   ← no entry; nothing raised
-🔶 LOCI control-flow · 1 fn · recursion
-✅ LOCI control-flow · 5 fn · no loops   ← a project entry bounds both signals
+─── LOCI · control-flow ────────────────
+  3 fn · 4 loops · 1 unknown trips
+  ✅ PASS
+────────────────────────────────────────
 ```

@@ -143,6 +143,15 @@ def test_session_init_reports_a_stale_cli(tmp_path: Path):
         "HOME": _to_bash_path(home),
         "LOCI_STATE_DIR": _to_bash_path(home / ".loci" / "state"),
         "PATH": f"{_to_bash_path(bin_dir)}{os.pathsep}{os.environ.get('PATH', '')}",
+        # The stub dir IS the uv shim dir. `augment_path` prepends fixed
+        # directories (`/usr/local/bin`, `/opt/homebrew/bin`) ahead of the
+        # inherited PATH and then moves the shim dir (`UV_TOOL_BIN_DIR`, else
+        # `~/.local/bin`) to the very front. On a Mac with Homebrew's uv the
+        # REAL `uv` therefore shadowed this stub, ran a real install of the
+        # ancient pin into the fixture HOME for minutes, and the stub's log
+        # stayed empty — "got: []" (AAD-7771). Naming the stub dir as the shim
+        # dir is the product's own rule for what wins the lookup.
+        "UV_TOOL_BIN_DIR": _to_bash_path(bin_dir),
     }
     env.pop("LOCI_DEV_CLI_PATH", None)  # a dev checkout floats and is exempt
     res = subprocess.run(

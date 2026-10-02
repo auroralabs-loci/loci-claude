@@ -3,19 +3,24 @@ name: bug-report
 description: >
   Forensic diagnostic report for LOCI — collects environment state, runs health
   checks, and writes a timestamped report when analysis fails or doesn't trigger.
+  Use when the user says "bug report", "LOCI isn't working", "something is
+  broken", "debug LOCI", or wants any LOCI failure investigated.
 when_to_use: >
-  When user says "bug report", "LOCI isn't working", "exec-trace didn't run",
-  "skill didn't trigger", "MCP not connecting", "results are wrong",
-  "results missing", "generate diagnostic", "something is broken",
-  "debug LOCI", or any LOCI failure the user wants investigated.
+  Also "exec-trace didn't run", "skill didn't trigger", "results are wrong",
+  "results missing", "generate diagnostic".
 argument-hint: "[description of what failed]"
 ---
 
 # LOCI Bug Report
 
+**Shared house rules.** Read `<plugin-dir>/skills/_shared/house-rules.md`
+and apply its **Output: the JSON envelope** section — every `loci` call here prints one
+JSON document, you let it print and branch on `.ok`, and a field this report quotes is
+read off that output rather than parsed out of a log.
+
 Generate a forensic diagnostic report when LOCI analysis fails, a skill does
 not invoke, or results are missing or invalid. The report is written to a
-timestamped `.md` file that can be shared or loaded into a future Claude Code
+timestamped `.md` file that can be shared or loaded into a future
 session to diagnose and fix the issue.
 
 This skill must work even when LOCI is completely broken. Do NOT run analysis
@@ -24,15 +29,13 @@ thing that's broken. Use only: Read, Bash, Glob, Grep, plus the lightweight,
 fast-failing probes `command -v loci`, `loci auth status`, `loci doctor`,
 `loci init probe` (a read-only dump of what init decides from) and
 `loci build fresh` (a local mtime/DWARF check — no backend call, no asmslicer).
-The last two run **signed out**, which is why check 7 and step 1's recipe snapshot
-can rely on them; `loci init` itself needs a session, and this skill never runs
-it.
+The last two run **signed out**; `loci init` needs a session and this skill never
+runs it.
 
-Read these values from the LOCI session context (system-reminder block at
-session start) and substitute them wherever the placeholders appear below:
-- `plugin dir: <path>` → use as `<plugin-dir>`
-- `project context: <path>` → use as `<project-context>`
-- `loci version: <semver>` → use as `<plugin-version>`
+From the LOCI session context: `plugin dir: <path>` → `<plugin-dir>`, and
+`loci version: <semver>` → `<plugin-version>`. `<project-context>` is the
+`context_file` of `loci project` (with `--project-root` if the user named the
+project); record its whole answer, a refusal included.
 
 The analysis front door is the bare `loci` command on PATH — a uv tool that
 ships its own analysis stack (asmslicer + deps). There is no plugin-side venv:
@@ -40,20 +43,20 @@ ships its own analysis stack (asmslicer + deps). There is no plugin-side venv:
 below.
 
 If `plugin dir:` is not in the session context, fall back to the
-`CLAUDE_PLUGIN_ROOT` environment variable. If neither is available, stop and
+`CLAUDE_PLUGIN_ROOT` environment variable (Copilot sets it for the hooks only;
+installs live under `~/.copilot/installed-plugins/`). If neither is
+available, stop and
 tell the user: "Cannot locate LOCI plugin directory. Ensure the plugin is
-installed and restart Claude Code."
+installed and restart the coding agent."
 
 ## Persistent layout
 
 State files live outside the versioned plugin cache so they survive plugin
-upgrades. The analysis stack itself lives in the `loci` CLI (a uv tool), not
-in a plugin-side venv.
+upgrades.
 
 | Path | Purpose | Fallback |
 |------|---------|----------|
 | `$LOCI_STATE_DIR` (typically `~/.loci/state`) | project-context, measurements, stats | `<plugin-dir>/state` |
-| `~/.loci/impact-token.json` | per-user telemetry token | — |
 | `loci` CLI (a uv tool on PATH) | analysis stack — asmslicer + deps | — |
 
 The plugin exports `LOCI_STATE_DIR` at session start; read it with
@@ -72,21 +75,21 @@ If no argument was provided, ask the user in one sentence:
 
 Run these in parallel where possible via Bash and Read:
 
-1. **Claude Code version** — `claude --version 2>/dev/null || echo "unknown"`
-2. **Claude model** — read from your own system prompt (e.g. `claude-opus-4-7`,
-   `claude-sonnet-4-6`). Record the exact model ID.
+1. **Host and version** — the `host:` line of the session context when present
+   (GitHub Copilot CLI; run `copilot --version` only if the line carries no
+   number); otherwise Claude Code, `claude --version 2>/dev/null || echo "unknown"`
+2. **Model** — read from your own system prompt (e.g. `claude-opus-4-7`,
+   `claude-sonnet-4-6`, or the host's model name). Record the exact model ID.
 3. **Plugin version** — prefer `<plugin-version>` from session context. If
    missing, Read `<plugin-dir>/.claude-plugin/plugin.json` and take its
    `version` key. Fall back to "unknown".
-4. **loci CLI version** — `loci --version 2>/dev/null || echo "unknown"`. This
-   is the ONE place the CLI's own number is surfaced, and the shared contract
-   says so: everywhere else the plugin version is *the* LOCI version. It belongs
-   here because half the reports that reach us are a CLI a release behind, and
-   the session context deliberately does not carry the number.
+4. **loci CLI version** — `loci --version 2>/dev/null || echo "unknown"`. The
+   ONE place the CLI's own number is surfaced (house-rules `cli-version-gate`);
+   everywhere else the plugin version is *the* LOCI version.
 5. **OS info** — `uname -a`
 6. **OS short name** — `uname -s | tr '[:upper:]' '[:lower:]'` (for filename)
-7. **Project context** — Read `<project-context>` (the per-session keyed file
-   listed as `project context:` in this session). Record the full JSON. If
+7. **Project context** — Read `<project-context>` (the `context_file` `loci
+   project` named). Record the full JSON. If
    missing, record "MISSING". Read two groups of fields apart, because they have
    different writers and a report that confuses them files the wrong finding:
    `init_status`, `init_recipe`, `validated`, `confirmed_by_user`, `loci_target`,
@@ -103,19 +106,18 @@ Run these in parallel where possible via Bash and Read:
    four different findings.
 8. **CLI health** — run `loci doctor` and record `data.report` (covers Python
    3.12, asmslicer, analysis deps, c++filt, the Rust demangler, cross-compilers,
-   credential store, and the state dir). If `loci` is unavailable, record "loci not on PATH".
+   credential store, the state dir and, when the recipe puts the toolchain in a
+   container, the `engine-*` checks). If `loci` is unavailable, record "loci not on PATH".
 9. **Git info** — `git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"`
    and `git log --oneline -3 2>/dev/null || echo "no git history"`
 10. **Hooks config** — Read `<plugin-dir>/hooks/hooks.json`. If missing,
    record "MISSING".
 11. **CLI auth** — run `loci auth status` and record signed-in / signed-out.
-    (The plugin no longer registers an MCP server; all backend calls go through
-    the `loci` CLI and authenticate on demand via `! loci login`.)
 12. **Turn baselines** — the per-turn trees `loci build snapshot --turn` writes,
     which are what a post-edit "Before" is read from, under the one build root the
     CLI reads: `.loci/build/`. (A `.loci-build/` beside it is a pre-move CLI's
     leftover; nothing reads it, and a tree under it is not a baseline.) Substitute
-    the `project_root` you read in step 6 for `<project-root>` before running this;
+    the `project_root` you read in item 7 for `<project-root>` before running this;
     the fence sets it itself so nothing depends on an exported variable:
 
     ```bash
@@ -129,27 +131,20 @@ Run these in parallel where possible via Bash and Read:
            || date -r "$(stat -f %m "$t" 2>/dev/null)" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null \
            || echo '?')" \
         "$(loci_json_get turn || echo '?')" \
-        "$(find "$t/orig" -type f 2>/dev/null | wc -l)" \
-        "$(find "$t/obj" -name '*.o' 2>/dev/null | wc -l)" \
+        "$(( $(find "$t/orig" -type f 2>/dev/null | wc -l) ))" \
+        "$(( $(find "$t/obj" -name '*.o' 2>/dev/null | wc -l) ))" \
         "$t"
     done | sort | tail -10
     ```
 
-    `lib/loci_json.sh` is the plugin's own forkless JSON reader, the one the hooks
-    use. It is sourced here for the same reason they use it: `jq` is a host tool
-    the plugin does not ship, and a diagnostic that reports `?` for every turn id
-    on a machine without one is a diagnostic that hides the state it was run to
-    find.
+    `lib/loci_json.sh` is the hooks' own forkless JSON reader; `jq` is a host
+    tool the plugin does not ship.
 
     One `sort` over every tree, then `tail -10`: the newest ten. The mtime is
-    read GNU-first then BSD, like every other mtime read in this plugin —
-    `date -r FILE` is a file mtime on GNU and an *epoch* on BSD/macOS, where it
-    errors on a path. A row that fell back to `?` would sort on the turn digest,
-    which the paragraph below says is uncorrelated with time. Each row is
-    `mtime, turn id, captured sources, reconstructed objects, path`. The CLI
-    stamps each turn once and never copies a tree, so two rows with the same
-    turn id would mean something wrote one by hand. Record all of it, or "none"
-    when there are no rows. Sorting is on the
+    read GNU-first then BSD (`date -r FILE` is an *epoch* on BSD/macOS); a `?`
+    row would sort on the digest, which is uncorrelated with time. Each row is
+    `mtime, turn id, captured sources, reconstructed objects, path`. Record all
+    of it, or "none" when there are no rows. Sorting is on the
     **timestamp** because the directory name is a one-way digest of the turn id —
     lexical order is uncorrelated with time, and `turn.json` is the only place the
     id itself survives. Also record whether `uncaptured.jsonl` exists in the tree
@@ -172,15 +167,14 @@ Run these in parallel where possible via Bash and Read:
       reconstruction failure when the report is about a header edit.
 
 13. **The build recipe and its escrow** — every measurement resolves its flags
-    from the recipe, so a report about wrong numbers that does not say which
-    recipe governed the run is missing its first fact. `probe` writes nothing and
-    runs signed out:
+    from the recipe, so the recipe is a report's first fact. `probe` writes
+    nothing and runs signed out:
 
     ```bash
     loci init probe --project-root '<project-root>'
     ```
 
-    Substitute the `project_root` from step 6, as item 11 does. If step 6 recorded
+    Substitute the `project_root` from item 7, as item 12 does. If item 7 recorded
     "MISSING", drop the flag entirely — probe defaults to the current directory,
     which is a better answer than a placeholder.
 
@@ -241,6 +235,51 @@ Run these in parallel where possible via Bash and Read:
       is not in the binary" is expected rather than a defect. `go.gcflags` from
       the block above says which: empty means inlining is on, `-l` means the user
       has already traded it away.
+16. **Container toolchain** (only when the recipe file's `build:` block has an
+    `exec:` section — read it as item 15 reads `go:`; no envelope carries it):
+
+    ```
+    sed -n '/^  exec:/,/^[a-z]/p' "<data.recipe.path>"
+    ```
+
+    Record the section verbatim — engine, image or container, mounts, platform.
+    Then the engine itself: `docker version --format '{{.Client.Version}} /
+    {{.Server.Version}} {{.Server.Os}}/{{.Server.Arch}}'`, falling back to "engine
+    not reachable" — which is a finding on its own; item 8's `engine-*` rows say
+    which link broke. For a `container:` recipe add its live mounts,
+    `docker inspect --format '{{json .Mounts}}' <name>`; for an `image:` recipe the
+    mounts are the section's own. Substitute the section's `kind` for `docker`.
+    **Never read the image's contents**: this report is about whether LOCI could
+    reach the toolchain, not about what is in it.
+17. **Host records** (only when item 1 named GitHub Copilot CLI; otherwise
+    "n/a — Claude Code"). An agent session's process log is 0 bytes (1.0.91);
+    what ran is in the session transcript,
+    `~/.copilot/session-state/<session>/events.jsonl`. `$COPILOT_AGENT_SESSION_ID`
+    is this session's id; an earlier session's is in the `Resume` line Copilot
+    printed when it ended, else the newest other directory there (`ls -t`). Where
+    the shell tool is PowerShell, `mkdir -p .loci/build`, save a fence to a file
+    there and run `bash <file>` (quotes die in `bash -c`):
+
+    ```bash
+    SID="$COPILOT_AGENT_SESSION_ID"   # or the earlier session's id
+    EV="$HOME/.copilot/session-state/$SID/events.jsonl"
+    grep -o '"hookType":"[A-Za-z]*","success":[a-z]*' "$EV" | sort | uniq -c
+    grep -oE '"hookType":"[A-Za-z]+","success":false,("output":\{[^}]*\},)?"error":\{"message":"[^"]*' "$EV" | sort -u | head -5
+    grep -c '"code":"denied"' "$EV"
+    grep -o '"newModel":"[^"]*"' "$EV" | sort | uniq -c
+    ```
+
+    Line 1: runs and failures per hook event (one absent here never fired; Copilot
+    names them `userPromptSubmitted`, `agentStop` for Stop). 2: the failure
+    messages. 3: tool calls a hook denied. 4: every model the session used, a
+    subagent's too. Then `copilot plugin list --json`: its `loci` row is the
+    INSTALLED copy (a `--plugin-dir` session has none, or a stale disabled one);
+    the context's `plugin dir:` is the copy running — record both when they differ.
+    Add the last 20 lines of `${LOCI_STATE_DIR:-$HOME/.loci/state}/loci.log`
+    (dev or fail-fast mode) and `loci-cli-status.json` beside it. Copilot
+    asks before a tool touches a path outside the project — the plugin dir,
+    `~/.loci`, `~/.copilot` — and in `-p` mode nobody can answer: record such a
+    refusal as "not permitted", not as a LOCI finding.
 
 ## Step 2: Run 10-point diagnostics checklist
 
@@ -252,30 +291,28 @@ For each check, record status (PASS / FAIL) and a detail string.
 | 2 | Session context exists | `<project-context>` (keyed file) exists and contains `project_root` | File exists with key |
 | 3 | Compiler recorded | `compiler` field in `<project-context>` is not `unknown`, `null` or empty (recipe-only since T14: the session no longer scans PATH) | Has a value |
 | 4 | LOCI target supported | `loci_target` in `<project-context>` is one of: `aarch64`, `armv7e-m`, `armv6-m`, `tc399` | Value in set |
-| 5 | loci CLI healthy | `loci doctor` exits 0 and `data.healthy` is true (covers Python 3.12, asmslicer, analysis deps, c++filt, the Rust demangler, cross-compilers, credential store, state dir) | Exit 0 / healthy |
+| 5 | loci CLI healthy | `loci doctor` exits 0 and `data.healthy` is true (covers Python 3.12, asmslicer, analysis deps, c++filt, the Rust demangler, cross-compilers, credential store, state dir; on a container-toolchain recipe also the `engine-*` checks) | Exit 0 / healthy |
 | 6 | Build artifacts exist | Read `artifact` from `<project-context>` (the recipe's own, written by `loci init`); fall back to a glob for `**/*.o` under the one build root, `.loci/build/` — **skipping `turns/`, `cargo/`, `dumps/` (and the pre-rename `elf/`) and every `.loci-stage-*/` directory at any depth** — or any `.elf`/`.o`/`.axf` in the project root. A `.loci-build/` beside it is a pre-move CLI's leftover and is not searched | At least one found |
 | 7 | Analysed artifact is not stale | For each candidate from check 6 (cap at 5, newest first) run `loci build fresh --elf <path>` and read `.data.role` **before** `.data.stale` + `.data.sources_newer` | No candidate reports `stale: true`, **unless** its `role` is exactly `"baseline"` |
 | 8 | session-init executable | `test -x <plugin-dir>/hooks/session-init.sh` | Exit code 0 |
-| 9 | hooks.json valid | Read `<plugin-dir>/hooks/hooks.json` — it parses as JSON and its `hooks` key holds the event arrays | Valid JSON |
+| 9 | hooks.json valid | Read `<plugin-dir>/hooks/hooks.json` — it parses as JSON and its `hooks` key holds the event arrays; under Copilot item 17's per-event counts go in the detail | Valid JSON |
 | 10 | Quota not exceeded | If check 1 passed (signed in), run `loci usage` and read `data.eligible` / `data.daily` (`{used, limit}`). | `data.eligible` is true |
 
-Check 7 is here because **"the results are wrong" is most often "the results
-describe a different binary"** — that is the defect behind the report this check
-was added for. Record, per candidate, the artifact path, its `elf_mtime`, `role`,
+Check 7: **"the results are wrong" is most often "the results describe a
+different binary"**. Record, per candidate, the artifact path, its `elf_mtime`, `role`,
 `stale`, and the first entry of `sources_newer` (path + `newer_by_s`), so a
 "results are wrong" report arrives with the artifact/source delta already computed
 instead of needing a round trip. A `stale: null` is **not** a FAIL — record it with
 its `reason` (usually no `-g`, or built on another machine).
 
 **`role` decides what `stale: true` means, so read it first.** A baseline is older
-than its sources *by construction* — that is what makes it the "before" side — so
-`role: "baseline"` with `stale: true` is the healthy state and never a FAIL. Record
+than its sources *by construction*, so `role: "baseline"` with `stale: true` is
+the healthy state and never a FAIL. Record
 it as `baseline (expected)`. Two kinds of artifact answer `baseline`: a `.prev`
 written by `loci build snapshot`, and anything under either root's `turns/`, which
 is where `loci build compile --baseline` reconstructs a header edit's Before. The
-envelope's own `recommendation` says the same thing in a sentence — and note its
-advice for a stale baseline is *not* "rebuild", because rebuilding one destroys the
-very state it is the baseline of.
+envelope's `recommendation` agrees; for a stale baseline it is never "rebuild"
+(that destroys the Before).
 
 **A MISSING `role` is a FAIL, not an exemption.** The field postdates the CLI
 version the plugin currently pins, so on an un-upgraded install `.data.role` is
@@ -285,21 +322,15 @@ exactly the installs most likely to have the problem — a demonstrably stale ob
 recorded as PASS. Only the literal string `"baseline"` exempts a candidate; absent,
 null, or anything else is treated as `measured` and a `stale: true` FAILs.
 
-That is also why check 6's fallback glob skips `turns/`: everything under it is a
-Before, and a Before is never the answer to "which artifact is being measured".
+Check 6's glob skips `turns/` for the same reason: everything under it is a Before.
 
 **And why it skips `.loci-stage-*/`.** `loci build compile` writes its object into
-a private `.loci-stage-<x>/` beside the destination and renames it out, so nothing
-partial is ever visible at the object's real path. A compile that is *killed*
-leaves that directory behind, holding a file called `<stem>.o` that is the newest
-object under the build root — so an unpruned glob reports it as the artifact being
-measured, and `loci build clean` deletes it out from under the next check. Prune it
-at every depth: it sits beside its destination, not at a fixed level.
-The same prune list `loci build clean` walks by, so the fallback agrees with the
-CLI about what is an artifact — a glob that reaches wider than the CLI's own view
-reports a different project than every other check does. `cargo/` is LOCI's
-private `CARGO_TARGET_DIR` (hundreds of build-script objects, and the crate's real
-object is published above it) and `dumps/` holds text dumps, not artifacts.
+a private `.loci-stage-<x>/` beside the destination and renames it out; a *killed*
+compile leaves that directory behind holding a `<stem>.o` newer than every real
+object, so an unpruned glob reports it as the artifact and `loci build clean`
+deletes it under the next check. Prune it at every depth. The prune list is
+`loci build clean`'s own, so the fallback sees the project every other check does:
+`cargo/` is LOCI's private `CARGO_TARGET_DIR`, `dumps/` holds text dumps.
 
 **Checks 3, 4 and 6 move together, and the pattern is the finding.** Since
 T14 the session writes nothing about a project's build — no scan runs — so
@@ -310,8 +341,8 @@ and stand or fall with the recipe. Three shapes, each a different finding:
   its own value.
 - **all three absent, `init_status` absent or `uninitialized`** — no recipe yet.
   Checks 3, 4 and 6 fail together and that is ONE finding — the project is not
-  initialized — said once, citing step 1's snapshot; the first analysis will run
-  `/loci:init`.
+  initialized — said once, citing step 1's snapshot; `/loci:init <project_root>` adopts
+  it.
 - **all three absent, `init_status` is `unsupported` or `needs_user`** — init
   stopped before recording anything, and the finding is `init_status`.
 - **`compiler` is `null` beside a `.loci/build.yaml` on disk** — `loci init` wrote
@@ -322,11 +353,8 @@ and stand or fall with the recipe. Three shapes, each a different finding:
 
 If `loci` is not on PATH, checks 5, 7 and 10 automatically FAIL (the analysis
 stack lives inside the CLI; `loci doctor` reports the specific missing piece).
-If check 1 failed (not signed in), check 10 automatically FAILs with
-"not signed in — cannot check quota".
-
-Check 10 is the only check that reaches the backend. Skip it if check 1
-failed; record "skipped: not signed in" in the detail column.
+If check 1 failed (not signed in), check 10 — the only check that reaches the
+backend — automatically FAILs with "not signed in — cannot check quota".
 
 ## Step 3: Collect stats
 
@@ -351,28 +379,27 @@ diagnostics to determine what went wrong. Write this as free-form reasoning
 If the user's issue is that a LOCI skill should have triggered but didn't,
 investigate:
 
-1. **Prompt match** — compare the user's original prompt against the
-   `when_to_use` triggers for each relevant skill. List the trigger keywords
-   from the SKILL.md and note which matched or didn't.
+1. **Prompt match** — compare the user's original prompt against each relevant
+   skill's triggers: its `description` (all Copilot reads) and, under Claude
+   Code, `when_to_use` too. List the keywords and note which matched or didn't.
 
 2. **Auto-run conditions** — for auto-triggered skills:
    - `loci-post-edit`: Was the edited file a C/C++/Rust/Go source
      (.c, .cc, .cpp, .cxx, .c++, .rs, .go, .h, .hpp, .hxx, .h++, .hh, .inc, .ipp, .tcc, .inl, .tpp, .def)? Was an Edit/Write
      tool used?
-   - `loci-preflight`: Was Claude in `/plan` mode when the user described
+   - `loci-preflight`: Was the session in plan mode when the user described
      new logic?
 
 3. **Skill visibility** — is the skill listed in the `Available:` line of the
-   session-reminder? Currently expected:
-   `/loci:help, /loci:init, /loci:exec-trace, /loci:stack-depth, /loci:memory-report, /loci:control-flow,
-   /loci:contract, /loci:bug-report`. If not, session-init may not have registered it.
+   LOCI session context (session-init's list)? If not, session-init may not have
+   registered it.
 
 4. **Deferred tools** — check if `loci:loci-post-edit`, `loci:loci-preflight`,
-   `loci:trends`, etc. appear in the system-reminder available skills list.
+   `loci:trends`, etc. appear in the host's skill list.
    If absent, the plugin may not be loaded.
 
-5. **Competing behavior** — did Claude answer directly instead of invoking the
-   skill? Did another skill or tool pre-empt? Note what Claude did instead.
+5. **Competing behavior** — did the model answer directly instead of invoking
+   the skill? Did another skill or tool pre-empt? Note what it did instead.
 
 ### B. Results Not Evaluated or Not Valid
 
@@ -408,19 +435,19 @@ used, investigate:
    `{"ok":true,"data":…}` envelope? Common failures: function name not found in
    binary, architecture mismatch between ELF and LOCI target, empty output, or
    an `{"ok":false,"error":…}` envelope (read `error.message`). Re-run with
-   `LOCI_DEBUG=1` (the CLI forwards any captured stdout to stderr in debug mode)
-   to see leaked third-party text. On Windows, also confirm the caller did not
+   `LOCI_DEBUG=1` to see leaked third-party text (captured stdout is forwarded
+   to stderr). On Windows, also confirm the caller did not
    merge streams with `2>&1 > file` — stderr diagnostics before the JSON would
    produce the same symptom.
 
 3. **`loci timing` response** — did `loci timing` return timing/energy data?
    Common failures: backend timeout, `auth_required` (token expired
    mid-session — re-run `! loci login`), `quota_exceeded`, server error, empty
-   `data.rows`. Timing goes through the loci backend's REST endpoint via the `loci` CLI (the backend URL is configured inside the CLI).
+   `data.rows`.
 
 4. **Result parsing** — were `data.timing_csv` / `data.timing_architecture` (from
    `loci elf asm`) or `execution_time_ns` (from `loci timing`) present? If `loci`
-   returned data but Claude didn't use it, note the gap.
+   returned data but the model didn't use it, note the gap.
 
 5. **Delta comparison** — for post-edit: did the compile report a baseline, i.e.
    was `data.output_prev` present (equivalently, does `prepare`'s `provenance[]`
@@ -437,10 +464,10 @@ used, investigate:
    binary didn't change" — the differ hashes masked instructions, so a constant-only
    edit produces an empty diff, and `data.summary.removed` can be non-zero while the
    changed-function list is empty. Read `data.summary`, and see
-   [Diffing the pair](../_shared/loci-runtime-contract.md#elf-diff) before recording
+   [Diffing the pair](../_shared/compile-route.md#elf-diff) before recording
    an empty diff as either a defect or a clean run.
 
-6. **Output suppression** — did Claude generate analysis but fail to present
+6. **Output suppression** — did the model generate analysis but fail to present
    it? (Context window pressure, interrupted response, tool call error.)
 
 ### C. loci CLI installed and healthy?
@@ -449,13 +476,14 @@ The analysis stack lives in the `loci` CLI (a uv tool on PATH), installed by
 session-init.sh at SessionStart. If the user just upgraded the plugin or
 installed fresh and analysis broke, check:
 
-- Does `command -v loci` resolve? If not, session-init's `_ensure_loci_cli`
-  install may have failed (offline, uv missing) — re-run the session or
-  `uv tool install --force loci`.
+- Does `command -v loci` resolve? If not, session-init's CLI install may have
+  failed (offline, uv missing) — `/loci:setup` reinstalls it.
 - Does `loci doctor` report `data.healthy: true`? A `fail` on the `asmslicer`
-  or `python` probe means the CLI's own environment is broken — reinstall it
-  with `uv tool install --force loci_cli`. Warnings (c++filt, cross-compilers,
-  signed-out) are non-fatal.
+  or `python` probe means the CLI's own environment is broken — `/loci:setup`
+  reinstalls it. Warnings (c++filt, cross-compilers, signed-out) are
+  non-fatal. A `fail` on an `engine-*` check is the container
+  toolchain being unreachable — its `detail` names the fix (start the daemon, pull
+  the image, start the container), and a reinstall changes nothing.
 
 ### D. Root cause
 
@@ -466,8 +494,16 @@ dependency chain to find the most upstream failure:
 hooks → loci CLI install → sign-in → project-context → loci timing → compilation → analysis
 ```
 
-If all 11 checks pass, the issue is likely:
-- Skill trigger wording mismatch (Claude didn't recognize the intent)
+Under Copilot the chain starts at item 17: hooks failing `Hook command
+failed … /hooks/<name>.sh: No such file or directory` and tool calls ending
+`Denied by preToolUse hook from "loci" (hook errored)` are the launcher never
+starting — a plugin before v0.2.69 ran `bash "$CLAUDE_PLUGIN_ROOT/…"`, which
+Copilot's PowerShell hands to bash with the variable empty; the fix is the
+current plugin. The copy that ran need not be the one running now: item 17's
+registry row says which versions are installed.
+
+If all 10 checks pass, the issue is likely:
+- Skill trigger wording mismatch (the model didn't recognize the intent)
 - Transient `loci timing` backend timeout
 - A bug in the skill logic itself
 
@@ -489,8 +525,8 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 
 | Component | Version |
 |-----------|---------|
-| Claude Code | <claude --version output> |
-| Claude model | <model ID, e.g. claude-opus-4-7> |
+| Host | <host and version, from step 1> |
+| Model | <model ID, e.g. claude-opus-4-7> |
 | LOCI plugin | <plugin version from plugin.json> |
 | loci CLI | <loci --version output, or "unknown"> |
 | OS | <uname -a output> |
@@ -515,6 +551,7 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 | Recipe | <`recipe.path`, or "none — `initialized: false`", or the `recipe_untrusted` string verbatim> |
 | Recipe validated | <tier + `confirmed_by_user`, or "n/a"> |
 | Recipe escrow | <`ok` / `missing` / "n/a — no recipe"> |
+| Toolchain | <"this machine", or the recipe's `build.exec` engine and image/container, or "n/a — no recipe"> |
 
 ## Diagnostics Checklist
 
@@ -528,7 +565,7 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 | 6 | Build artifacts exist | <PASS/FAIL> | <detail> |
 | 7 | Analysed artifact is not stale | <PASS/FAIL> | <detail, e.g. "kernel.elf stale — blink.c 225s newer" or "3 candidates current" or "unverified: no DWARF"> |
 | 8 | session-init executable | <PASS/FAIL> | <detail> |
-| 9 | hooks.json valid | <PASS/FAIL> | <detail> |
+| 9 | hooks.json valid | <PASS/FAIL> | <detail; under Copilot "<n> entries; ran …, failed …, denied …"> |
 | 10 | Quota not exceeded | <PASS/FAIL> | <detail, e.g. "18,000 / 30,000 daily tokens (free)" or "LIMIT REACHED — 35,000 / 30,000"> |
 
 **Result: <N>/10 checks passed.**
@@ -539,10 +576,10 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 <describe the intent and expected behavior>
 
 ### What should have happened
-<which skill should have triggered, with trigger conditions from when_to_use>
+<which skill should have triggered, with its trigger conditions>
 
 ### What actually happened
-<what Claude did instead — answered directly, wrong skill, error, silence>
+<what the model did instead — answered directly, wrong skill, error, silence>
 
 ### Why it failed
 <root cause reasoning chain, referencing specific checklist failures>
@@ -606,6 +643,15 @@ shared.>
 </details>
 
 <details>
+<summary>host records (item 17)</summary>
+
+```
+<the fence's four outputs, the `copilot plugin list --json` row and loci.log's
+tail — or "n/a — Claude Code">
+```
+</details>
+
+<details>
 <summary>loci auth status</summary>
 
 ```
@@ -626,8 +672,8 @@ Before embedding any file contents in the Raw Data section above, sanitize
 them in-memory:
 
 1. **Secrets** — replace values matching common secret patterns (API keys,
-   tokens, passwords, `Bearer ...`, `Authorization: ...`, private key blocks,
-   the `token` field inside `impact-token.json`) with `[REDACTED]`.
+   tokens, passwords, `Bearer ...`, `Authorization: ...`, private key blocks)
+   with `[REDACTED]`.
 2. **Home paths** — replace the user's home directory prefix
    (`/Users/<name>/`, `/home/<name>/`, `C:\Users\<name>\`) with `~/`.
 
@@ -648,7 +694,7 @@ After writing the report file, display a concise summary:
 **Suggested fix:**
 <numbered steps>
 
-Share this file when reporting issues, or open it in a new Claude Code
+Share this file when reporting issues, or open it in a new
 session for further investigation.
 
 ─── LOCI · bug-report ─────────────────

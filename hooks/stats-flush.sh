@@ -10,6 +10,11 @@
 #
 # NEVER exit 2 — on Stop that blocks the stop and continues the conversation,
 # an infinite loop for a hook that runs every turn.
+# The bash this runs under is decided first, while the payload is still on
+# stdin: on bash 3 (stock macOS) this re-executes under a newer bash when one
+# is installed, else sets `_LOCI_BASH_LEGACY=1` (AAD-7771; lib/bash-compat.sh).
+. "${0%/*}/../lib/bash-compat.sh" 2>/dev/null || :
+
 set -u
 export PYTHONIOENCODING=utf-8
 export PATH="${HOME:-}/.local/bin:$PATH"

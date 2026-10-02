@@ -75,7 +75,8 @@ pytestmark = pytest.mark.skipif(
 
 
 def sh(script: str, **env) -> str:
-    """Run a snippet with `lib/eval-metrics.sh` sourced."""
+    """Run a snippet with `lib/eval-metrics.sh` sourced. Raw stdout: `rd()`
+    below strips the one trailing newline `$(...)` would."""
     full = f'set -euo pipefail\nsource "{_to_bash_path(LIB)}"\n{script}'
     # `encoding="utf-8"` on both calls: the runner and the metrics lib print UTF-8
     # (box glyphs, arrows, an em-dash in the caveat) and `text=True` alone decodes
@@ -86,6 +87,11 @@ def sh(script: str, **env) -> str:
                           encoding="utf-8", env={**os.environ, **env})
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
+
+
+def rd(script: str, **env) -> str:
+    """`sh()` as the harness reads it — `$(...)` drops trailing newlines."""
+    return sh(script, **env).rstrip("\n")
 
 
 # ── eval_metrics_json: the result event, kept ────────────────────────────────
@@ -498,19 +504,23 @@ def test_the_reported_line_carries_the_caveat_not_just_the_number(tmp_path):
 
 @pytest.fixture
 def tripwire(tmp_path):
-    """A `claude` on PATH that records any invocation and fails.
+    """A `claude` AND a `copilot` on PATH that record any invocation and fail.
 
-    Every test using this asserts the log stays empty: that is the proof the
-    harness was verified without spending metered usage.
+    Every test using this asserts both logs stay empty: that is the proof the
+    harness was verified without spending metered usage — on either host. The
+    second fake also proves the Claude host never reaches for `copilot`, and
+    the copilot host never reaches for `claude` (AAD-7791).
     """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "claude-was-called.log"
-    fake = bindir / "claude"
-    fake.write_text('#!/usr/bin/env bash\n'
-                    f'echo "called: $*" >> "{_to_bash_path(log)}"\nexit 1\n',
-                    encoding="utf-8")
-    fake.chmod(0o755)
+    for name, logfile in (("claude", log),
+                          ("copilot", tmp_path / "copilot-was-called.log")):
+        fake = bindir / name
+        fake.write_text('#!/usr/bin/env bash\n'
+                        f'echo "called: $*" >> "{_to_bash_path(logfile)}"\nexit 1\n',
+                        encoding="utf-8")
+        fake.chmod(0o755)
     ble = tmp_path / "ble"
     # Two directories, on purpose: `app_data.c` lives under `basic_ble/app/` and
     # `app_connection.c` under `basic_ble_profiles/app/`, because that is which
@@ -526,7 +536,10 @@ def tripwire(tmp_path):
     return bindir, ble, log
 
 
-def _run(tripwire, *flags):
+def _run(tripwire, *flags, host=None):
+    """`host` goes in as LOCI_EVAL_HOST, the way a CI job would set it; the
+    `--host` flag is tested on its own. Whatever the host, neither fake may be
+    called."""
     bindir, ble, log = tripwire
     # A dry run still stages the stale fixture, and since T14 that runs a real
     # `loci init` — whose escrow and context belong to the test, not to the
@@ -534,10 +547,15 @@ def _run(tripwire, *flags):
     env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
            "HOME": os.environ.get("HOME", ""),
            "LOCI_STATE_DIR": str(Path(ble).parent / "loci-state")}
+    env.pop("LOCI_EVAL_HOST", None)
+    if host is not None:
+        env["LOCI_EVAL_HOST"] = host
     proc = subprocess.run(
         [BASH, str(RUNNER), "--ble-root", str(ble), *flags],
         capture_output=True, text=True, encoding="utf-8", env=env, cwd=str(PLUGIN_ROOT))
     assert not log.exists(), f"claude WAS invoked: {log.read_text()}"
+    cp_log = log.parent / "copilot-was-called.log"
+    assert not cp_log.exists(), f"copilot WAS invoked: {cp_log.read_text()}"
     return proc
 
 
@@ -764,15 +782,15 @@ def _runner_lines() -> list[str]:
 
 
 @pytest.mark.parametrize("call,sweep", [
-    ('timeout --kill-after=10 "$EVAL_TIMEOUT" claude "${CLAUDE_ARGS[@]}"',
+    ('with_timeout "$EVAL_TIMEOUT" "$HOST_BIN" "${CLAUDE_ARGS[@]}"',
      'fixture_sweep "$EVAL_CWD"'),
-    ('claude "${C_ARGS[@]}" --permission-mode acceptEdits ) >"$JSON_FILE"',
+    ('"$HOST_BIN" "${C_ARGS[@]}" ${EDIT_TURN[@]+"${EDIT_TURN[@]}"} ) >"$JSON_FILE"',
      'fixture_sweep "$BLE_ROOT"'),
     # Turn 1 of the two-turn flow has its own sweep, between the turns: it is
     # the only place a plan-turn write can be told from turn 2's legitimate one.
-    ('claude "${C_ARGS[@]}" --permission-mode plan',
+    ('"$HOST_BIN" "${C_ARGS[@]}" "${PLAN_TURN[@]}"',
      'fixture_sweep "$BLE_ROOT"'),
-    ('--resume "$SID" --permission-mode acceptEdits ) >"$T2_JSON"',
+    ('--resume "$SID" "${RESUME_TURN[@]}" ) >"$T2_JSON"',
      'fixture_sweep "$BLE_ROOT"'),
 ])
 def test_the_sweep_runs_before_any_early_return(call, sweep):
@@ -782,11 +800,12 @@ def test_the_sweep_runs_before_any_early_return(call, sweep):
     non-zero exit and on an empty response. A timeout is exactly when a
     half-finished edit is still on disk, so a sweep below one of those returns
     would be skipped in the cases that need it most. Anchored on the real
-    `claude` invocations rather than on line numbers.
+    host invocations (`"$HOST_BIN"` — `claude` or `copilot` since AAD-7791)
+    rather than on line numbers.
     """
     lines = _runner_lines()
     at = next((i for i, ln in enumerate(lines) if call in ln), None)
-    assert at is not None, f"no line invoking claude as {call!r} any more"
+    assert at is not None, f"no line invoking the host as {call!r} any more"
     ret = next((i for i in range(at + 1, len(lines))
                 if lines[i].strip() == "return"), len(lines))
     swept = next((i for i in range(at + 1, ret) if sweep in lines[i]), None)
@@ -1076,7 +1095,7 @@ def test_the_plan_mode_violation_survives_a_timeout(tripwire):
     text = (PLUGIN_ROOT / "run_evals.sh").read_text(encoding="utf-8")
     # every single-turn exit goes through the one writer…
     for needle in ('write_verdict "TIMEOUT"',
-                   'write_verdict "ERROR" "claude exited with code',
+                   'write_verdict "ERROR" "$HOST_BIN exited with code',
                    'write_verdict "ERROR" "empty response despite exit code 0"',
                    'write_verdict "GRADE_ERROR"',
                    'write_verdict "$VERDICT" "$REASON"'):
@@ -1205,3 +1224,341 @@ def test_a_symlinked_destination_is_not_written_through(checkout):
     assert outside.read_text(encoding="utf-8") == "do not touch\n", (
         "the restore wrote through a symlink and clobbered a file outside the "
         "fixture root")
+
+
+# ── two hosts: the copilot runner, and the Claude argv it must not touch ─────
+#
+# AAD-7791. `LOCI_EVAL_HOST=copilot` (or `--host copilot`) runs the same evals
+# through GitHub Copilot CLI. Two things are pinned: the Copilot argv carries
+# the mapped flags (`--plan` for plan mode, `--deny-tool write` for the edit
+# denial, `--allow-all-tools --allow-all-paths` for skip-permissions, JSONL
+# output, the plugin loaded with `--plugin-dir`, no Claude-only flag), and the
+# Claude argv is the one every test above already pins — the tripwire runs
+# both fakes, so a Claude run that reached for `copilot` would fail here too.
+
+COPILOT_ONLY = ("--plan", "--deny-tool", "--allow-all-tools", "--allow-all-paths",
+                "--output-format json", "--log-dir")
+CLAUDE_ONLY = (" -p ", "--dangerously-skip-permissions", "--permission-mode",
+               "--disallowedTools", "--mcp-config", "--append-system-prompt-file",
+               "stream-json", "--bare")
+
+
+def _flow_of(line: str) -> str:
+    return line.split("(")[-1].split(")")[0] if "[dry-run]" in line else ""
+
+
+def test_the_claude_host_is_the_default_and_carries_no_copilot_flag(tripwire):
+    proc = _run(tripwire, "--dry-run")
+    assert "Host:     claude (claude)" in proc.stdout
+    argv = _argv_lines(proc)
+    assert argv
+    for ln in argv:
+        assert "→ claude " in ln, ln
+        for flag in COPILOT_ONLY:
+            assert flag not in ln, f"{flag} leaked into the Claude argv:\n{ln}"
+
+
+def test_the_copilot_host_maps_every_flow(tripwire):
+    proc = _run(tripwire, "--dry-run", host="copilot")
+    assert proc.returncode == 0, proc.stdout[-3000:]
+    assert "Host:     copilot (copilot)" in proc.stdout
+    argv = _argv_lines(proc)
+    assert {_flow_of(ln) for ln in argv} == {"single", "edit", "two-turn"}
+    plugin = _to_bash_path(PLUGIN_ROOT).rsplit("/", 1)[-1]
+    for ln in argv:
+        assert "→ copilot --model claude-sonnet-5 --allow-all-tools --allow-all-paths" in ln, ln
+        assert "--output-format json" in ln, ln
+        assert "--log-level all --log-dir" in ln, ln
+        assert re.search(r"--plugin-dir \S*" + re.escape(plugin) + r"(\s|$)", ln), ln
+        for flag in CLAUDE_ONLY:
+            assert flag not in ln, f"Claude-only {flag!r} in the Copilot argv:\n{ln}"
+
+
+def test_copilot_plan_mode_is_plan_plus_deny_write_and_nothing_else_is(tripwire):
+    """`--permission-mode plan` → `--plan`; the deny list → `--deny-tool write`,
+    LAST (it is variadic, like Claude's). An edit-flow eval and a non-plan
+    single-turn eval get neither — the same shape the Claude tests pin."""
+    proc = _run(tripwire, "--dry-run", host="copilot")
+    seen = set()
+    for ln in _argv_lines(proc):
+        flow = _flow_of(ln)
+        if flow == "two-turn" or "pf-critical-1" in ln:
+            assert " --plan " in ln, ln
+            assert ln.endswith("--deny-tool write"), ln
+            seen.add("plan")
+        elif flow == "edit" or "pf-critical-4" in ln:
+            assert "--plan" not in ln and "--deny-tool" not in ln, ln
+            seen.add("no-plan")
+    assert seen == {"plan", "no-plan"}
+
+
+def _results_dir(proc) -> Path:
+    results = next(ln.split("→", 1)[1].strip() for ln in proc.stdout.splitlines()
+                   if ln.startswith("Results →"))
+    return Path(results.replace("/c/", "C:/", 1)) if results.startswith("/c/") else Path(results)
+
+
+def test_the_copilot_single_turn_sends_the_system_prompt_as_a_preamble(tripwire):
+    """Copilot has no system-prompt flag, so the SKILL.md text becomes a preamble
+    on the piped prompt. Both halves are recorded: `_sysprompt.txt` under the
+    same name Claude's file has, and `_prompt_sent.txt` — the composition itself,
+    which a dry run never otherwise reveals."""
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", host="copilot")
+    results = _results_dir(proc)
+    files = [p.name for p in results.iterdir()]
+    assert "loci-preflight_evalpf-critical-1_sysprompt.txt" in files, files
+    sys_text = (results / "loci-preflight_evalpf-critical-1_sysprompt.txt").read_text(encoding="utf-8")
+    assert "--- SKILL INSTRUCTIONS ---" in sys_text
+    sent = (results / "loci-preflight_evalpf-critical-1_prompt_sent.txt").read_text(encoding="utf-8")
+    assert sent.startswith(sys_text), "the preamble is not the system prompt"
+    assert sent.count("\n\n--- EVAL PROMPT ---\n") == 1
+    prompt = sent.split("\n\n--- EVAL PROMPT ---\n", 1)[1]
+    # The eval's own prompt, `/plan` stripped (it became `--plan`), placeholder expanded.
+    assert prompt.startswith("Implement a bounds guard"), prompt[:80]
+    assert "$LOCI_TEST_BLE_ROOT" not in prompt
+
+
+def _host_spelling(p: Path) -> str:
+    """What `host_path` makes of a path on this machine: `cygpath -m` where it
+    exists (Git Bash), the path itself elsewhere."""
+    proc = subprocess.run([BASH, "-c", f'command -v cygpath >/dev/null && cygpath -m "{_to_bash_path(p)}" || printf %s "{_to_bash_path(p)}"'],
+                          capture_output=True, text=True, encoding="utf-8")
+    return proc.stdout.strip()
+
+
+def test_paths_the_model_reads_are_spelled_for_the_copilot_host(tripwire):
+    """Copilot's shell tool on Windows is PowerShell and its path guard reads
+    `/c/…` as `C:\\c\\…`, so the prompt and the session context carry the host's
+    spelling of every fixture root — while the harness's own `cp`/`diff` keep
+    the shell's (`source_file`). On a host without cygpath both are the same
+    string, and the Claude argv (pinned above) never sees this."""
+    bindir, ble, log = tripwire
+    want = _host_spelling(ble)
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", host="copilot")
+    results = _results_dir(proc)
+    sent = (results / "loci-preflight_evalpf-critical-1_prompt_sent.txt").read_text(encoding="utf-8")
+    assert f"BLE project root: {want}\n" in sent, sent[:600]
+    assert f" {want}/examples/" in sent.split("--- EVAL PROMPT ---", 1)[1]
+    if want != _to_bash_path(ble):          # a converting host: the shell spelling must be gone
+        assert _to_bash_path(ble) not in sent
+    # …and the Claude host hands the model the shell's spelling, exactly as
+    # before — the `BLE root:` the banner prints, which is `cd … && pwd` and so
+    # may read `/tmp/…` for a Windows Temp directory rather than `/c/Users/…`.
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1")
+    shell_root = next(ln.split(":", 1)[1].strip() for ln in proc.stdout.splitlines()
+                      if ln.startswith("BLE root:"))
+    sys_text = (_results_dir(proc) / "loci-preflight_evalpf-critical-1_sysprompt.txt").read_text(encoding="utf-8")
+    assert f"BLE project root: {shell_root}\n" in sys_text
+
+
+def test_the_host_flag_is_the_env_var_spelled_on_the_command_line(tripwire):
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", "--host", "copilot")
+    assert "Host:     copilot (copilot)" in proc.stdout
+    assert all("→ copilot " in ln for ln in _argv_lines(proc))
+
+
+def test_an_unknown_host_is_refused(tripwire):
+    proc = _run(tripwire, "--dry-run", host="cursor")
+    assert proc.returncode == 1
+    assert "unknown host 'cursor'" in proc.stdout
+
+
+def test_the_copilot_default_model_is_copilots_spelling_and_overridable(tripwire):
+    """`sonnet` is a Claude Code alias; Copilot calls the same model
+    `claude-sonnet-5`, so the pinned default follows the host. `--model` and
+    `--grader-model` still override, which is how the GPT run is made."""
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", host="copilot")
+    assert "Model:    claude-sonnet-5 (grader: claude-sonnet-5)" in proc.stdout
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1",
+                "--model", "gpt-5.6-sol", host="copilot")
+    assert "Model:    gpt-5.6-sol (grader: claude-sonnet-5)" in proc.stdout
+    assert all("--model gpt-5.6-sol " in ln for ln in _argv_lines(proc))
+    proc = _run(tripwire, "--dry-run", "--model", "", host="copilot")
+    assert proc.returncode == 1 and "cannot be empty" in proc.stdout
+
+
+def test_installed_plugin_mode_is_refused_on_the_copilot_host(tripwire):
+    """It reads Claude Code's plugin registry, which says nothing about what a
+    Copilot session loaded."""
+    proc = _run(tripwire, "--dry-run", "--installed-plugin", host="copilot")
+    assert proc.returncode == 1
+    assert "--installed-plugin is not supported on the copilot host" in proc.stdout
+
+
+def test_the_copilot_host_passes_no_mcp_config(tripwire):
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", host="copilot")
+    mcp = [ln for ln in proc.stdout.splitlines() if ln.startswith("MCP:")]
+    assert mcp and "not passed on the copilot host" in mcp[0], proc.stdout[:1500]
+
+
+def test_the_report_names_the_host(tripwire):
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", host="copilot")
+    report = (_results_dir(proc) / "report.md").read_text(encoding="utf-8")
+    assert "- Host: `copilot` (`copilot`)" in report
+    assert "copilot never called" in report
+
+
+def test_the_grader_call_is_spelled_per_host_in_the_source():
+    """One grader call site, host-switched: `claude -p [--bare]` or `copilot -s`
+    (agent text only, which the VERDICT:/REASON: parse reads). A source read:
+    the grader is never reached in a dry run, so the tripwire cannot see it."""
+    text = (PLUGIN_ROOT / "run_evals.sh").read_text(encoding="utf-8")
+    assert '"$HOST_BIN" "${GRADER_HOST_FLAGS[@]}" --model "$GRADER_MODEL"' in text
+    assert "GRADER_HOST_FLAGS=(-s)" in text
+    assert "GRADER_HOST_FLAGS=(-p)" in text
+    assert text.count("timeout --kill-after=10 \"$GRADE_TIMEOUT\"") == 1
+
+
+# ── the transcript readers, both hosts ───────────────────────────────────────
+#
+# Copilot's `--output-format json` events, as probed on 1.0.91 (2026-10-02):
+# `assistant.message` carries the model and text, `tool.execution_start` the
+# tool and its arguments, `tool.execution_complete` the result, `result` the
+# session id and usage. The readers in `lib/eval-metrics.sh` are driven against
+# a transcript of that shape, and against Claude's, under each host.
+
+COPILOT_STREAM = [
+    {"type": "session.tools_updated", "data": {"model": "claude-sonnet-5"}, "ephemeral": True},
+    {"type": "user.message", "data": {"content": "measure it"}},
+    {"type": "assistant.message", "data": {
+        "model": "claude-sonnet-5", "content": "",
+        "toolRequests": [{"toolCallId": "t1", "name": "powershell",
+                          "arguments": {"command": "loci analyse prepare --files app.c"}}]}},
+    {"type": "tool.execution_start", "data": {
+        "toolCallId": "t1", "toolName": "powershell",
+        "arguments": {"command": "loci analyse prepare --files app.c"}}},
+    {"type": "tool.execution_complete", "data": {
+        "toolCallId": "t1", "success": True,
+        "result": {"content": json.dumps({"ok": True, "data": {
+            "id": "m-abcdef123456", "state": "prepared", "turn": "cp-42"}})}}},
+    {"type": "tool.execution_start", "data": {
+        "toolCallId": "t2", "toolName": "view",
+        "arguments": {"path": "C:\\proj\\app.c"}}},
+    {"type": "tool.execution_complete", "data": {
+        "toolCallId": "t2", "success": True, "result": {"content": "int x;"}}},
+    # GPT models edit with an `apply_patch` whose argument is ONE STRING
+    # (AAD-7788); the reader must render it, not die on `.command` of a string.
+    {"type": "tool.execution_start", "data": {
+        "toolCallId": "t3", "toolName": "apply_patch",
+        "arguments": "*** Begin Patch\n*** Update File: app.c\n@@\n-int x;\n+int x = 1;\n*** End Patch"}},
+    {"type": "tool.execution_complete", "data": {
+        "toolCallId": "t3", "success": True, "result": {"content": "Done"}}},
+    {"type": "assistant.message", "data": {
+        "model": "claude-sonnet-5", "content": "## Post-Edit: f\nVerdict: **OK**",
+        "toolRequests": []}},
+    {"type": "session.usage_checkpoint", "data": {
+        "totalNanoAiu": 8014900000, "totalPremiumRequests": 2}},
+    {"type": "result", "sessionId": "cp-sess-1", "exitCode": 0,
+     "usage": {"premiumRequests": 2, "totalApiDurationMs": 1253,
+               "sessionDurationMs": 91000,
+               "codeChanges": {"linesAdded": 0, "linesRemoved": 0, "filesModified": []}}},
+]
+
+CLAUDE_STREAM_WITH_TOOLS = [
+    {"type": "system", "subtype": "init", "session_id": "s-9"},
+    {"type": "assistant", "message": {"model": "claude-sonnet-4-5", "content": [
+        {"type": "text", "text": "first"},
+        {"type": "tool_use", "name": "Bash", "input": {"command": "loci analyse prepare\n--files app.c"}}]}},
+    {"type": "assistant", "message": {"model": "claude-sonnet-4-5", "content": [
+        {"type": "tool_use", "name": "Edit", "input": {"file_path": "app.c"}},
+        {"type": "text", "text": "second"}]}},
+    {"type": "result", "num_turns": 3, "total_cost_usd": 0.1, "duration_ms": 5000,
+     "stop_reason": "end_turn", "is_error": False, "session_id": "s-9",
+     "result": "second", "usage": {"input_tokens": 1}},
+]
+
+
+def _cp(tmp_path: Path) -> str:
+    return _to_bash_path(_stream(tmp_path, COPILOT_STREAM))
+
+
+def test_copilot_metrics_fill_the_same_keys_from_copilots_events(tmp_path):
+    out = json.loads(sh(f'eval_metrics_json "{_cp(tmp_path)}" claude-sonnet-5 91 single',
+                        LOCI_EVAL_HOST="copilot"))
+    assert out["host"] == "copilot"
+    assert out["models"] == ["claude-sonnet-5"]
+    assert out["session_id"] == "cp-sess-1"
+    assert out["num_turns"] == 2                     # one per assistant.message
+    assert out["total_cost_usd"] is None             # Copilot bills premium requests
+    assert out["usage"]["premiumRequests"] == 2
+    assert out["usage"]["total_nano_aiu"] == 8014900000
+    assert out["duration_ms"] == 91000
+    assert out["is_error"] is False
+    assert out["model_requested"] == "claude-sonnet-5" and out["wall_clock_s"] == 91
+
+
+def test_claude_metrics_say_which_host_and_are_otherwise_unchanged(tmp_path):
+    out = json.loads(sh(f'eval_metrics_json "{_to_bash_path(_stream(tmp_path))}" sonnet 137 single'))
+    assert out["host"] == "claude"
+    assert out["models"] == ["claude-sonnet-4-5"] and out["num_turns"] == 7
+    # …and the env var is the switch, not a guess from the file's shape.
+    out = json.loads(sh(f'eval_metrics_json "{_cp(tmp_path)}" sonnet 1 single'))
+    assert out["host"] == "claude" and out["models"] == [] and out["num_turns"] is None
+
+
+def test_copilot_text_is_every_assistant_message_joined(tmp_path):
+    assert rd(f'transcript_text "{_cp(tmp_path)}"', LOCI_EVAL_HOST="copilot") \
+        == "## Post-Edit: f\nVerdict: **OK**"
+    assert rd(f'transcript_result_text "{_cp(tmp_path)}"', LOCI_EVAL_HOST="copilot") \
+        == "## Post-Edit: f\nVerdict: **OK**"
+
+
+def test_claude_text_readers_read_what_the_inline_jq_read(tmp_path):
+    path = _to_bash_path(_stream(tmp_path, CLAUDE_STREAM_WITH_TOOLS))
+    assert rd(f'transcript_text "{path}"') == "first\nsecond"
+    assert rd(f'transcript_result_text "{path}"') == "second"
+    assert rd(f'transcript_session_id "{path}"') == "s-9"
+    assert rd(f'transcript_tool_names "{path}"') == "Bash, Edit"
+    assert rd(f'transcript_tool_summary "{path}"') == "Tools (2): Bash, Edit"
+    assert rd(f'transcript_tool_calls "(none)" "{path}"') \
+        == "Bash: loci analyse prepare ; --files app.c\nEdit: app.c"
+    assert rd(f'transcript_usage_line "{path}"') \
+        == "Turns: 3, Cost: $0.1, Duration: 5s, Stop: end_turn"
+
+
+def test_copilot_tool_calls_name_the_tool_and_its_argument(tmp_path):
+    env = {"LOCI_EVAL_HOST": "copilot"}
+    assert rd(f'transcript_tool_calls "(none)" "{_cp(tmp_path)}"', **env) \
+        == ("powershell: loci analyse prepare --files app.c\nview: C:\\proj\\app.c\n"
+            "apply_patch: *** Begin Patch ; *** Update File: app.c ; @@ ; -int x; ; +int x = 1; ; *** End Patch")
+    assert rd(f'transcript_tool_names "{_cp(tmp_path)}"', **env) == "apply_patch, powershell, view"
+    assert rd(f'transcript_tool_summary "{_cp(tmp_path)}"', **env) == "Tools (3): powershell, view, apply_patch"
+    assert rd(f'transcript_session_id "{_cp(tmp_path)}"', **env) == "cp-sess-1"
+    assert rd(f'transcript_usage_line "{_cp(tmp_path)}"', **env) \
+        == "Turns: 2, Premium requests: 2, Duration: 91s, Exit: 0"
+
+
+def test_a_copilot_transcript_with_no_tool_call_says_so(tmp_path):
+    quiet = [e for e in COPILOT_STREAM if not e["type"].startswith("tool.")]
+    path = _to_bash_path(_stream(tmp_path, quiet))
+    assert rd(f'transcript_tool_calls "(none)" "{path}"', LOCI_EVAL_HOST="copilot") == "(none)"
+    assert rd(f'transcript_tool_names "{path}"', LOCI_EVAL_HOST="copilot") == ""
+
+
+def test_the_turn_id_is_read_off_a_copilot_tool_result_too(tmp_path):
+    """`turn_ids_from_prepare` walks every string in the transcript, so the
+    envelope inside `tool.execution_complete.result.content` is found with no
+    host branch at all — pinned, since the attribution rests on it."""
+    assert sh(f'turn_ids_from_prepare "{_cp(tmp_path)}"', LOCI_EVAL_HOST="copilot").split() \
+        == ["cp-42"]
+
+
+def test_the_harness_reads_transcripts_through_the_host_aware_readers():
+    """No inline Claude-shaped jq left on a path both hosts share: the two-turn
+    and edit flows, and the single-turn response, go through `lib/eval-metrics.sh`.
+    The one inline Claude program kept (the single-turn TOOL_CALLS) is on an
+    explicit `else` branch of the host switch."""
+    text = (PLUGIN_ROOT / "run_evals.sh").read_text(encoding="utf-8")
+    for needle in ('SID=$(transcript_session_id "$T1_JSON")',
+                   'R1=$(transcript_text "$T1_JSON")',
+                   'R2=$(transcript_text "$T2_JSON")',
+                   'T2_TOOLS=$(transcript_tool_names "$T2_JSON")',
+                   'RESPONSE=$(transcript_text "$JSON_FILE")',
+                   'E_TOOLS=$(transcript_tool_names "$JSON_FILE")',
+                   'RESPONSE=$(transcript_result_text "$JSON_FILE")',
+                   'tool_summary=$(transcript_tool_summary "$JSON_FILE")',
+                   'usage_info=$(transcript_usage_line "$JSON_FILE")',
+                   'transcript_tool_calls "(none)" "$@"'):
+        assert needle in text, needle
+    assert text.count('select(.type=="system" and .subtype=="init")') == 0
+    assert 'TOOL_CALLS=$(transcript_tool_calls "(no tool calls)" "$JSON_FILE")' in text

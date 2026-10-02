@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.unit._skill_text import reach
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -79,7 +80,7 @@ def test_no_invented_counter_in_a_report_template(doc):
 
 def test_the_prohibition_is_still_written():
     """Fails in the other direction: the rule is prose, so nothing else pins it."""
-    post_edit = (PLUGIN_ROOT / "skills/loci-post-edit/SKILL.md").read_text(encoding="utf-8")
+    post_edit = reach("loci-post-edit")
     control_flow = (PLUGIN_ROOT / "skills/control-flow/SKILL.md").read_text(encoding="utf-8")
     assert "Name the loop by where it is in the source, never by its `id`" in post_edit
     assert "they identify a loop to the next `loci` call, not to a reader" in control_flow
@@ -87,8 +88,8 @@ def test_the_prohibition_is_still_written():
 
 def test_the_shared_rule_is_the_one_place_it_is_stated():
     """Four skills report a path or a loop, and the rule drifted between them once
-    already. It lives in the runtime contract now, anchored so the skills can link it."""
-    shared = (PLUGIN_ROOT / "skills/_shared/loci-runtime-contract.md").read_text(encoding="utf-8")
+    already. It lives in the house rules now, anchored so the skills can link it."""
+    shared = (PLUGIN_ROOT / "skills/_shared/house-rules.md").read_text(encoding="utf-8")
     assert '<a id="naming-paths"></a>' in shared
     assert "## Naming a path or a loop in the report" in shared
     for rel in ("skills/exec-trace/SKILL.md", "skills/loci-preflight/SKILL.md",
@@ -100,7 +101,7 @@ def test_the_shared_rule_is_the_one_place_it_is_stated():
 def test_the_trip_count_is_not_suppressed_with_the_loop_id():
     """The id is noise; the iteration count is the assumption the figure rests on.
     Hiding one must never take the other with it."""
-    shared = (PLUGIN_ROOT / "skills/_shared/loci-runtime-contract.md").read_text(encoding="utf-8")
+    shared = (PLUGIN_ROOT / "skills/_shared/house-rules.md").read_text(encoding="utf-8")
     rule = shared[shared.index("## Naming a path or a loop in the report"):]
     rule = rule[:rule.index("\n## ")]
     assert "The trip count is not an identifier, and it is always reported" in rule
@@ -112,7 +113,7 @@ def test_the_trip_count_is_not_suppressed_with_the_loop_id():
 def test_a_user_who_asks_for_the_id_gets_it():
     """The rule is about unasked-for prose. `which path did LOCI pick` is a question
     with an answer, and refusing to give the id is a worse failure than printing it."""
-    shared = (PLUGIN_ROOT / "skills/_shared/loci-runtime-contract.md").read_text(encoding="utf-8")
+    shared = (PLUGIN_ROOT / "skills/_shared/house-rules.md").read_text(encoding="utf-8")
     rule = shared[shared.index("## Naming a path or a loop in the report"):]
     rule = rule[:rule.index("\n## ")]
     assert "When the user asks which one, tell them" in rule

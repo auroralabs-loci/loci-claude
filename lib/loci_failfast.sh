@@ -31,6 +31,9 @@ case "${BASH_SOURCE[0]:-}" in
     */*)
         . "${BASH_SOURCE[0]%/*}/loci_log.sh" 2>/dev/null || true
         . "${BASH_SOURCE[0]%/*}/loci_json.sh" 2>/dev/null || true
+        # The host adapter, for the one host whose Stop reply reaches nobody:
+        # a Stop notice under Copilot is carried to the next prompt (AAD-7783).
+        . "${BASH_SOURCE[0]%/*}/loci_host.sh" 2>/dev/null || true
         ;;
 esac
 
@@ -55,15 +58,26 @@ loci_fail_fast_notice() {
 # Public API: loci_fail_fast_emit <source-tag> <hook-event> <command> <exit-code> <output>
 #
 # The notice, on the channel the hook already owns. `Stop` gets `systemMessage`,
-# the only field a user sees there and the only one that event carries; every
-# other event gets `additionalContext`, which is what the model reads.
+# the one field a user sees there under Claude Code; every other event gets
+# `additionalContext`, which is what the model reads. Under Copilot a Stop
+# reply reaches nobody, so a Stop notice is also recorded for the next prompt,
+# and a `UserPromptSubmit` notice carries what that prompt's adapter took
+# (`LOCI_HOST_CARRY`) so the halt does not cost the user the message
+# (`lib/loci_host.sh`, AAD-7783). Nothing of either happens outside Copilot,
+# where neither variable is ever set.
 loci_fail_fast_emit() {
     local src="$1" event="$2" notice
     notice=$(loci_fail_fast_notice "$src" "$3" "$4" "$5")
     case "$event" in
-        Stop) printf '{"systemMessage":"%s"}\n' "$(loci_json_escape "$notice")" ;;
-        *) loci_json_hook_output "$event" "$notice" ;;
+        Stop)
+            loci_json_system_message Stop "$notice"
+            if command -v loci_host_carry_add >/dev/null 2>&1; then
+                loci_host_carry_add "$src" "$notice" "${LOCI_HOOK_PAYLOAD:-}" || :
+            fi
+            ;;
+        *) loci_json_hook_output "$event" "$notice${LOCI_HOST_CARRY:+$'\n'$LOCI_HOST_CARRY}" ;;
     esac
+    return 0
 }
 
 # Public API: loci_fail_fast_run <source-tag> <hook-event> <verb…>
@@ -92,6 +106,13 @@ loci_fail_fast_run() {
         err=$(cat "$errf" 2>/dev/null)
         rm -f "$errf" 2>/dev/null
         [ "$rc" -eq 0 ] && [ -n "$out" ] && printf '%s\n' "$out"
+        # A Stop verb's own `systemMessage` (`analyse status --hook-json`), under
+        # the host whose Stop reply reaches nobody: recorded for the next prompt
+        # as the hook does with the switch off (lib/loci_host.sh, AAD-7783).
+        if [ "$rc" -eq 0 ] && [ -n "$out" ] && [ "$event" = Stop ] \
+                && command -v loci_host_carry_relay >/dev/null 2>&1; then
+            loci_host_carry_relay "$src" "$out" "${LOCI_HOOK_PAYLOAD:-}" || :
+        fi
     else
         if [ -n "${LOCI_HOOK_PAYLOAD:-}" ]; then
             printf '%s' "$LOCI_HOOK_PAYLOAD" | "$@"

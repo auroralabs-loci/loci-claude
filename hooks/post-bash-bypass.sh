@@ -2,6 +2,11 @@
 # PostToolUse(Bash): `loci hook post-bash` names a source with a built object that
 # changed since the turn began without a snapshot. Advisory; this hook fires on
 # every Bash call, so it is silent when `loci` is absent and never exits nonzero.
+# The bash this runs under is decided first, while the payload is still on
+# stdin: on bash 3 (stock macOS) this re-executes under a newer bash when one
+# is installed, else sets `_LOCI_BASH_LEGACY=1` (AAD-7771; lib/bash-compat.sh).
+. "${0%/*}/../lib/bash-compat.sh" 2>/dev/null || :
+
 set -u
 export PATH="$PATH:${HOME:-}/.local/bin"
 export PYTHONIOENCODING=utf-8
@@ -13,17 +18,24 @@ case "$0" in
     */*)
         . "${0%/*}/../lib/loci_log.sh" 2>/dev/null || true
         . "${0%/*}/../lib/loci_failfast.sh" 2>/dev/null || true
+        . "${0%/*}/../lib/loci_host.sh" 2>/dev/null || true
         ;;
 esac
 command -v loci_log >/dev/null 2>&1 \
     || { loci_log() { :; }; loci_hook_payload_read() { return 1; }; }
 command -v loci_fail_fast >/dev/null 2>&1 || loci_fail_fast() { return 1; }
+command -v loci_host_payload_adapt >/dev/null 2>&1 || loci_host_payload_adapt() { return 1; }
 
 # stdin carries `.session_id` and reads once, so it is captured here and re-fed
 # to the CLI below. The capture happens ONLY when the log is on (the library's
 # rule), so production still hands the harness's stdin to the verb untouched —
 # unread and unmangled, as it always was.
+#
+# The one other capture: under Copilot, which sends no `prompt_id`, the host
+# adapter injects the turn id it recorded at UserPromptSubmit, so the verb reads
+# the same field it reads under Claude Code (lib/loci_host.sh, AAD-7781).
 loci_hook_payload_read && _pb_stdin=captured || _pb_stdin=""
+loci_host_payload_adapt && _pb_stdin=captured
 
 loci_log INFO post-bash "start: PostToolUse(Bash)"
 if ! command -v loci >/dev/null 2>&1; then

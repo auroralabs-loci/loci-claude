@@ -43,6 +43,7 @@ the space test passes with the quoting deleted.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -68,10 +69,21 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(
-    _find_bash() is None or shutil.which("jq") is None,
-    reason="bash and jq required",
-)
+from tests.fixtures.copilot_payloads import current as _host
+
+# Every test runs under both hosts (AAD-7790). Under Copilot the payload
+# carries no `prompt_id`: on `Stop` the hook resolves the turn from the
+# session's `turn-<session_id>` record and passes THAT as `--turn=`; on
+# `SessionStart` the adapter only sweeps, and the hook names no turn there under
+# either host. The three registration tests spawn nothing, so their second run
+# costs nothing.
+pytestmark = [
+    pytest.mark.skipif(
+        _find_bash() is None or shutil.which("jq") is None,
+        reason="bash and jq required",
+    ),
+    pytest.mark.usefixtures("host"),
+]
 
 
 # The payload carries a NATIVE path — the captured probe shows
@@ -97,8 +109,15 @@ def _base_path() -> str:
     return base
 
 
+# The cwd is logged in the spelling Python compares it in. A bare `pwd -P` under
+# MSYS answers through its mount table, so a `%TEMP%` cwd comes back as
+# `/tmp/pytest-of-…`, which `realpath` on Windows reads as `C:\tmp\…`: every
+# `ran_from` was False on Windows, whatever the hook did. `pwd -W` is MSYS's own
+# native spelling (`C:/Users/…/Temp/…`), with `-P` still resolving links; bash
+# anywhere else refuses the option with no output, and takes plain `pwd -P`.
 _STUB = r"""#!/usr/bin/env bash
 { sep=''; for a in "$@"; do printf '%s%s' "$sep" "$a"; sep=$'\x1e'; done; printf '\n'; } >> "ARGS_LOG"
+{ pwd -P -W 2>/dev/null || pwd -P; } >> "ARGS_LOG.pwd"
 STUB_BODY
 """
 
@@ -114,6 +133,14 @@ class Result:
         self.calls: list[list[str]] = [
             line.split(_RS) for line in log.split("\n") if line
         ]
+        pwd_log = args_log.with_name(args_log.name + ".pwd")
+        self.cwds: list[str] = (pwd_log.read_text(encoding="utf-8").split("\n")[:-1]
+                                if pwd_log.is_file() else [])
+
+    def ran_from(self, root: Path, call: int = 0) -> bool:
+        return (self.flag("--project-root", call) is None
+                and len(self.cwds) > call
+                and os.path.realpath(self.cwds[call]) == os.path.realpath(root))
 
     @property
     def cleans(self) -> list[list[str]]:
@@ -191,10 +218,18 @@ def _run(tmp_path: Path, root: Path | None, *, payload: dict | None = None,
         "cwd": str(root) if root else "",
         "stop_hook_active": False,
     }
+    host = _host()
+    doc = host.respell(doc)
+    env.update(host.env(project=env.get("CLAUDE_PROJECT_DIR")))
+    # No `LOCI_STATE_DIR` here, so the record the hook resolves a Copilot turn
+    # from goes where the hook's ladder lands: `$HOME/.loci/state`.
+    host.seed(home / ".loci" / "state")
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(HOOK)],
         input=json.dumps(doc), capture_output=True, text=True, timeout=30,
-        cwd=str(elsewhere), env=env,
+        # `elsewhere` under Claude Code (see above); Copilot starts every hook
+        # in the plugin root, which is just as much not the project.
+        cwd=host.cwd(elsewhere), env=env,
     )
     assert proc.returncode == 0, (
         f"a Stop hook must always exit 0 — a non-zero exit blocks the stop and "
@@ -211,8 +246,8 @@ def test_the_turn_is_cleaned_against_the_payloads_project_root(tmp_path):
     res = _run(tmp_path, root)
 
     assert len(res.cleans) == 1
-    assert res.flag("--project-root") == str(root)
-    assert res.flag("--turn") == "5e1b8673-df09-42d3-a338-c13726ff8d32"
+    assert res.ran_from(root), (res.calls, res.cwds)
+    assert res.flag("--turn") == _host().turn("5e1b8673-df09-42d3-a338-c13726ff8d32")
 
 
 def test_the_project_root_survives_a_space_in_its_path(tmp_path):
@@ -223,13 +258,12 @@ def test_the_project_root_survives_a_space_in_its_path(tmp_path):
 
     res = _run(tmp_path, root)
 
-    assert res.flag("--project-root") == str(root)
+    assert res.ran_from(root), (res.calls, res.cwds)
 
 
 def test_the_root_is_the_payloads_cwd_not_the_git_top_level(tmp_path):
-    """It must agree with the WRITER. `pre-edit-hook.sh` calls `build snapshot`
-    with no `--project-root`, so captures land under `Path.cwd()` — the session's
-    own directory, which is what the payload's `cwd` carries.
+    """It must agree with the WRITER: both resolve the project through the CLI's
+    one walk, which here stops at the session's own directory.
 
     An earlier version walked that up to the git top level, which is a different
     directory whenever a session runs in a subdirectory of a repo: the snapshot
@@ -245,7 +279,7 @@ def test_the_root_is_the_payloads_cwd_not_the_git_top_level(tmp_path):
     res = _run(tmp_path, root)
 
     assert len(res.cleans) == 1
-    assert res.flag("--project-root") == str(root)
+    assert res.ran_from(root), (res.calls, res.cwds)
 
 
 def test_the_environment_is_only_a_fallback(tmp_path):
@@ -257,7 +291,7 @@ def test_the_environment_is_only_a_fallback(tmp_path):
                payload={"hook_event_name": "Stop", "prompt_id": "abc"})
 
     assert len(res.cleans) == 1
-    assert res.flag("--project-root") == str(root)
+    assert res.ran_from(root), (res.calls, res.cwds)
 
 
 # ── the ways it must stay quiet ──────────────────────────────────────────────
@@ -304,7 +338,7 @@ def test_the_new_root_opens_the_gate(tmp_path):
     res = _run(tmp_path, root)
 
     assert len(res.cleans) == 1, "the gate did not open; retention never runs"
-    assert res.flag("--project-root") == str(root)
+    assert res.ran_from(root), (res.calls, res.cwds)
 
 
 def test_the_legacy_root_alone_does_not_open_the_gate(tmp_path):
@@ -324,7 +358,7 @@ def test_both_roots_present_is_one_clean(tmp_path):
     res = _run(tmp_path, root)
 
     assert len(res.cleans) == 1
-    assert res.flag("--project-root") == str(root)
+    assert res.ran_from(root), (res.calls, res.cwds)
 
 
 def test_the_new_root_alone_still_passes_the_turn_through(tmp_path):
@@ -335,7 +369,7 @@ def test_the_new_root_alone_still_passes_the_turn_through(tmp_path):
 
     res = _run(tmp_path, root)
 
-    assert res.flag("--turn") == "5e1b8673-df09-42d3-a338-c13726ff8d32"
+    assert res.flag("--turn") == _host().turn("5e1b8673-df09-42d3-a338-c13726ff8d32")
     assert not res.has("--deep")
 
 
@@ -422,7 +456,7 @@ def test_a_payload_with_no_prompt_id_still_cleans(tmp_path):
 
     assert len(res.cleans) == 1
     assert not res.has("--turn")
-    assert res.flag("--project-root") == str(root)
+    assert res.ran_from(root), (res.calls, res.cwds)
 
 
 def test_the_per_turn_clean_never_runs_deep(tmp_path):
@@ -465,7 +499,7 @@ def test_session_start_runs_deep_and_names_no_turn(tmp_path):
     assert len(res.cleans) == 1
     assert res.has("--deep")
     assert not res.has("--turn")
-    assert res.flag("--project-root") == str(root)
+    assert res.ran_from(root), (res.calls, res.cwds)
 
 
 def test_the_hook_is_registered_on_session_start_with_no_matcher(tmp_path):
@@ -505,5 +539,64 @@ def test_flags_are_passed_joined_so_a_dash_value_cannot_be_read_as_an_option(
     res = _run(tmp_path, root, payload={
         "hook_event_name": "Stop", "prompt_id": "-abc123", "cwd": str(root)})
 
-    assert res.flag("--turn") == "-abc123"
+    # Under Copilot the value is the adapter's minted id, whose alphabet is
+    # `[a-z0-9-]` and never starts with `-`; the joined spelling is still what
+    # the hook must use, and that is asserted the same under both.
+    assert res.flag("--turn") == _host().turn("-abc123")
     assert "--turn" not in res.cleans[0]          # never the separate spelling
+
+
+# ── AAD-7531: the build root is found AT OR ABOVE the session ───────────────
+
+def test_a_subdirectory_session_sweeps_its_projects_build_root(tmp_path):
+    repo = _project(tmp_path, "repo")
+    (repo / ".git").mkdir()
+    session = repo / "fw" / "drivers"
+    session.mkdir(parents=True)
+
+    res = _run(tmp_path, session)
+
+    assert len(res.cleans) == 1, "the gate did not look above the session"
+    assert res.ran_from(session), (res.calls, res.cwds)
+
+
+def test_the_walk_stops_at_the_checkout_root(tmp_path):
+    outer = _project(tmp_path, "outer")
+    inner = outer / "vendored"
+    inner.mkdir()
+    (inner / ".git").mkdir()
+    session = inner / "src"
+    session.mkdir()
+
+    res = _run(tmp_path, session)
+
+    assert res.cleans == [], "the walk crossed a checkout boundary"
+
+
+def test_the_walk_never_takes_home_for_a_project(tmp_path):
+    home = tmp_path / "home"
+    (home / ".loci" / "build" / "turns").mkdir(parents=True)
+    session = home / "scratch"
+    session.mkdir()
+
+    res = _run(tmp_path, session)
+
+    assert res.cleans == [], "the walk adopted $HOME"
+
+
+def test_a_project_under_home_is_still_cleaned(tmp_path):
+    """The other side of the $HOME stop. It compares by identity (`-ef`) as well
+    as by spelling, and a stop that matched too much, such as a directory's parent
+    or a volume with no inode numbers, would end the walk before the project's
+    own build root and never clean it. Every other project here sits beside $HOME,
+    where that mistake cannot show."""
+    home = tmp_path / "home"
+    (home / ".loci" / "state").mkdir(parents=True)
+    project = _project(home)            # `~/proj`: one level below the stop
+    session = project / "src"
+    session.mkdir()
+
+    res = _run(tmp_path, session)
+
+    assert len(res.cleans) == 1, "a project under $HOME was never cleaned"
+    assert res.ran_from(session), (res.calls, res.cwds)

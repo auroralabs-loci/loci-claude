@@ -64,7 +64,7 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS = PLUGIN_ROOT / "skills"
-CONTRACT = SKILLS / "_shared" / "loci-runtime-contract.md"
+HOUSE_RULES = SKILLS / "_shared" / "house-rules.md"
 
 SIGNALS = ("unbounded_recursion", "recursion_cycles",
            "indirect_calls", "unknown_callees")
@@ -73,7 +73,7 @@ SIGNALS = ("unbounded_recursion", "recursion_cycles",
 #: end marker and `6b8b643` deleted it, which is what made the three tests below
 #: fail inside `_section` before reaching an assertion.
 MAPPING = ("## Structural invariants: which measurement answers which signal",
-           "## Path cost is not yours")
+           "## Naming a path or a loop in the report")
 
 #: The two shared sections a judging skill applies, under the names `cfd4deb`
 #: gave them. Spelled here once, so a rename fails in one place.
@@ -101,6 +101,13 @@ def _skill(name: str) -> str:
     return _text(SKILLS / name / "SKILL.md")
 
 
+def _ref(name: str, filename: str) -> str:
+    """One of a skill's reference files. The escalation trigger lists moved into
+    `escalation.md`; slicing them out of `SKILL.md` would find nothing and the
+    `_section` assertion below is what says so rather than passing empty."""
+    return _text(SKILLS / name / filename)
+
+
 def _section(body: str, start: str, end: str) -> str:
     """Slice one section out. Both markers required and `end` must be unique in the
     remainder, or a renamed heading silently widens the slice to EOF and every
@@ -113,7 +120,7 @@ def _section(body: str, start: str, end: str) -> str:
 
 
 def _verdict_rule() -> str:
-    return _section(_text(CONTRACT),
+    return _section(_text(HOUSE_RULES),
                     "## A measurement inherits a verdict from a bound, never "
                     "from a band",
                     "## Your verdicts are")
@@ -127,7 +134,7 @@ def _fold_back() -> str:
 # ── the mapping itself ──────────────────────────────────────────────────────
 
 def test_the_shared_contract_maps_every_structural_signal_to_a_measurement():
-    section = _section(_text(CONTRACT), *MAPPING)
+    section = _section(_text(HOUSE_RULES), *MAPPING)
     for signal in SIGNALS:
         assert signal in section, f"{signal} has no measurement mapped to it"
     # The flags the mapping reads. Without these the table names signals and still
@@ -140,7 +147,7 @@ def test_the_shared_contract_maps_every_structural_signal_to_a_measurement():
 def test_the_mapping_requires_the_zero_to_be_reported():
     """A bound nothing measured is filed unjudged, and unjudged is invisible — which
     is how these four went unnoticed. A clean run has to say `0`."""
-    section = _section(_text(CONTRACT), *MAPPING)
+    section = _section(_text(HOUSE_RULES), *MAPPING)
     assert "Report the zero" in section
     assert "unjudged is invisible" in section
 
@@ -149,7 +156,7 @@ def test_the_mapping_forbids_answering_a_structural_bound_from_an_object():
     """In a `.o` the call edges are unapplied relocations, so `has_unknown_callees`
     reads false for a binary whose callees were never linked. Reporting 0 from that
     is a confidently wrong answer, which is worse than no answer."""
-    section = _section(_text(CONTRACT), *MAPPING)
+    section = _section(_text(HOUSE_RULES), *MAPPING)
     assert "cannot answer them" in section
     assert "Never report `0`" in section
 
@@ -158,7 +165,7 @@ def test_structural_bounds_are_whole_binary_only():
     """The CLI rejects a `function` on a structural signal (`scope_unexpected`), so
     prose that invites a per-function structural bound authors an entry that can
     never be accepted."""
-    shared = _text(CONTRACT)
+    shared = _text(HOUSE_RULES)
     assert "They are whole-binary, always" in shared
     assert "scope_unexpected" in shared
     contract_skill = _skill("contract")
@@ -215,7 +222,7 @@ def test_the_contract_decides_a_row_it_covers():
     # mixed vocabularies in one table`: PR #291 renamed it for the column
     # split, and a start marker that is absent slices nothing — `_section`'s
     # own assertion is what caught it, before any rule below could be read.
-    rows = _section(_text(CONTRACT),
+    rows = _section(_text(HOUSE_RULES),
                     "## Conclusion rows: five columns, the cockpit's two "
                     "among them",
                     "## Structural invariants:")
@@ -298,8 +305,10 @@ def test_stack_depth_owns_all_four_signals():
     # `9f14402` rewrote "including the count `0` when the run was clean" into the
     # two clauses below. Same rule: a clean run states the zero, because an
     # unstated invariant is an unjudged one.
-    assert "a zero is worth stating" in fold
-    assert "name every signal the run measured, each with its count" in fold
+    # D38 moved both to the start of a sentence, so the pinned text is capitalised
+    # now; the rule is unchanged and the phrases are still exact.
+    assert "A zero is worth stating" in fold
+    assert "Name every signal the run measured, each with its count" in fold
     # …and the one case that is not a zero. A `0` read off an object is a
     # confidently wrong answer, so it has a word of its own.
     assert "write `unmeasured` in place of the count rather than `0`" in fold
@@ -341,9 +350,9 @@ def test_control_flow_judges_the_two_signals_it_sees_and_routes_the_two_it_canno
     # names occur in the paragraph above and in the row catalogue too, so this
     # would pass on a skill that named them and handed them nowhere.
     route = _section(body,
-                     "## Step 3 — judge the two signals, and route the two "
+                     "## Step 3: judge the two signals, and route the two "
                      "you cannot",
-                     "## Step 4 —")
+                     "## Step 4:")
     for signal in ("unbounded_recursion", "unknown_callees"):
         assert signal in route, (
             f"control-flow does not route {signal} out of Step 3, so a hazard "
@@ -353,7 +362,9 @@ def test_control_flow_judges_the_two_signals_it_sees_and_routes_the_two_it_canno
     # which is the one claim a per-function graph cannot support.
     assert "`unbounded_recursion` and `unknown_callees` get no row" in body
     assert "A hazard is provable at any scope; a zero is not." in body
-    assert "Never report `0` against a whole-binary bound" in body
+    assert "never put it against a whole-binary bound" in body, (
+        "the ownership split left control-flow free to answer a whole-binary "
+        "bound off a per-function graph")
 
 
 @pytest.mark.parametrize("skill", ("loci-preflight", "loci-post-edit"))
@@ -381,11 +392,10 @@ def test_preflight_escalates_on_a_structural_hazard_whether_or_not_one_is_bounde
     # over — and the positive would be satisfied by the phrase appearing
     # anywhere, including in prose about something else.
     triggers = _section(
-        _skill("loci-preflight"),
+        _ref("loci-preflight", "escalation.md"),
         "*Escalate to `stack-depth`* when — increment R by 1 at trigger:",
         "*Escalate to `memory-report`* when — increment R by 1 at trigger:")
-    assert ("A structural hazard (recursion, indirect call, unknown callee) is "
-            "in play, OR") in triggers, (
+    assert "The plan introduces a structural hazard" in triggers, (
         "preflight no longer escalates on a structural hazard, so the count that "
         "judges a whole-binary signal has no source")
     assert "an enabled structural invariant bounds it" not in triggers, (

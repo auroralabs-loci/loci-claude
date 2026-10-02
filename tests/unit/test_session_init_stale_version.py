@@ -8,10 +8,18 @@ the cache root for the highest-semver version that still has both
 ``.claude-plugin/plugin.json`` and ``lib/``. Internal sourcing keeps using
 ``PLUGIN_DIR`` — the divergence matters for paths referenced after the hook
 returns, and for the loci-CLI pin (see test_cli_pin_resolution.py).
+
+Under GitHub Copilot CLI the scan is the wrong answer (AAD-7784): Copilot keeps
+a plugin where it exports it (``COPILOT_PLUGIN_ROOT`` / ``CLAUDE_PLUGIN_ROOT``),
+with no version siblings, so ``plugin dir:`` is the EXPORTED root — the dir
+whose hooks the session loaded — and the version is read off its manifest. The
+``[copilot]`` runs here pin that beside the Claude Code expectation; the
+mechanics are in test_host_session_context.py.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -21,8 +29,13 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.copilot_payloads import current as _host
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Every test spawns the hook, so all run under both hosts (AAD-7790).
+pytestmark = pytest.mark.usefixtures("host")
 
 
 def _find_bash() -> str | None:
@@ -77,19 +90,37 @@ def _run_hook(hook_script: Path, home: Path) -> subprocess.CompletedProcess:
         "HOME": _to_bash_path(home),
         "LOCI_STATE_DIR": _to_bash_path(home / ".loci" / "state"),
     }
+    # The plugin root is the COPIED dir the hook runs from — under Copilot the
+    # host exports it and the hook advertises it (AAD-7784). The hook's own cwd
+    # under Claude Code stays this process's, as it always was.
+    plugin_dir = hook_script.parent.parent
+    host = _host()
+    env.update(host.env(plugin_root=_to_bash_path(plugin_dir)))
+    host.seed(home / ".loci" / "state")
+    feed: dict = {}
+    if host.copilot:
+        # Copilot's hook reads stdin for `source` (a resumed session's repeat
+        # gets no context — AAD-7784); a first start is `source: new`. Claude
+        # Code's hook never reads stdin here, and the test has always run it
+        # without one.
+        feed["input"] = json.dumps(host.respell(
+            {"hook_event_name": "SessionStart", "source": "new",
+             "cwd": _to_bash_path(home)}))
     return subprocess.run(
         [_find_bash(), _to_bash_path(hook_script)],
         env=env,
         capture_output=True,
         text=True,
         timeout=60,
+        cwd=host.cwd(None, plugin_root=plugin_dir),
+        **feed,
     )
 
 
 def _context_block(stdout: str) -> str:
-    import json
-    payload = json.loads(stdout)
-    return payload["hookSpecificOutput"]["additionalContext"]
+    """The context as the active host reads it: nested under Claude Code; under
+    Copilot the top-level copy, checked equal to the nested one (AAD-7783)."""
+    return _host().context(json.loads(stdout))
 
 
 @pytest.mark.skipif(not _has_bash(), reason="bash not available")
@@ -113,6 +144,19 @@ def test_older_hook_advertises_newer_installed_version(tmp_path: Path):
     ctx = _context_block(res.stdout)
     newer_posix = _to_bash_path(newer)
     older_posix = _to_bash_path(older)
+
+    if _host().copilot:
+        # The host exported the OLDER dir as the root it loaded, and Copilot
+        # keeps no version siblings to upgrade to: the exported root is the
+        # answer (AAD-7784, test_host_session_context), its manifest's version
+        # with it, and the newer sibling — which this session never loaded — is
+        # named nowhere.
+        assert f"plugin dir: {older_posix}" in ctx, (
+            f"Expected the exported root under Copilot; got:\n{ctx[:1500]}")
+        assert "loci version: 0.1.10" in ctx, ctx[:1500]
+        assert newer_posix not in ctx, (
+            f"the context names a sibling the host never loaded:\n{ctx[:1500]}")
+        return
 
     assert "loci version: 0.1.20" in ctx, (
         f"Expected newer version advertised; got:\n{ctx[:1500]}"

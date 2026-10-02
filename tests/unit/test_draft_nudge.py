@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.copilot_payloads import current as _host
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 NUDGE = PLUGIN_ROOT / "hooks" / "draft-pending-nudge.sh"
 
@@ -42,10 +44,16 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(
-    _find_bash() is None or shutil.which("jq") is None,
-    reason="bash and jq required",
-)
+# Every test runs under both hosts (AAD-7790). Under Copilot the hook's reply is
+# the same `systemMessage` — a Stop reply gains no context field — but the text
+# is also RECORDED for the next prompt (`_carry_record` below, AAD-7783).
+pytestmark = [
+    pytest.mark.skipif(
+        _find_bash() is None or shutil.which("jq") is None,
+        reason="bash and jq required",
+    ),
+    pytest.mark.usefixtures("host"),
+]
 
 
 def _to_bash_path(p: Path) -> str:
@@ -90,13 +98,39 @@ def _run(project_dir: Path, *, fake_loci: str | None = None,
         stub.chmod(0o755)
         env["PATH"] = f"{_to_bash_path(bin_dir)}:{env['PATH']}"
 
+    host = _host()
+    payload = host.respell({"cwd": spelled, "session_id": "t"}, event="Stop")
+    env.update(host.env(project=spelled))
+    if host.copilot:
+        # Under Copilot the hook WRITES (the carry record, AAD-7783), and this
+        # helper's default `$HOME` is the real one: pin the state directory to
+        # the test's own. Claude Code's run writes nothing and keeps its env.
+        env["LOCI_STATE_DIR"] = _to_bash_path(_state_dir(project_dir))
+    host.seed(_state_dir(project_dir))
+    # `encoding="utf-8"`: the hook writes UTF-8 (`PYTHONIOENCODING=utf-8`, the
+    # message carries an em-dash) and `text=True` alone decodes with the locale
+    # codec — cp1252 on Windows, which mangled the dash in what this helper
+    # returned (nothing compared the whole sentence until the carry record did).
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(NUDGE)],
-        input=json.dumps({"cwd": spelled, "session_id": "t"}),
-        capture_output=True, text=True, timeout=30, env=env,
+        input=json.dumps(payload),
+        capture_output=True, text=True, encoding="utf-8", timeout=30, env=env,
+        cwd=host.cwd(None),
     )
     out = proc.stdout.strip()
     return proc.returncode, (json.loads(out) if out else None)
+
+
+def _state_dir(project_dir: Path) -> Path:
+    """The LOCI state directory a Copilot run of the hook reads and writes."""
+    return project_dir / "_state"
+
+
+def _carry_record(project_dir: Path) -> str | None:
+    """The message the hook recorded for the next prompt under Copilot
+    (`turn-<session_id>.nudge-draft`, first line an age stamp — AAD-7783),
+    or None when it recorded nothing. Always None under Claude Code."""
+    return _host().carried(_state_dir(project_dir), "draft", session="t")
 
 
 # Where the draft lives, and where a pre-move CLI left one. `contract` writes and
@@ -147,6 +181,7 @@ def test_no_draft_is_silent_and_never_spawns_loci(tmp_path):
     code, out = _run(tmp_path, fake_loci=_SPY_LOCI)
     assert code == 0 and out is None
     assert not _spawned(tmp_path), "the gate opened with no draft on disk"
+    assert _carry_record(tmp_path) is None, "silence recorded a message for the next prompt"
 
 
 def test_an_empty_build_directory_is_not_a_pending_draft(tmp_path):
@@ -208,7 +243,7 @@ def test_both_paths_present_is_one_nudge_and_the_cli_decides_what_it_says(tmp_pa
     code, out = _run(tmp_path, fake_loci=_envelope(1, ops=["add"]))
 
     assert code == 0
-    assert out is not None and set(out) == {"systemMessage"}
+    assert out is not None and set(out) == _host().user_message_keys("Stop")
     assert "1 bound added" in out["systemMessage"]
     assert "retired" not in out["systemMessage"], (
         "the hook read a path itself instead of asking the CLI"
@@ -233,6 +268,7 @@ def test_an_empty_draft_says_nothing(tmp_path):
     _draft(tmp_path)
     code, out = _run(tmp_path, fake_loci=_envelope(0))
     assert code == 0 and out is None
+    assert _carry_record(tmp_path) is None
 
 
 def test_a_failing_loci_is_silent_rather_than_noisy(tmp_path):
@@ -255,10 +291,16 @@ def test_pending_draft_reaches_the_user_via_system_message(tmp_path):
     assert code == 0
     # `systemMessage` is the only field a Stop hook shows the user. If this ever
     # becomes plain stdout or additionalContext, the nudge is invisible again.
-    assert set(out) == {"systemMessage"}
+    # (Copilot's Stop reply has no context field either — AAD-7783 — which is
+    # why the same text is recorded for the next prompt, asserted below.)
+    assert set(out) == _host().user_message_keys("Stop")
     msg = out["systemMessage"]
     assert "2 bounds added" in msg
     assert "! loci contract accept" in msg
+    if _host().copilot:
+        assert _carry_record(tmp_path) == msg, (
+            "Copilot shows `systemMessage` to nobody; the nudge must be recorded "
+            "for the next prompt or it is invisible again")
 
 
 # ── it must say what the draft DOES, not how many ops it has ────────────────

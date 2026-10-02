@@ -15,11 +15,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.unit._skill_text import reach
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS = sorted((PLUGIN_ROOT / "skills").rglob("*.md"))
-CONTRACT = PLUGIN_ROOT / "skills/_shared/loci-runtime-contract.md"
+HOUSE_RULES = PLUGIN_ROOT / "skills/_shared/house-rules.md"
 
 #: `! loci <verb>` — the "you type this" form.
 HANDOVER = re.compile(r"!\s+loci\s+([a-z-]+(?:\s+[a-z-]+)?)")
@@ -44,7 +45,7 @@ def test_no_cli_verb_is_handed_to_the_user(doc):
 
 
 def test_the_rule_is_still_written():
-    text = CONTRACT.read_text(encoding="utf-8")
+    text = HOUSE_RULES.read_text(encoding="utf-8")
     assert '<a id="user-commands"></a>' in text
     assert "## The three `loci` commands a user ever sees" in text
     section = text[text.index("## The three `loci` commands a user ever sees"):]
@@ -59,13 +60,14 @@ def test_every_reporting_skill_carries_the_rule():
     for rel in ("skills/exec-trace/SKILL.md", "skills/loci-preflight/SKILL.md",
                 "skills/loci-post-edit/SKILL.md", "skills/control-flow/SKILL.md",
                 "skills/stack-depth/SKILL.md", "skills/memory-report/SKILL.md"):
-        text = re.sub(r"\s+", " ", (PLUGIN_ROOT / rel).read_text(encoding="utf-8"))
-        assert "The three `loci` commands a user ever sees" in text, rel
+        text = re.sub(r"\s+", " ", reach(rel.split("/")[1]))
+        assert ("The three `loci` commands a user ever sees" in text
+                or "house-rules.md#user-commands" in text), rel
 
 
 def test_the_unenforced_contract_entry_points_at_the_skill():
     """It used to close with `fix with: ! loci contract lint`, which is a verb the
     user has no reason to learn and the agent can run itself."""
-    post_edit = (PLUGIN_ROOT / "skills/loci-post-edit/SKILL.md").read_text(encoding="utf-8")
+    post_edit = reach("loci-post-edit")
     assert "fix with: /loci:contract" in post_edit
     assert "! loci contract lint" not in post_edit

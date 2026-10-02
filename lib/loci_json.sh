@@ -51,7 +51,52 @@ _LOCI_JSON_SOURCED=1
 # How many bytes of a document `loci_json_load` will parse. A caller with a
 # smaller certainty (`contract-guard.sh` reads a payload that can be megabytes)
 # lowers it; nothing needs to raise it.
-: "${LOCI_JSON_MAX:=16384}"
+#
+# ⚠ 4 KB UNDER BASH 3, and the number is measured, not chosen (AAD-7771, on
+# the mac-mini's /bin/bash 3.2.57 and a bash 3.2.57 built from source): a
+# `${v//pat/rep}` there costs about 2 ms PER MATCH over a 16 KB string and
+# grows with the SQUARE of the length — 31 ms per match at 64 KB, 19 s for a
+# 16 KB string that is nothing but matches, against 85 ms for the same on bash
+# 5. Every reader here runs a handful of those over the value it decodes, so
+# the prefix they read is what bounds them: at 4 KB a value that is nothing
+# but matches costs 0.3 s per pass, and the edge hooks' 5 s hold. The fields
+# the hooks read sit inside 4 KB by construction (`session_id`, `cwd`,
+# `file_path` precede the content), so the cut is exact for them; a `command`
+# longer than that is answered by `contract-guard.sh`'s coarse arm, which
+# `lib/bash-compat.sh` and that file describe.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    : "${LOCI_JSON_MAX:=4096}"
+else
+    : "${LOCI_JSON_MAX:=16384}"
+fi
+
+# ⚠ A REPLACEMENT IS NEVER QUOTED HERE, and `patsub_replacement` is turned OFF
+# for every shell that sources this file. Both halves are one rule, and the
+# rule exists because the two bashes this library runs under disagree about
+# the replacement side of `${doc//pattern/replacement}`:
+#
+#   * bash 3.2 — stock macOS, and the `bash` every hook in `hooks.json` runs
+#     under on a Mac with no Homebrew — KEEPS THE QUOTE CHARACTERS of a quoted
+#     replacement: `${doc//"$pat"/"$c"}` with `c=f` writes `"f"`, three
+#     characters, into the document. Measured on the mac-mini (AAD-7771): the
+#     escaped-key pass rewrote `{"\u0066oo":…}` to `{""f"oo":…}`, the search
+#     found no `"foo"`, and `loci_json_get` answered ABSENT for every escaped
+#     name — which is the F17 hole, open again, on every stock Mac: a
+#     `contract.yaml` write whose `file_path` key was `\u`-escaped was allowed.
+#   * bash 5.2+ — Git for Windows, current Linux — removes those quotes, which
+#     is why the idiom passed on both developer platforms; but it also ships
+#     `patsub_replacement` ON by default, under which an UNQUOTED replacement
+#     that came from an expansion has its `&` replaced with the match and its
+#     backslashes eaten: `${y//"$y"/$r}` with `r='\\'` writes ONE backslash,
+#     and the `\\` this library parks and restores is exactly that shape.
+#
+# So the portable spelling is an unquoted expansion with the option off. The
+# option name is unknown to bash < 5.2, hence the `2>/dev/null || :` — nine
+# scripts source this file and `lib/detect-project.sh` runs under `set -eu`.
+# The PATTERN side stays quoted; every bash reads a quoted pattern as literal
+# text. Nothing in `hooks/` or `lib/` uses `&` in a replacement (a test pins
+# both halves: no quoted replacement anywhere, and this line present).
+shopt -u patsub_replacement 2>/dev/null || :
 
 # The whitespace class the scans skip, and the two sentinel bytes the unescaper
 # parks an escape on. Resolved once, and spelled through variables rather than
@@ -111,6 +156,10 @@ _LOCI_JSON_UPFX='\u00'
 # that means one differs between a quoted string, a `case` pattern and the
 # pattern half of a `${v//…}`, and getting it wrong is silent.
 _LOCI_JSON_BS1='\'
+# The decoded `\/`. A LITERAL `\/` on the replacement side is read by bash
+# 3.2 as nothing at all — `${s//\\\//\/}` left `a\/b` as it was, measured on
+# 3.2.57 — where bash 5 reads it as `/`. A variable is the same `/` on both.
+_LOCI_JSON_SLASH='/'
 
 # What `_loci_json_unicode` may spend, summed over its jumps, before it stops
 # decoding and leaves the rest of the escapes as they were written. Charged the
@@ -209,6 +258,27 @@ loci_json_load() {
     else
         _LOCI_JSON_DOC="${1:-}"
     fi
+    # The escaped-key pass (`_loci_json_rewrite`) must first park every `` \\ ``
+    # pair so that `` \\u0041 `` — an escaped backslash and then letters — is not
+    # read as a `` \u `` escape. That pass runs once PER NAME, and every field
+    # read in the hooks is a `$( )`, so anything the pass computed died with
+    # its subshell: twelve absent names over a document of 2 000 pairs paid
+    # the parking twelve times — 4.7 s on the mac-mini's bash 3.2, against
+    # `post-edit-hook.sh`'s 5 s (AAD-7771). Parked HERE, once, in the shell
+    # the subshells inherit from, and only for a document that has the shape
+    # (`` \\u00 `` somewhere — a Windows path is `C:\\users`, so the gate is
+    # not rare on that platform, but the pass costs one substitution there).
+    # The parked pairs are restored in the VALUE, by `_loci_json_unwrap`, and
+    # nowhere else: a name cannot contain a backslash, so the search never
+    # needs them back, and the value is short. `_LOCI_JSON_PARKED_LEN` lets
+    # the pass tell a document this function saw from one it did not.
+    _LOCI_JSON_PARKED=""
+    _LOCI_JSON_PARKED_LEN=""
+    case "$_LOCI_JSON_DOC" in
+        *"$_LOCI_JSON_BS1$_LOCI_JSON_UPFX"*)
+            _LOCI_JSON_PARKED="${_LOCI_JSON_DOC//"$_LOCI_JSON_BS1$_LOCI_JSON_BS1"/$_LOCI_JSON_FILL}"
+            _LOCI_JSON_PARKED_LEN="${#_LOCI_JSON_DOC}" ;;
+    esac
 }
 
 # The text just past `"<key>" :`, or non-zero. An occurrence of the name that is
@@ -320,6 +390,9 @@ _loci_json_seek() {
     local LC_ALL=C
     local _eg=0 _rc
     shopt -q extglob || { _eg=1; shopt -s extglob; }
+    # Which copy `_LOCI_JSON_AT` will be a slice of: the document as loaded, or
+    # the escaped pass's parked copy. `_loci_json_unwrap` reads this.
+    _LOCI_JSON_AT_PARKED=""
     _loci_json_seek_win "$1"; _rc=$?
     [ "$_rc" -eq 0 ] || { _loci_json_seek_escaped "$1"; _rc=$?; }
     [ "$_eg" -eq 1 ] && shopt -u extglob
@@ -535,6 +608,7 @@ _loci_json_seek_win() {
 # which is the same thing that makes every length below a byte count.
 _loci_json_seek_escaped() {
     _loci_json_rewrite "$1" || return 1
+    _LOCI_JSON_AT_PARKED="$_LOCI_JSON_REWRITE_PARKED"
     # Dynamic scope, the instrument `local LC_ALL=C` above is: the search reads
     # the document out of this global, so shadowing it here makes the rewrite
     # visible to the search and gone again on return. The VALUE `_LOCI_JSON_AT`
@@ -559,8 +633,9 @@ _loci_json_seek_escaped() {
 # is already inside a `$( )` and a second one here would fork per read. The
 # caller shadows `_LOCI_JSON_DOC` with it and clears it.
 _loci_json_rewrite() {
-    local key="$1" doc seen="" claimed=0 i c hh hu a b
+    local key="$1" doc seen="" i c hh hu a b
     _LOCI_JSON_REWRITE=""
+    _LOCI_JSON_REWRITE_PARKED=""
 
     # The name first: it is a handful of characters and the gate under it is a
     # glob over the whole document, so a name this pass cannot spell should not
@@ -576,8 +651,15 @@ _loci_json_rewrite() {
     doc="$_LOCI_JSON_DOC"
     case "$doc" in
         *"$_LOCI_JSON_BS1$_LOCI_JSON_UPFX"*)
-            doc="${doc//"$_LOCI_JSON_BS1$_LOCI_JSON_BS1"/"$_LOCI_JSON_FILL"}"
-            claimed=1 ;;
+            # Parked once by `loci_json_load` (see the note there); a document
+            # that function did not load — a caller shadowing `_LOCI_JSON_DOC`
+            # — is parked here, at the old price.
+            if [ -n "$_LOCI_JSON_PARKED" ] && [ "$_LOCI_JSON_PARKED_LEN" = "${#doc}" ]; then
+                doc="$_LOCI_JSON_PARKED"
+            else
+                doc="${doc//"$_LOCI_JSON_BS1$_LOCI_JSON_BS1"/$_LOCI_JSON_FILL}"
+            fi
+            _LOCI_JSON_REWRITE_PARKED=1 ;;
     esac
     i=0
     while [ "$i" -lt "${#key}" ]; do
@@ -601,7 +683,7 @@ _loci_json_rewrite() {
         printf -v hu '%02X' "'$c"
         for a in "${hh:0:1}" "${hu:0:1}"; do
             for b in "${hh:1:1}" "${hu:1:1}"; do
-                doc="${doc//"$_LOCI_JSON_UPFX$a$b"/"$c"}"
+                doc="${doc//"$_LOCI_JSON_UPFX$a$b"/$c}"
                 # `if`, not `[ … ] && break`: that leaves the loop body at
                 # status 1 on the turn it does not break, and nine scripts
                 # SOURCE this file — `lib/detect-project.sh` runs `set -eu`.
@@ -610,10 +692,15 @@ _loci_json_rewrite() {
             if [ "${hh:0:1}" = "${hu:0:1}" ]; then break; fi
         done
     done
-    # Only what the claim parked, and only when it ran.
-    if [ "$claimed" -eq 1 ]; then
-        doc="${doc//"$_LOCI_JSON_FILL"/"$_LOCI_JSON_BS1$_LOCI_JSON_BS1"}"
-    fi
+    # The parked pairs STAY parked in this copy. Restoring them here was a
+    # second whole-document substitution per name (2 000 matches at the 4 KB
+    # bash 3 reads: 0.27 s, twelve times over), and nothing that reads this
+    # copy needs them: the search looks for a NAME, which holds no backslash,
+    # `loci_json_dup` counts names, and the VALUE a search hands back is
+    # restored by `_loci_json_unwrap` — the one reader that returns text. The
+    # closing-quote scan is unchanged by the parking, because a pair and its
+    # two-byte sentinel are the same length and neither is a backslash before
+    # a quote.
     _LOCI_JSON_REWRITE="$doc"
 }
 
@@ -647,6 +734,17 @@ _loci_json_rewrite() {
 # the write through — a regression on every machine that had jq, filed as F12.
 _loci_json_unwrap() {
     local s="$1"
+    # A `` \\ `` pair the escaped-key pass parked comes back here, in the value —
+    # the one place it must (see `loci_json_load`) — and only for a value that
+    # came out of the parked copy: a raw sentinel pair in a document the pass
+    # never parked is left as it arrived, which is what
+    # `test_a_raw_sentinel_pair_survives_only_a_document_that_misses_the_claim`
+    # pins (JSON forbids the byte, so no tool call is ever made from one).
+    if [ -n "${_LOCI_JSON_AT_PARKED:-}" ]; then
+        case "$s" in
+            *"$_LOCI_JSON_FILL"*) s="${s//"$_LOCI_JSON_FILL"/$_LOCI_JSON_BS1$_LOCI_JSON_BS1}" ;;
+        esac
+    fi
     case "$s" in
         *\\*) ;;
         *) printf '%s' "$s"; return 0 ;;
@@ -658,7 +756,7 @@ _loci_json_unwrap() {
     s="${s//\\r/$'\r'}"
     s="${s//\\b/$'\b'}"
     s="${s//\\f/$'\f'}"
-    s="${s//\\\//\/}"
+    s="${s//\\\//$_LOCI_JSON_SLASH}"
     s="${s//\\\"/\"}"
     s="${s//$_LOCI_JSON_BS/\\}"
     case "$s" in
@@ -959,12 +1057,13 @@ loci_json_kind() {
 #
 # THIS WALK IS QUADRATIC IN THE ELEMENT COUNT and is left that way, measured
 # rather than assumed (F14 scope item 4): 200 elements 0.028 s, 400 0.064 s,
-# 800 0.197 s, and 0.676 s at the 16 KB ceiling. What makes that affordable is
-# the PRODUCER, not the reader — the one caller is `setup-steps.sh` reading
-# `subproject_roots` out of `lib/detect-project.sh`, which builds that array
-# behind a `head -20`. Twenty elements is 0.001 s. Anyone pointing this at an
-# array a model or a user sizes owes it the same treatment `loci_json_count`
-# got above.
+# 800 0.197 s, and 0.676 s at the 16 KB ceiling. What made that affordable was
+# the PRODUCER, not the reader: the one caller read `subproject_roots` out of
+# `lib/detect-project.sh`, which builds that array behind a `head -20`, and
+# twenty elements is 0.001 s. That caller went with the session-start detector
+# (AAD-7744), so nothing in `hooks/` or `lib/` calls this now (AAD-7745 decides
+# whether it stays). Anyone pointing it at an array a model or a user sizes owes
+# it the same treatment `loci_json_count` got above.
 loci_json_array_len() {
     if ! _loci_json_seek "$1"; then printf '0'; return 1; fi
     case "$_LOCI_JSON_AT" in
@@ -1038,6 +1137,11 @@ loci_json_array_len() {
 # document LOCI wrote with `json.dumps` and an under-count there drops a nudge
 # summary rather than permitting anything.
 loci_json_count() {
+    # Bytes, like the seek: the literals counted here are ASCII, which UTF-8
+    # never spells inside a multibyte character, so the answer is the same and
+    # the walk is not paying a multibyte scan per byte (5.67 s vs 1.34 s on
+    # one measured document under bash 5; on bash 3.2 the gap is wider still).
+    local LC_ALL=C
     local key="\"$1\"" want="${2:-}" doc lit t i
     case "$_LOCI_JSON_DOC" in
         *"$key"*) ;;
@@ -1052,7 +1156,7 @@ loci_json_count() {
         # `json.dumps` writes `"op": "add"`, so normalise that one space to keep
         # the literal fixed-length; anything else about the spelling and the
         # walk answers instead.
-        doc="${doc//"$lit" /"$lit"}"
+        doc="${doc//"$lit" /$lit}"
         case "$doc" in
             *"$lit"[$_LOCI_JSON_WS]*) _loci_json_count_walk "$1" "$want"; return 0 ;;
         esac
@@ -1095,6 +1199,7 @@ loci_json_count() {
 # the table above records — which is affordable only because reaching it takes a
 # producer none of these hooks read from.
 _loci_json_count_walk() {
+    local LC_ALL=C
     local rest="$_LOCI_JSON_DOC" key="\"$1\"" want="${2:-}" n=0 pre at
     while :; do
         case "$rest" in
@@ -1249,10 +1354,45 @@ loci_json_object() {
 # The shape every LOCI hook prints. Written once, here, rather than in each
 # hook: stdout is what the harness parses and injects into the model's context,
 # so one stray byte costs the whole document.
+#
+# TWO HOSTS READ IT (AAD-7783). Claude Code takes the context out of the nested
+# `hookSpecificOutput.additionalContext` and leaves an unknown top-level key
+# alone; GitHub Copilot CLI logs the nested object and DROPS it, and injects
+# only a top-level `additionalContext` (proven for SessionStart, UserPromptSubmit
+# and PostToolUse: Epic AAD-7779, COPILOT-PROBE-EVIDENCE.md §6). So under
+# Copilot the same text goes out twice, in both places, and under Claude Code
+# the document is the one it always was, byte for byte. The gate is
+# `COPILOT_CLI`, which Copilot exports to every hook and Claude Code never sets
+# — the test `lib/loci_host.sh`'s `loci_host_copilot` makes, spelled here too
+# because this file is sourced beneath that one. `loci hook …` (`hook.py`,
+# `_hook_reply`) answers by the same rule.
 loci_json_hook_output() {
-    local event="$1" ctx="$2" sys="${3:-}"
+    local event="$1" ctx="$2" sys="${3:-}" e_ctx
+    e_ctx=$(loci_json_escape "$ctx")
     printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}' \
-        "$(loci_json_escape "$event")" "$(loci_json_escape "$ctx")"
+        "$(loci_json_escape "$event")" "$e_ctx"
+    [ -n "${COPILOT_CLI:-}" ] && printf ',"additionalContext":"%s"' "$e_ctx"
     [ -n "$sys" ] && printf ',"systemMessage":"%s"' "$(loci_json_escape "$sys")"
+    printf '}\n'
+}
+
+# Public API: loci_json_system_message <event> <text>
+#
+# A reply that is for the USER: `systemMessage`, which Claude Code renders and
+# no model reads. Copilot shows it to nobody, so under Copilot the text also
+# rides as the top-level `additionalContext` the model reads and relays — on
+# every event but `Stop`, whose Copilot reply has no context field at all: a
+# Stop hook's message is carried to the next prompt instead
+# (`lib/loci_host.sh`, `loci_host_carry_add`).
+loci_json_system_message() {
+    local event="$1" e_msg
+    e_msg=$(loci_json_escape "$2")
+    printf '{"systemMessage":"%s"' "$e_msg"
+    if [ -n "${COPILOT_CLI:-}" ]; then
+        case "$event" in
+            Stop) ;;
+            *) printf ',"additionalContext":"%s"' "$e_msg" ;;
+        esac
+    fi
     printf '}\n'
 }

@@ -3,7 +3,7 @@
 `loci analyse measure` / `stack` / `memory` return `gates`, `verdict`,
 `judgements`, `unjudged` and `agent_judged`, and reserve **exit 2 for a bound the
 contract calls a FAILURE** (`analyse.py`, whose own comment says so). The shared
-runtime contract agrees: an enabled entry's judgement payloads "are inputs, and
+house rules agree: an enabled entry's judgement payloads "are inputs, and
 you render them".
 
 Four skills said the opposite in their own words — "ignore policy fields used for
@@ -37,7 +37,7 @@ The properties, one test family each:
 
 (7) exists because a review mutant deleted both rules from all four skills and
 every lint stayed green: they were asserted only against
-`_shared/loci-runtime-contract.md`, which is the same "a defence in a shared file
+`_shared/house-rules.md`, which is the same "a defence in a shared file
 is not the defence being loaded" mistake family 5 was written to avoid.
 
 (5) is the one that was wrong in a way no reviewer had noticed. `data.contract` is
@@ -67,7 +67,7 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS = PLUGIN_ROOT / "skills"
-CONTRACT = SKILLS / "_shared" / "loci-runtime-contract.md"
+HOUSE_RULES = SKILLS / "_shared" / "house-rules.md"
 
 #: The skills that receive a contract judgement from the CLI and render it. Each
 #: runs a verb whose envelope carries `judgements` / `gates` / `verdict`:
@@ -134,6 +134,17 @@ def _WORD(w: str) -> re.Pattern[str]:
 #: Wide enough to span a table row, narrow enough that the next bullet is not
 #: swept in.
 WINDOW = 160
+
+
+#: A rule may be stated in the skill or cited from the shared contract, but the
+#: SKILL must carry one or the other. The distinction matters: asserting only
+#: against the shared file is what let a review mutant delete the rule from all
+#: four skills with every lint green (see the docstrings below). A citation is a
+#: link a mutant has to delete too, so the mutant detection survives the lift —
+#: what does not survive is asserting nothing per-skill.
+def _carries(body: str, phrase: str, anchor: str) -> bool:
+    """True when the skill states the rule itself, or links the anchor holding it."""
+    return phrase in body or f"house-rules.md#{anchor}" in body
 
 
 def _text(p: Path) -> str:
@@ -558,7 +569,7 @@ def test_the_shared_contract_states_the_contract_field_vocabulary():
     third branch back, and a branch on a value nothing sends is a branch that never
     runs, which is the same defect family 5 exists to catch.
     """
-    body = _text(CONTRACT)
+    body = _text(HOUSE_RULES)
     for value in ("`project`", "`none`"):
         assert value in body, (
             f"the shared contract does not name {value} as a `data.contract` "
@@ -583,7 +594,7 @@ def test_each_skill_renders_a_project_envelope_rather_than_reasoning_over_it(ski
     report's" — and all 60 tests passed.** That is the purest form of the defect
     this whole change exists to remove, and nothing pinned a render-on-project
     directive anywhere in the four skills: the rule lived only in
-    `_shared/loci-runtime-contract.md`, which is exactly the "a defence in a
+    `_shared/house-rules.md`, which is exactly the "a defence in a
     shared file is not the defence being loaded" mistake family 5 was written to
     avoid.
 
@@ -629,10 +640,11 @@ def test_each_skill_quotes_the_requirement_on_a_row_an_entry_decided(skill):
     # The whole rule heading, not the fragment: a mutant kept "quotes the
     # requirement" inside "quotes the requirement **never by default**, because
     # the icon already says enough" and passed.
-    assert "A row an entry decided quotes the requirement" in body, (
-        f"{skill} lost the rule that a row an entry decided quotes what was "
-        f"required — a ❌ FAIL can then be rendered without saying what it "
-        f"breached, which is how it was for a month")
+    assert _carries(body, "A row an entry decided quotes the requirement",
+                    "conclusion-rows"), (
+        f"{skill} neither states nor cites the rule that a row an entry decided "
+        f"quotes what was required — a ❌ FAIL can then be rendered without saying "
+        f"what it breached, which is how it was for a month")
     for m in re.finditer(r"quotes the requirement", body):
         window = body[m.start():m.end() + 120]
         bad = next((w for w in ("never by default", "only when the user asks",
@@ -641,10 +653,11 @@ def test_each_skill_quotes_the_requirement_on_a_row_an_entry_decided(skill):
         assert bad is None, (
             f"{skill} states the rule and then withdraws it ({bad!r}): "
             f"…{window.strip()}…")
-    assert "judgements[].text" in body, (
-        f"{skill} no longer names the field the requirement is quoted from; the "
-        f"rule becomes unimplementable, which is how it was lost last time")
-    assert "`entry_key` is set" in body, (
+    assert _carries(body, "judgements[].text", "conclusion-rows"), (
+        f"{skill} no longer names the field the requirement is quoted from, nor "
+        f"cites the section that does; the rule becomes unimplementable, which is "
+        f"how it was lost last time")
+    assert _carries(body, "`entry_key` is set", "conclusion-rows") or "entry_key" in body, (
         f"{skill} no longer distinguishes an entry's judgement from LOCI's own "
         f"historical comparison (`entry_key: null`), so its synthesised `text` "
         f"can be quoted back to the user as their own stated requirement")

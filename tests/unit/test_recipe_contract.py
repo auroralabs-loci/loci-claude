@@ -34,8 +34,8 @@ from pathlib import Path
 import pytest
 
 from tests.unit.test_freshness_contract import (
-    CONTRACT,
-    NINE_CODES,
+    HOUSE_RULES,
+    CLOSED_CODES,
     PATTERN_B_SKILLS, VERB_OWNED_SKILLS,
     PLUGIN_ROOT,
     SKILLS,
@@ -52,7 +52,7 @@ from tests.unit.test_freshness_contract import (
 
 #: The heading that owns the coded errors. Spelled once, used by every assertion
 #: below, so a rename fails in one place with a message that names it.
-CODED_ERRORS_HEADING = "When a `loci` call refuses: the nine coded errors"
+CODED_ERRORS_HEADING = "When a `loci` call refuses: the eleven coded errors"
 
 
 def _collapsed(p: Path) -> str:
@@ -108,12 +108,11 @@ def _windows(text: str, needle: str, before: int, after: int):
 #: raised. The old one-line advice was therefore a loop (AAD-7589), and one line
 #: can carry the fix or the anti-loop, not both.
 EXTENDED_TREATMENTS = {
-    "`arch_mismatch` after a mid-session target switch.",
     "`compdb_entry_missing`",
     "`compdb_absent` on an artifact-only recipe",
     "`outside_target`",
     "Never regenerate a compile database mid-turn.",
-    "Never rebuild or relink the recorded artifact mid-turn either",
+    "Never relink mid-turn without a saved Before and the user's yes.",
 }
 
 #: The lead-in that must agree with the count. It is prose the model reads as a
@@ -140,7 +139,7 @@ def test_no_coded_error_gets_a_second_table_row_anywhere_in_shipped_prose():
     legitimate places a code is named inside a sentence or listed in a cell
     beside other codes.
     """
-    homes: dict[str, list[str]] = {code: [] for code in NINE_CODES}
+    homes: dict[str, list[str]] = {code: [] for code in CLOSED_CODES}
     for rel, _ in [(_rel(p), None) for p in _prose_files()]:
         raw = (PLUGIN_ROOT / rel).read_text(encoding="utf-8")
         for line in raw.splitlines():
@@ -178,7 +177,7 @@ def test_no_coded_error_gets_a_second_table_row_anywhere_in_shipped_prose():
     for code, where in homes.items():
         if len(where) != 1:
             offenders.append(f"{code}: {len(where)} recovery rows, in {where}")
-        elif where[0] != _rel(CONTRACT):
+        elif where[0] != _rel(HOUSE_RULES):
             offenders.append(f"{code}: its only recovery row is in {where[0]}, "
                              f"not in the shared contract")
     assert not offenders, (
@@ -194,7 +193,7 @@ def test_the_extended_treatments_are_registered_and_the_lead_in_counts_them():
     IS updated, because the new subject has to be written down here — which is a
     human reading it, and that is the whole mechanism.
     """
-    section = _subsection(_raw(CONTRACT), CODED_ERRORS_HEADING)
+    section = _subsection(_raw(HOUSE_RULES), CODED_ERRORS_HEADING)
     m = _LEAD_IN.search(section)
     assert m, ("the lead-in that counts the extended treatments is gone — "
                "without it a fifth bullet contradicts nothing")
@@ -232,7 +231,7 @@ def test_the_extended_treatments_are_registered_and_the_lead_in_counts_them():
 
 def _subsection_raw(heading: str) -> str:
     """`_subsection` without the whitespace collapse, for line-shaped reads."""
-    raw = _raw(CONTRACT)
+    raw = _raw(HOUSE_RULES)
     m = re.search(r"^#{1,6} " + re.escape(heading) + r"[ \t]*$", raw, re.M)
     assert m, f"no heading is exactly {heading!r}"
     tail = raw[m.end():]
@@ -287,7 +286,7 @@ def test_no_coded_error_is_softened_anywhere():
     offenders = []
     for rel, text in _screened():
         low = text.lower()
-        for code in NINE_CODES:
+        for code in CLOSED_CODES:
             for window in _windows(low, code, 240, 240):
                 for pat in _SOFTENING_PATTERNS:
                     m = re.search(pat, window)
@@ -311,7 +310,7 @@ def test_recipe_stale_refuses_measurement_in_both_places_that_govern_it():
     document somewhere says "may proceed with a warning"; the screen above hunts
     those shapes, and the CLI's own refusal is what actually holds.
     """
-    section = _subsection(_raw(CONTRACT), CODED_ERRORS_HEADING)
+    section = _subsection(_raw(HOUSE_RULES), CODED_ERRORS_HEADING)
     rows = [w for w in _windows(section, "`recipe_stale` |", 0, 400)]
     assert rows, "the coded-error table has no `recipe_stale` row"
     row = rows[0]
@@ -407,7 +406,8 @@ COMPILER_LINE_DEBT: dict[str, set[str]] = {
     # A provenance note on a worked example — "each measured against
     # `arm-none-eabi-gcc` 15.2 (Cortex-M4, `-O1 -g`)" — which says where a number
     # in the table came from. It instructs nothing and offers no alternative.
-    "skills/_shared/loci-runtime-contract.md": {"arm-none-eabi-gcc"},
+    # Moved file with the compile route on 22 Sep (todo [082]); same sentence.
+    "skills/_shared/compile-route.md": {"arm-none-eabi-gcc"},
 }
 
 #: Empty on purpose. Not one ISA default survives in shipped prose, and the empty
@@ -571,8 +571,14 @@ def test_no_probe_verb_hunts_a_compiler():
 #: the nine-step TABLE coming back, and a table is many mentions where a sentence
 #: is one. Raising a number here means reading what the new mention says.
 CASCADE_PROVENANCE = {
-    "skills/_shared/loci-runtime-contract.md": 1,   # T14: the `--require-recipe` paragraph names it once, as gone,
-    "skills/loci-post-edit/SKILL.md": 1,
+    # T14: the `--require-recipe` paragraph names it once, as gone. The second is
+    # post-edit's own pre-recipe-CLI provenance sentence, which the skills rewrite
+    # lifted here (2026-09-21) — the same sentence, in one place instead of two,
+    # which is why post-edit's entry is gone rather than zero. That one moved into
+    # `compile-route.md` on 22 Sep with the section around it (todo [082]); the count
+    # is unchanged, only the file it sits in.
+    "skills/_shared/house-rules.md": 1,
+    "skills/_shared/compile-route.md": 1,
 }
 
 
@@ -755,21 +761,47 @@ def test_no_skill_document_hides_a_rule_in_an_html_comment():
 #: because only three files had one. A ceiling on the three biggest bounds the
 #: three biggest; what the model reads is all of them.
 HOT_FILE_CEILINGS = {
+    # The five reference files the rewrite created (2026-09-21), at ~110 % of the
+    # size they arrived at, like every other new file in this table. Four are
+    # conditional branches a run reaches only on that branch; `_shared/voice.md` is
+    # the corpus-wide half of init's voice, cited by eight skills.
+    "skills/_shared/voice.md": 2_400,                        # 2,183 B
+    # +1,000 B on 1 Oct (AAD-7762): when a relink may be offered. The rule replaced a
+    # flat "never relink mid-turn", and its four conditions are what keep a relink
+    # from destroying the Before; cross-referenced, they were read as optional.
+    "skills/loci-post-edit/escalation.md": 4_100,            # 3,736 B
+    "skills/loci-post-edit/headers.md": 3_800,               # 3,446 B
+    "skills/loci-post-edit/quiet-run.md": 15_600,            # 14,159 B
+    "skills/loci-preflight/escalation.md": 3_270,            # 2,972 B
     # Downloaded on its own, so it repeats what README says rather than linking
     # it; the ceiling is what keeps the repetition from growing into a second
     # README.
     "agents.txt": 6_900,                                    # 6,273 B
     # Added `57f6f9c` with no ceiling, which is the hole this table exists to
     # close; ~110 % of the size it arrived at, like every other new file here.
+    # Authoring rules, moved out of the house rules on 22 Sep: a model that
+    # RUNS a skill never relocates prose, so every run was loading them. ~110 %.
+    "docs/authoring-the-corpus.md": 1_800,                   # 1,617 B
     "docs/turn-intent-note.md": 4_730,                      # 4,296 B
     "docs/turn-scoped-baseline.md": 3_700,                  # 3,354 B
     # Ceiling set after PR #259, when the file was 6,263 B. It reached
     # 7,132 B and was trimmed back under, rather than re-budgeted.
-    "skills/_shared/contract-rationale.md": 6_900,          # 6,800 B
+    "docs/contract-rationale.md": 6_900,          # 6,800 B
     # +1,400 B for AAD-7595's branch: the no-contract `STATUS` rule landing in
     # every judging skill. Taken on a promise — the trim back under is deferred,
     # not waived, so raise nothing further here without cutting first.
-    "skills/_shared/loci-runtime-contract.md": 96_100,       # 86,087 B
+    # +16,826 B by the skills rewrite (2026-09-21): seven blocks lifted out of four to six skills each, the section index,
+    # `#the-artifact`, the measure exit-code table and D39's two new coded errors
+    # Raised, not waived. The trim is stage 9's (D45) and todo [082] holds the
+    # per-run cost this bought: every skill loads the shared contract, so the
+    # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
+    # paid once — control-flow now costs 18 KB MORE per run than before.
+    # -27.8 KB on 22 Sep: the compile route moved out (todo [082]). Six sections
+    # that only a skill which BUILDS or DIFFS an artifact reads, so the three leaf
+    # skills stopped loading them on every run. Ceiling follows the file down.
+    "skills/_shared/house-rules.md": 94_000,       # 85,404 B
+    # ~110 % of the size it arrived at, like every new file in this table.
+    "skills/_shared/compile-route.md": 31_700,               # 28,816 B
     # Deliberately tighter than the ~110 % this table otherwise uses. `cfd4deb`
     # grew this file 3.6x, to 10,195 B, past a 3,200 B ceiling set when it was
     # 2,824 B; six skills load it on every invocation, so its size is paid on
@@ -807,12 +839,38 @@ HOT_FILE_CEILINGS = {
     # +3,400 B for AAD-7595's branch: the no-contract `STATUS` rule landing in
     # every judging skill. Taken on a promise — the trim back under is deferred,
     # not waived, so raise nothing further here without cutting first.
-    "skills/_shared/verdicts.md": 18_900,                   # 15,362 B
+    # +5,886 B by the skills rewrite (2026-09-21): D23's conclusion-table rewrite (50 -> 127 lines), the three column
+    # shapes, D16's three-states table and the normative-example rule
+    # Raised, not waived. The trim is stage 9's (D45) and todo [082] holds the
+    # per-run cost this bought: every skill loads the shared contract, so the
+    # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
+    # paid once — control-flow now costs 18 KB MORE per run than before.
+    # +356 B on 2026-09-23, and it is a behaviour change rather than prose: the
+    # matrix's `—` row gained a case. A flag on a PROSE entry whose author wrote
+    # `severity: fail` now composes to FAIL — nothing measures an entry with no
+    # `signal`, so the agent is its only judge and there is no arithmetic for the
+    # `pass -> caution` cap to protect. Compressed three times first; the published
+    # matrix changing is worth the bytes, and the trim is still todo [082]'s.
+    # +266 B on 23 Sep for the footer rule, stated once here for all six skills:
+    # the run verdict is printed ONCE under the table, icon first, and the footer
+    # repeats the icon and the word and never the sentence. It was two recomposed
+    # descriptions of one run, and they had already drifted — the body wrote
+    # `41.41 ns` where the footer wrote `>=41.41 ns`. The six skills shed 5,756 B
+    # between them in the same change, so the corpus is ~5.5 KB smaller net.
+    # +200 B on 30 Sep (AAD-7620): the closed ENTRY list had no row for a
+    # text-only entry, which every judging skill offers and none could draw once
+    # `analyse cfg` returned them. One sentence, compressed twice first.
+    "skills/_shared/verdicts.md": 27_600,                   # 27,554 B
     "skills/bug-report/SKILL.md": 35_500,                    # 32,187 B
     # +400 B for AAD-7595's branch: the no-contract `STATUS` rule landing in
     # every judging skill. Taken on a promise — the trim back under is deferred,
     # not waived, so raise nothing further here without cutting first.
-    "skills/contract/SKILL.md": 13_200,                      # 11,550 B
+    # +344 B by the skills rewrite (2026-09-21): D29's exec_time wording and the review-gate anchor
+    # Raised, not waived. The trim is stage 9's (D45) and todo [082] holds the
+    # per-run cost this bought: every skill loads the shared contract, so the
+    # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
+    # paid once — control-flow now costs 18 KB MORE per run than before.
+    "skills/contract/SKILL.md": 14_500,                      # 13,218 B
     # +4,200 B on 2026-09-11: the skill stopped being a renderer. It now judges the
     # two structural signals the graph itself determines (recursion cycles, indirect
     # calls), so it carries a conclusion table, a row catalogue, a footer and the
@@ -825,13 +883,24 @@ HOT_FILE_CEILINGS = {
     # +500 B for AAD-7595's branch: the no-contract `STATUS` rule landing in
     # every judging skill. Taken on a promise — the trim back under is deferred,
     # not waived, so raise nothing further here without cutting first.
-    "skills/control-flow/SKILL.md": 21_700,                  # 20,840 B
+    # +1,227 B by the skills rewrite (2026-09-21): D31/D34's ownership split — the skill now says outright which signals it
+    # does NOT judge, which is longer than claiming all four
+    # Raised, not waived. The trim is stage 9's (D45) and todo [082] holds the
+    # per-run cost this bought: every skill loads the shared contract, so the
+    # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
+    # paid once — control-flow now costs 18 KB MORE per run than before.
+    "skills/control-flow/SKILL.md": 24_700,                  # 22,518 B
     "skills/exec-trace/SKILL.md": 26_900,                    # 24,450 B
     # +400 B on 2026-09-11: the verdict explainer this skill prints to the user now
     # describes two columns rather than one vocabulary — four `STATUS` values and
     # three assessment words, where there were three and two. The section was trimmed
     # to pay for most of it; this covers the rest.
-    "skills/help/SKILL.md": 14_200,                          # 13,918 B
+    # +86 B by the skills rewrite (2026-09-21): D1's fourth copy corrected and the composition sentence fixed
+    # Raised, not waived. The trim is stage 9's (D45) and todo [082] holds the
+    # per-run cost this bought: every skill loads the shared contract, so the
+    # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
+    # paid once — control-flow now costs 18 KB MORE per run than before.
+    "skills/help/SKILL.md": 15_600,                          # 14,247 B
     "skills/init/SKILL.md": 17_600,                          # 15,912 B
     # 3,600 -> 6,000 for Step 0's CLI-version gate. Two states that used to be
     # handled inline (or not at all) now route through `/loci:setup` first, and the
@@ -852,7 +921,12 @@ HOT_FILE_CEILINGS = {
     # consenting TO and none of them moved; this is the sentence that was missing
     # above them.
     "skills/init/compdb.md": 13_900,                         # 13,753 B
-    "skills/init/recovery.md": 11_300,                       # 10,197 B
+    # +231 B by the skills rewrite (2026-09-21): D43's `build.exec.env.<NAME>` family in the `set` row
+    # Raised, not waived. The trim is stage 9's (D45) and todo [082] holds the
+    # per-run cost this bought: every skill loads the shared contract, so the
+    # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
+    # paid once — control-flow now costs 18 KB MORE per run than before.
+    "skills/init/recovery.md": 12_500,                       # 11,365 B
     # T15, new: ceiling set the same way as its siblings, ~110 % of the size it
     # arrived at. A new prose file with no ceiling is the hole this table exists
     # to close — `exec-trace` grew 24 KB -> 82 KB with every ceiling green,
@@ -861,6 +935,24 @@ HOT_FILE_CEILINGS = {
     # was 3_000 against a 2,161-byte file — 139 %, which is most of a page of
     # prose the alarm would not have noticed.
     "skills/init/go.md": 2_590,                             # 2,121 B
+    # AAD-7641, new: the container-toolchain branch of `/loci:init` Step 3 — what
+    # `toolchain_unreachable` carries, the one fact-finding question it may cost,
+    # the `toolchain:`/`mount:` lines Step 4 relays, and the codes only a
+    # `build.exec` recipe raises. Out of line because SKILL.md had zero bytes of
+    # headroom and this is reached only on a project whose compiler is in a
+    # container; ~110 % of the size it arrived at, like its siblings. Raised when
+    # the `build.exec` consent paragraph moved in from the house rules, which
+    # shrank by the same bytes: init is its only reader.
+    "skills/init/container-toolchain.md": 4_720,             # 4,287 B
+    # AAD-7674, new: the `compdb_regen` question — a project whose build ran in
+    # a container or during an image build has no compile database here, and
+    # init can make one where that build ran. Out of line for the reason its
+    # sibling above is (`compdb.md` had 27 bytes of headroom and this is
+    # reached only on a project with no database at all), and it was paid for
+    # rather than accommodated: `container-toolchain.md` gave up its enumerated
+    # knob list to `recovery.md`, which already carries it, and `compdb.md` a
+    # tier parenthetical the CLI decides. ~110 % of the size it arrived at.
+    "skills/init/compdb-container.md": 2_650,                # 2,410 B
     # New on 2026-09-14: the messaging contract for `/loci:init` — the vocabulary that
     # goes second, the recognition line, the consent opener, progress as a checklist of
     # what completed, and Step 4's order (readiness, then every caveat, then the
@@ -897,7 +989,21 @@ HOT_FILE_CEILINGS = {
     "skills/loci-preflight/SKILL.md": 56_500,                # 51,333 B
     "skills/memory-report/SKILL.md": 35_700,                 # 32,378 B
     "skills/setup/SKILL.md": 9_800,                         # 8,824 B
-    "skills/stack-depth/SKILL.md": 34_300,                   # 31,133 B
+    # +200 B for D3: the recursion row had one rule ("STATUS is CAUTION") where
+    # the contract has three cases, and the correct rule is longer than the wrong
+    # one. Compressed three times first; this is what is left after that.
+    # +400 B again, same card: the corrected rule needed the cases spelled out
+    # rather than cross-referenced, and `Safety (Unbounded Recursion)` had no
+    # catalogue row at all though the closed ENTRY vocabulary names it. Third
+    # raise on this file in one item — the trim is D45's and todo [082] holds it.
+    # +700 B on 23 Sep, and this one was bought by a live defect: the rule read
+    # "unbounded only when nothing in the code bounds it", a model read "the code"
+    # as the recursing function alone, and a `quicksort` bounded at 64 by its
+    # caller's `BUFFER_SIZE` was classified unbounded and FAILED a correct binary.
+    # What cost the bytes is what was missing — that the question is the DEPTH
+    # being knowable rather than the recursion terminating, and that the bound is
+    # usually at the call site. Compressed four times before raising.
+    "skills/stack-depth/SKILL.md": 36_100,                   # 36,037 B
     "skills/trends/SKILL.md": 4_000,                        # 3,611 B
 }
 
@@ -905,7 +1011,7 @@ HOT_FILE_CEILINGS = {
 #: deleting an entry fails instead of quietly shrinking the parametrized test.
 CEILINGED_FILES = ("skills/loci-post-edit/SKILL.md",
                    "skills/loci-preflight/SKILL.md",
-                   "skills/_shared/loci-runtime-contract.md")
+                   "skills/_shared/house-rules.md")
 
 #: The whole of it: 426,959 B over 19 files at the end of T13.
 #:
@@ -1061,7 +1167,7 @@ def test_bug_report_records_the_cli_version_the_contract_promises():
         "output, so the number is collected and then dropped. (The other "
         "`| loci CLI |` row in that template is the binary's PATH — it is not "
         "this, and it satisfied the old whole-file check on its own.)")
-    gate = _section(_text(CONTRACT),
+    gate = _section(_text(HOUSE_RULES),
                     "**Reading the CLI's version when a rule depends on it.**",
                     "## Prerequisites: `uv` (checked, never installed)")
     assert "/loci:bug-report` runs `loci --version`" in gate, (
@@ -1099,7 +1205,7 @@ RECORDING_ANCHOR = "recording-the-verdict"
 
 def _verdicts_recording() -> str:
     return _subsection(_raw(VERDICTS),
-                       "Recording it: one call, on every run that printed a verdict")
+                       "Recording it: one call, on every run that reaches a verdict")
 
 
 def test_the_record_call_is_written_once_and_carries_both_halves():
@@ -1113,7 +1219,7 @@ def test_the_record_call_is_written_once_and_carries_both_halves():
         "route to a section that tells them nothing")
     for flag in ("--agent-note", "--agent-judged", "--parent-run"):
         assert flag in section, f"the shared recording section names no `{flag}`"
-    assert "Copy the clause you printed; do not compose a second one" in section, (
+    assert "The note is that clause, never a second one" in section, (
         "the rule that makes the two surfaces agree is gone — a skill free to compose "
         "a second sentence is how the cockpit and the session drifted apart")
     assert "`--agent-note` is the cause clause only**" in section, (
@@ -1126,7 +1232,7 @@ def test_every_run_that_printed_a_verdict_records_one():
     nothing is the branch whose whole content IS the sentence, and it was the one
     branch that wrote none."""
     section = _verdicts_recording()
-    assert "every branch that printed a `Verdict:` line" in section
+    assert "every branch that composed a `Verdict:` line" in section
     assert "a run that measured nothing included" in section, (
         "the section no longer says the no-measurement branch records too, which is "
         "the case it was written for")
@@ -1156,7 +1262,7 @@ def test_post_edit_records_off_the_footers_gate():
     assert "Step 2a" in step, (
         "Step 7 no longer names the branch it exists for, which is how the call ended "
         "up inside the footer the first time")
-    footer = _section(body, "## LOCI footer", "### Render the footer")
+    footer = _section(body, "## LOCI footer", "### Clean-escalation suffix")
     assert "loci stats record" not in footer, (
         "the record call is back inside the footer section, which is gated on `N > 0` "
         "— the run that measures nothing then records nothing again")
@@ -1169,9 +1275,12 @@ def test_step_2a_no_longer_claims_nothing_is_recorded():
     """The sentence the defect was written down in. It said so outright — "nothing is
     recorded to `loci stats`" — while the same branch printed a verdict the user
     read."""
-    step = _section(_text(SKILLS / "loci-post-edit" / "SKILL.md"),
-                    "## Step 2a: no function changed",
-                    "## Step 3: confirm or override the hot path")
+    # The step is in two files: SKILL.md keeps the route, `quiet-run.md` the three
+    # report templates it routes to. Both halves are the step.
+    step = (_section(_text(SKILLS / "loci-post-edit" / "SKILL.md"),
+                     "## Step 2a: no function changed",
+                     "## Step 3: confirm or override the hot path")
+            + " " + _text(SKILLS / "loci-post-edit" / "quiet-run.md"))
     assert "nothing is recorded to `loci stats`" not in step, (
         "Step 2a still says its branch records nothing, which is the instruction 051 "
         "reversed")
@@ -1185,7 +1294,8 @@ def test_an_escalation_carries_the_parent_run_both_ways():
     """051 decision B. post-edit's Step 4a escalation closed on its own `Verdict:`
     line and the cockpit had no trace of it: the child's row carried the child's
     verdict, the parent's row was never written, and nothing linked the two."""
-    parent = _text(SKILLS / "loci-post-edit" / "SKILL.md")
+    parent = (_text(SKILLS / "loci-post-edit" / "SKILL.md")
+              + " " + _text(SKILLS / "loci-post-edit" / "escalation.md"))
     assert "`--parent-run`" in parent, (
         "post-edit does not hand its manifest id to the skill it escalates into, so "
         "the two runs reach the cockpit as unrelated entries")
@@ -1202,7 +1312,10 @@ def test_the_third_reasoned_verdict_is_named_where_the_two_were(skill):
     — distinct from `pending`, which is one it never reached — and two skills named
     only `flagged` and `cleared`, so their models had no word for the case."""
     body = _text(SKILLS / skill / "SKILL.md")
-    assert "no_opinion" in body, (
+    # Or cites the section that names all three. The skills rewrite lifted the
+    # recording call into `verdicts.md`, and a skill that links it has the word.
+    assert ("no_opinion" in body
+            or "verdicts.md#recording-the-verdict" in body), (
         f"{skill} still names two reasoned verdicts, so an entry it read and could "
         f"not judge is recorded as a `cleared` or left as a `pending`")
 

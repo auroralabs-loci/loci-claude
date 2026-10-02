@@ -45,34 +45,227 @@ MATCH_RATE_CAVEAT="fixtures compile at -O0, where only the structural heuristics
 #   object and would lose every intermediate assistant turn the graders read,
 #   so the harness keeps stream-json and reads the same fields off its final
 #   result event instead. Same numbers, nothing given up.
+#
+#   Under the copilot host (AAD-7791) the transcript is `copilot --output-format
+#   json`: one event per line, `assistant.message` carrying `.data.model` and the
+#   text, a final `result` with `sessionId`, `exitCode` and `usage`
+#   (premiumRequests, sessionDurationMs, codeChanges), and a
+#   `session.usage_checkpoint` with the AI-credit total. The same keys come out,
+#   filled from those: Copilot bills in premium requests, not dollars, so
+#   `total_cost_usd` is null there and `usage` carries what it does charge.
 # ---------------------------------------------------------------------------
 eval_metrics_json() {
   local FILE="$1" MODEL="${2:-}" WALL="${3:-0}" FLOW="${4:-single}"
   local DIRTY="${5:-}" PLUGIN="${6:-}"
-  local body='{}'
+  local body='{}' host
+  host=$(eval_host)
   if [[ -s "$FILE" ]]; then
-    body=$(jq -rs '
-      ([.[] | select(.type == "result")] | last) as $r
-      | {
-          num_turns:      ($r.num_turns // null),
-          total_cost_usd: ($r.total_cost_usd // null),
-          duration_ms:    ($r.duration_ms // null),
-          stop_reason:    ($r.stop_reason // null),
-          is_error:       ($r.is_error // null),
-          usage:          ($r.usage // null),
-          session_id:     ($r.session_id // null),
-          models: ([.[] | select(.type == "assistant") | .message.model?]
-                   | map(select(. != null)) | unique)
-        }' "$FILE" 2>/dev/null) || body='{}'
+    if [[ "$host" == "copilot" ]]; then
+      body=$(jq -rs '
+        ([.[] | select(.type == "result")] | last) as $r
+        | ([.[] | select(.type == "session.usage_checkpoint")] | last) as $u
+        | {
+            num_turns:      ([.[] | select(.type == "assistant.message")] | length),
+            total_cost_usd: null,
+            duration_ms:    ($r.usage.sessionDurationMs // null),
+            stop_reason:    null,
+            is_error:       (if $r.exitCode == null then null else ($r.exitCode != 0) end),
+            usage:          (if ($r.usage // null) == null and ($u.data // null) == null then null
+                             else (($r.usage // {})
+                                   + {total_nano_aiu: ($u.data.totalNanoAiu // null),
+                                      total_premium_requests: ($u.data.totalPremiumRequests // null)})
+                             end),
+            session_id:     ($r.sessionId // null),
+            models: ([.[] | select(.type == "assistant.message") | .data.model?]
+                     | map(select(. != null)) | unique)
+          }' "$FILE" 2>/dev/null) || body='{}'
+    else
+      body=$(jq -rs '
+        ([.[] | select(.type == "result")] | last) as $r
+        | {
+            num_turns:      ($r.num_turns // null),
+            total_cost_usd: ($r.total_cost_usd // null),
+            duration_ms:    ($r.duration_ms // null),
+            stop_reason:    ($r.stop_reason // null),
+            is_error:       ($r.is_error // null),
+            usage:          ($r.usage // null),
+            session_id:     ($r.session_id // null),
+            models: ([.[] | select(.type == "assistant") | .message.model?]
+                     | map(select(. != null)) | unique)
+          }' "$FILE" 2>/dev/null) || body='{}'
+    fi
     [[ -n "$body" ]] || body='{}'
   fi
   jq -n --argjson m "$body" --arg model "$MODEL" --arg wall "$WALL" \
         --arg flow "$FLOW" --arg dirty "$DIRTY" --arg plugin "$PLUGIN" \
-    '$m + {model_requested: $model, wall_clock_s: ($wall | tonumber? // 0),
+        --arg host "$host" \
+    '$m + {host: $host,
+           model_requested: $model, wall_clock_s: ($wall | tonumber? // 0),
            flow: $flow,
            plugin_under_test: (if $plugin == "" then null else $plugin end),
            fixture_dirty_after_run:
              ($dirty | split("\n") | map(select(length > 0)))}'
+}
+
+# ---------------------------------------------------------------------------
+# The host, and the transcript readers that depend on it (AAD-7791)
+# ---------------------------------------------------------------------------
+# `run_evals.sh` runs each eval's agent through ONE of two CLIs — `claude -p`
+# (the default) or `copilot` — and the two write different transcripts. Every
+# place the harness reads a transcript goes through these, so a flow never has
+# to know which host answered. `LOCI_EVAL_HOST` is the switch; `run_evals.sh`
+# exports it after resolving its `--host` flag, and a test sets it directly.
+#
+# Claude's stream-json: `{"type":"assistant","message":{"model":…,"content":[
+# {"type":"text"|"tool_use",…}]}}`, `{"type":"system","subtype":"init",
+# "session_id":…}`, a final `{"type":"result",…}`. The Claude branches below
+# are the jq programs the harness ran inline before the host split, moved
+# here unchanged, so the Claude path reads exactly what it always did.
+#
+# Copilot's `--output-format json`: `{"type":"assistant.message","data":{
+# "model":…,"content":"…","toolRequests":[…]}}`, `{"type":"tool.execution_start",
+# "data":{"toolName":"powershell"|"bash"|"view"|"edit"|"create"|…,"arguments":{
+# "command"|"path"|"pattern":…}}}`, `{"type":"tool.execution_complete","data":{
+# "result":{"content":"…"}}}`, a final `{"type":"result","sessionId":…}`.
+# Probed on Copilot CLI 1.0.91 (Windows, 2026-10-02); the schema is
+# undocumented, so each reader tolerates a missing field rather than failing.
+eval_host() {
+  case "${LOCI_EVAL_HOST:-claude}" in
+    copilot) printf 'copilot' ;;
+    *)       printf 'claude' ;;
+  esac
+}
+
+# transcript_text <file>
+#   The assistant's text, EVERY turn joined — a skill may print its report in an
+#   intermediate turn and keep narrating, so the final turn alone drops it.
+transcript_text() {
+  local f="$1"
+  [[ -s "$f" ]] || return 0
+  if [[ "$(eval_host)" == "copilot" ]]; then
+    jq -rs '[.[] | select(.type == "assistant.message") | .data.content?
+             | select(type == "string" and . != "")] | join("\n")' "$f" 2>/dev/null || true
+    return 0
+  fi
+  jq -rs '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | join("\n")' "$f" 2>/dev/null || true
+}
+
+# transcript_result_text <file>
+#   The FINAL text alone — the single-turn flow's fallback when no assistant
+#   text was captured. Claude: the result event's `.result`. Copilot: the last
+#   assistant message, which is what its `-s` output would have printed.
+transcript_result_text() {
+  local f="$1"
+  [[ -s "$f" ]] || return 0
+  if [[ "$(eval_host)" == "copilot" ]]; then
+    jq -rs '[.[] | select(.type == "assistant.message") | .data.content?
+             | select(type == "string" and . != "")] | last // empty' "$f" 2>/dev/null || true
+    return 0
+  fi
+  jq -rs '[.[] | select(.type == "result") | .result // empty] | last // empty' "$f" 2>/dev/null || true
+}
+
+# transcript_tool_names <file>
+#   The distinct tools the run called, comma-joined; empty when none.
+transcript_tool_names() {
+  local f="$1"
+  [[ -s "$f" ]] || return 0
+  if [[ "$(eval_host)" == "copilot" ]]; then
+    jq -rs '[.[] | select(.type == "tool.execution_start") | .data.toolName?
+             | select(. != null)] | unique | join(", ")' "$f" 2>/dev/null || true
+    return 0
+  fi
+  jq -rs '[.[]|select(.type=="assistant")|.message.content[]?|select(.type=="tool_use")|.name]|unique|join(", ")' "$f" 2>/dev/null || true
+}
+
+# transcript_tool_summary <file>
+#   The log's `Tools (N): a, b, a` line — every call in order, with the count —
+#   or nothing when the run called no tool.
+transcript_tool_summary() {
+  local f="$1"
+  [[ -s "$f" ]] || return 0
+  if [[ "$(eval_host)" == "copilot" ]]; then
+    jq -rs '
+      [.[] | select(.type == "tool.execution_start") | .data.toolName? | select(. != null)] |
+      if length > 0 then "Tools (" + (length | tostring) + "): " + (. | join(", ")) else empty end
+    ' "$f" 2>/dev/null || true
+    return 0
+  fi
+  jq -rs '
+    [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") | .name] |
+    if length > 0 then "Tools (" + (length | tostring) + "): " + (. | join(", ")) else empty end
+  ' "$f" 2>/dev/null || true
+}
+
+# transcript_tool_calls <none-label> <file>…
+#   The transcript's tool calls, one per line (`Bash: <command>`,
+#   `Edit: <file>`, `powershell: <command>`, …), each argument cut to 400
+#   characters with its newlines folded to ` ; `. <none-label> is printed when
+#   the transcript made no calls, so a caller can tell "called nothing" (which
+#   is evidence — see `_init_flow_failure`) from "could not read the transcript"
+#   (empty output, which puts the grader on its text fallback).
+transcript_tool_calls() {
+  local label="$1"; shift
+  if [[ "$(eval_host)" == "copilot" ]]; then
+    # `arguments` is usually an object, but Copilot's GPT models edit with an
+    # `apply_patch` whose argument is ONE STRING (AAD-7788, `lib/loci_host.sh`).
+    # `.command` on a string aborts the whole jq program, which would blank
+    # every call in the transcript — so the type is checked first and a
+    # string is rendered as itself.
+    jq -rs --arg none "$label" \
+      '[ .[] | select(.type == "tool.execution_start")
+         | (.data.toolName // "?") + ": "
+           + ((.data.arguments? // "")
+              | if type == "object"
+                then (.command // .path // .pattern // .skill // "")
+                else . end
+              | tostring | gsub("\n"; " ; ") | .[0:400]) ]
+       | if length > 0 then join("\n") else $none end' "$@" 2>/dev/null || true
+    return 0
+  fi
+  jq -rs --arg none "$label" \
+    '[ .[] | select(.type == "assistant") | .message.content[]?
+       | select(.type == "tool_use")
+       | .name + ": " + ((.input.command // .input.file_path // .input.pattern // "")
+                         | tostring | gsub("\n"; " ; ") | .[0:400]) ]
+     | if length > 0 then join("\n") else $none end' "$@" 2>/dev/null || true
+}
+
+# transcript_session_id <file>
+#   The id a second turn resumes with (`--resume`), empty when the transcript
+#   has none. Claude prints it in the FIRST event (`system`/`init`), Copilot
+#   in the LAST (`result`) — so a Copilot turn the harness killed on timeout
+#   has no id to resume, where a Claude one still does; the two-turn flow's
+#   "no session_id from turn 1" line is the place that asymmetry shows.
+transcript_session_id() {
+  local f="$1"
+  [[ -s "$f" ]] || return 0
+  if [[ "$(eval_host)" == "copilot" ]]; then
+    jq -rs '[.[] | select(.type == "result") | .sessionId // empty] | last // empty' "$f" 2>/dev/null || true
+    return 0
+  fi
+  jq -rs '[.[]|select(.type=="system" and .subtype=="init")|.session_id]|last // empty' "$f" 2>/dev/null || true
+}
+
+# transcript_usage_line <file>
+#   One human line for the log: turns, cost, duration, stop reason. Empty when
+#   the transcript has no result event.
+transcript_usage_line() {
+  local f="$1"
+  [[ -s "$f" ]] || return 0
+  if [[ "$(eval_host)" == "copilot" ]]; then
+    jq -rs '
+      ([.[] | select(.type == "result")] | last) as $r
+      | select($r != null)
+      | ([.[] | select(.type == "assistant.message")] | length) as $n
+      | "Turns: \($n), Premium requests: \($r.usage.premiumRequests // "?"), Duration: \((($r.usage.sessionDurationMs // 0) / 1000) | floor)s, Exit: \($r.exitCode // "?")"
+    ' "$f" 2>/dev/null || true
+    return 0
+  fi
+  jq -rs '
+    .[] | select(.type == "result") |
+    "Turns: \(.num_turns // "?"), Cost: $\(.total_cost_usd // "?"), Duration: \((.duration_ms // 0) / 1000 | floor)s, Stop: \(.stop_reason // "?")"
+  ' "$f" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------

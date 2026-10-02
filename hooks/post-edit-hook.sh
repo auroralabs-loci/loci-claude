@@ -4,6 +4,11 @@
 # so emit the reminder to run loci-post-edit. No analysis here, and no payload
 # parsing beyond the field the extension gate needs. Advisory: always exits 0,
 # never blocks.
+# The bash this runs under is decided first, while the payload is still on
+# stdin: on bash 3 (stock macOS) this re-executes under a newer bash when one
+# is installed, else sets `_LOCI_BASH_LEGACY=1` (AAD-7771; lib/bash-compat.sh).
+. "${0%/*}/../lib/bash-compat.sh" 2>/dev/null || :
+
 set -u
 export PYTHONIOENCODING=utf-8
 # ${HOME:-} — under `set -u` a bare $HOME exits 1 in an environment without it
@@ -23,11 +28,13 @@ case "$0" in
         . "${0%/*}/../lib/loci_log.sh" 2>/dev/null || true
         . "${0%/*}/../lib/loci_json.sh" 2>/dev/null || true
         . "${0%/*}/../lib/loci_failfast.sh" 2>/dev/null || true
+        . "${0%/*}/../lib/loci_host.sh" 2>/dev/null || true
         ;;
 esac
 command -v loci_log >/dev/null 2>&1 \
     || { loci_log() { :; }; loci_log_session_from_payload() { :; }; }
 command -v loci_fail_fast >/dev/null 2>&1 || loci_fail_fast() { return 1; }
+command -v loci_host_adapt >/dev/null 2>&1 || loci_host_adapt() { return 1; }
 # `lib/loci_json.sh` is not optional the way the logger is: it reads the field
 # this hook gates on and it writes the JSON this hook prints. It ships in the
 # plugin, so its absence is a broken install rather than a missing host tool.
@@ -35,6 +42,11 @@ command -v loci_json_load >/dev/null 2>&1 \
     || { loci_log ERROR post-edit "lib/loci_json.sh did not source — hook disabled"; exit 0; }
 
 payload=$(cat)
+# Copilot sends no `prompt_id`: the host adapter injects the turn id it recorded
+# at UserPromptSubmit, so the reminder's "Pass turn id" and the payload `loci
+# hook edit-scan` reads carry it as they do under Claude Code (lib/loci_host.sh,
+# AAD-7781). Outside Copilot the line touches nothing.
+loci_host_adapt "$payload" && payload="$LOCI_HOST_PAYLOAD"
 
 # ONE field is read here: the path the extension gate below decides on.
 # Everything else comes back from `loci hook edit-scan`, which parses the payload
@@ -74,9 +86,12 @@ case "$_po_gate" in
     *.S|*.s) ;;
     *) _po_state="skipped (extension not measurable)"; exit 0 ;;
 esac
-# Skip plan/settings files that carry a source-ish extension.
+# Skip plan/settings files that carry a source-ish extension. Copilot's plan
+# mode keeps its planning artifacts in the session folder (pre-edit-hook.sh).
 case "$fp" in
     */.claude/plans/*|*/.claude/settings*)
+        _po_state="skipped (plan/settings file)"; exit 0 ;;
+    */.copilot/session-state/*|*\\.copilot\\session-state\\*)
         _po_state="skipped (plan/settings file)"; exit 0 ;;
 esac
 
@@ -143,6 +158,7 @@ fi
 remind=1
 cli_note=""
 route=""
+_po_governed=""
 envelope=$(printf '%s' "$payload" | loci hook edit-scan 2>&1)
 rc=$?
 # Fast-fail: neither branch below runs. Exit 2 is reported as measurable without
@@ -175,6 +191,9 @@ else
     # has. Silence is the honest answer; `session-init.sh` states the scope once,
     # at the top of the session, along with what DOES measure here.
     [ "$(loci_json_get artifact_only)" = true ] && remind=0
+    # `= false`, not `!= true`: absent (older CLI) and null (no path) fail open.
+    _po_governed=$(loci_json_get governed)
+    [ "$_po_governed" = false ] && remind=0
     if [ "$remind" = "1" ]; then
         # HOW to measure it, carried through to the skill. `measurable` says the edit can
         # change compiled code; `measure_via` says whether this file can be compiled at
@@ -206,25 +225,20 @@ fi
 # THE ALLOW-LIST IS THE POINT, and each excluded value is excluded for its own
 # reason. `unsupported` and `needs_user` are what the CLI records once it has
 # already decided, so pointing at `/loci:init` there sends the user at a question
-# that was asked and answered. `failed` is transient for ARMING (§6.2) — the
-# session re-arms and the next analysis routes whichever coded error the compile
-# answers with, which will not be `not_initialized` — so a nudge naming
-# `/loci:init` would be a guess about a state the CLI is about to correct. Note
-# that the VALUE is not transient: session-init arms the project but never
-# rewrites what the CLI recorded, so a project whose one auto-init attempt failed
-# stays out of the nudge until `loci init` writes something else. That is the
-# right trade only because such a project is armed and will be measured; if that
-# ever stops being true, this arm is where to look. A value this version does not
-# recognise takes the same quiet path, because the nudge is a claim and nothing
-# here can check it.
+# that was asked and answered. `failed` was excluded because the session
+# re-armed such a project and its next analysis routed the coded error. That
+# stopped being true in AAD-7531: nothing arms at session start, a project with
+# no recipe gets `governed: false` from edit-scan and so no reminder either, and
+# a project whose `loci init` recorded `failed` hears nothing until `loci init`
+# writes something else. Whether it should be nudged is AAD-7747's decision, and
+# this arm is where the answer goes. A value this version does not recognise
+# takes the quiet path, because the nudge is a claim and nothing here can check it.
 #
-# The empty case DOES nudge, and that is not an oversight. session-init writes
-# `init_status: uninitialized` only in the armed branch; a project the cheap gate
-# declined (`no_project`, `multi_project`, a detector that could not run) gets a
-# context file with no `init_status` at all — and that is precisely the
-# population report §6.3 hands to `/loci:init`, since a project with sources and no
-# declared build no longer arms on its own. A file that does not exist yet reads
-# the same way for the same reason.
+# The empty case DOES nudge, and that is not an oversight. `loci init` is the only
+# writer of the context file now, so a project it has never seen has no file at all,
+# which is precisely the population report §6.3 hands to `/loci:init`. A file with
+# no `init_status`, or with `uninitialized` (what session-init wrote for an armed
+# project before AAD-7531), reads the same way for the same reason.
 #
 # Every extension this hook already accepted, not a narrower C/C++/Rust/Go list: the
 # filter at the top of this file is the one the CLI's `_SNAPSHOT_SOURCE_EXTS`
@@ -263,7 +277,11 @@ fi
 # `agent_id` is present on a subagent's tool payloads and absent from the main
 # agent's — established by probing a live session, because every other field is
 # identical: same `session_id`, same `transcript_path`, and the same `prompt_id`
-# (the PARENT turn's, which is what the shared per-turn baseline wants). Both
+# (the PARENT turn's, which is what the shared per-turn baseline wants). Under
+# Copilot a subagent is a session of its own and sends neither field; the host
+# adapter supplies both off the parent's `SubagentStart` (lib/loci_host.sh,
+# AAD-7788), so this hook reads one shape and the sentence below is for both
+# hosts. Both
 # edit hooks fire inside a subagent, and for a long time nothing here knew it:
 # the reminder went to an agent whose transcript the user never reads, so the
 # measurement ran and its numbers went into the subagent's own report, which the
@@ -292,11 +310,34 @@ fi
 # The reminder text is the channel because there is no other one: a PostToolUse
 # hook cannot call the skill it asks for.
 nudge=""
+_nudge_msg=""
+# The file's checkout is the root `loci init` records a refusal under, so the
+# status read below finds it.
+_po_cwd="$_nroot"
+if [ "$_po_governed" = true ]; then
+    _nroot=""
+elif [ "$_po_governed" = false ]; then
+    _nroot=$(loci_json_get checkout_root)
+    # `${fp%/*}` on a natively spelled `C:\proj\main.c` strips nothing, so on
+    # Windows this rung never answers and the next one does. Left as it is
+    # (AAD-7782): converting the separators here would make the rung answer
+    # with the file's directory where it used to fall to `CLAUDE_PROJECT_DIR`
+    # — a change to what Claude Code sessions on Windows are nudged about.
+    [ -n "$_nroot" ] || { [ -n "$fp" ] && _nroot="${fp%/*}"; }
+fi
 # Each rung is tested for being a DIRECTORY, not merely non-empty. A payload
 # `cwd` that names nothing on this disk is not the end of the ladder — it is a
-# rung that did not answer, and stopping there took the nudge with it.
-[ -d "$_nroot" ] || _nroot="${CLAUDE_PROJECT_DIR:-}"
-[ -d "$_nroot" ] || _nroot="$PWD"
+# rung that did not answer, and stopping there took the nudge with it. The
+# payload's `cwd` is a rung of its own, before this process's `$PWD`: the
+# session's directory as the host states it, which is the project under every
+# host, where `$PWD` is only the project under Claude Code (AAD-7782: from an
+# unrelated cwd with no `CLAUDE_PROJECT_DIR` the nudge named the hook's own
+# directory — under Copilot, the plugin root).
+if [ "$_po_governed" != true ]; then
+    [ -d "$_nroot" ] || _nroot="${CLAUDE_PROJECT_DIR:-}"
+    [ -d "$_nroot" ] || _nroot="$_po_cwd"
+    [ -d "$_nroot" ] || _nroot="$PWD"
+fi
 # A recipe BESIDE the session is initialization whatever the state file says, and
 # testing for it costs no process. It is the fast path, not the rule: a session
 # opened in a subdirectory of the recipe root has no `.loci/build.yaml` next to
@@ -313,8 +354,8 @@ if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
     mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR="${PLUGIN_DIR}/state"
     export LOCI_STATE_DIR="$STATE_DIR"
     # Sourcing only DEFINES — no installs, no writes, and the shared logger is
-    # inert outside dev mode. `hash_cwd` and `_loci_find_recipe` are the writer's
-    # and the CLI's own rules rather than second copies of them; a missing or
+    # inert outside dev mode. `hash_cwd` and `_loci_find_recipe` are the rules the
+    # CLI's context key and recipe discovery mirror, not second copies; a missing or
     # broken library leaves them undefined and the nudge simply unsent, which is
     # what every install does today.
     . "${PLUGIN_DIR}/lib/setup-steps.sh" 2>/dev/null || true
@@ -340,17 +381,14 @@ if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
         # `init_status // ""` collapses "no file", "not JSON", "not an object"
         # and "a directory at that path" into the one value that nudges — so a
         # truncated context file over a recorded `unsupported` produced exactly
-        # the line the task forbids. `lib/setup-steps.sh` has its own guard for
-        # the directory case, so it is a state the authors have met. Only an
-        # object with a string or a null `init_status` is a recorded answer;
-        # anything else is `?`, which matches no arm below and stays quiet.
+        # the line the task forbids. Only an object with a string or a null
+        # `init_status` is a recorded answer; anything else is `?`, which
+        # matches no arm below and stays quiet.
         _nctx="${STATE_DIR}/project-context-${_nkey}.json"
         if [ -f "$_nctx" ]; then
             # THE SHAPE IS CHECKED BEFORE THE FIELD IS. `loci_json_is_object`
             # answers two of the four failures above — a truncated or empty file
-            # and a JSON array, and a file holding two concatenated objects —
-            # and `lib/setup-steps.sh` asks it about this same file for the same
-            # reason, so there is one spelling of the question.
+            # and a JSON array, and a file holding two concatenated objects.
             #
             # Then the field's TYPE, which is why `loci_json_kind` exists: a
             # recorded `null` is the same claim as an absent key and nudges, a
@@ -377,13 +415,12 @@ if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
         case "$_nstatus" in
             ""|uninitialized)
                 # IS THERE A RECIPE ABOVE THIS SESSION? The status file cannot
-                # say: `detect_and_write_context` records NO `init_status` in its
-                # `initialized_degraded`/`state` branch — a recipe on disk that
-                # `loci init` has not seen, or a wiped state directory — and
-                # `session-init.sh` is registered `startup` only, so a `--continue`
-                # session never repairs it. A subdirectory session in that state
-                # read "nothing recorded" and was told its initialized project is
-                # not initialized.
+                # say: only `loci init` writes one (session-init has written none
+                # since AAD-7531), so a recipe on disk that `loci init` has not
+                # seen on this machine, or a wiped state directory, leaves no
+                # `init_status` under any key. A subdirectory session in that
+                # state read "nothing recorded" and was told its initialized
+                # project is not initialized.
                 #
                 # TWO STEPS, and the split is the whole point. `_loci_find_recipe`
                 # is the authority — it is the CLI's own walk, with the `$HOME` and
@@ -471,7 +508,8 @@ if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
                 # would undo all three — it answers "does it exist", which is not
                 # the question — so there is deliberately nothing in front of it.
                 elif ( set -C; : > "$_nmark" ) 2>/dev/null; then
-                    nudge="LOCI is not initialized for this project; run /loci:init to enable measurements."
+                    _nudge_msg="LOCI is not initialized for ${_nroot}; run /loci:init ${_nroot} so LOCI can check your edits."
+                    nudge="$_nudge_msg"
                 fi
                 ;;
         esac
@@ -508,6 +546,7 @@ if [ "$remind" = "1" ]; then
     [ -n "$agent" ] && _ctx="${_ctx}You are running as a subagent: the user sees your final report, not this transcript. Include the LOCI verdict (the timing/energy delta, or why it could not be measured) in that report. "
     _ctx="${_ctx}EXCEPTION: if this edit was made as part of a loci-preflight pass (predictive measurement of a candidate function), do NOT invoke loci-post-edit — preflight will report the analysis itself."
 fi
-loci_json_hook_output PostToolUse "${_ctx}${nudge}${cli_note}"
+# The user's to see, not just the model's: adopting a repo is their decision.
+loci_json_hook_output PostToolUse "${_ctx}${nudge}${cli_note}" "$_nudge_msg"
 _po_state="emitted (remind=$remind route=${route:-none} nudge=${nudge:+yes})"
 exit 0

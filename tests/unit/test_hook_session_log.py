@@ -53,6 +53,17 @@ pytestmark = pytest.mark.skipif(
     reason="bash and jq required",
 )
 
+from tests.fixtures.copilot_payloads import current as _host  # noqa: E402
+
+#: The tests that run under BOTH hosts (AAD-7790): the ones about the id on the
+#: line and the payload the CLI is handed, since Copilot sends no `prompt_id` and
+#: the hook resolves the turn from the seeded `turn-<session_id>` record, then
+#: re-feeds the ADAPTED copy of the stdin the logger captured. Not the module:
+#: the dev/off byte comparison costs half this file and says nothing a host
+#: changes, the registry test spawns nothing, and the forged ids cannot be
+#: seeded as file names (see that test).
+both_hosts = pytest.mark.usefixtures("host")
+
 
 def _to_bash_path(p: Path) -> str:
     s = Path(p).as_posix()
@@ -138,11 +149,15 @@ def _run(hook: str, payload: dict, tmp_path: Path, *, dev: bool = True,
     if dev:
         env["LOCI_ENV"] = "dev"
 
+    host = _host()
+    payload = host.respell(payload)
+    env.update(host.env(project=_to_bash_path(cwd or tmp_path)))
+    host.seed(state)
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(HOOKS / hook)],
         input=json.dumps(payload),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=60, env=env, cwd=str(cwd or tmp_path),
+        timeout=60, env=env, cwd=host.cwd(cwd or tmp_path),
     )
     return Run(proc, state, argv_log, stdin_dir)
 
@@ -215,6 +230,8 @@ CASES = [
         cwd=_to_bash_path(root), hook_event_name="Stop"), "turn-clean"),
     ("draft-pending-nudge.sh", lambda root: _payload(
         cwd=_to_bash_path(root), hook_event_name="Stop"), "draft-nudge"),
+    ("subagent-start.sh", lambda root: _payload(
+        cwd=_to_bash_path(root), hook_event_name="SubagentStart"), "subagent-start"),
 ]
 
 
@@ -229,6 +246,7 @@ def _project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@both_hosts
 @pytest.mark.parametrize("hook,build,src", CASES,
                          ids=[f"{h}-{i}" for i, (h, _, _) in enumerate(CASES)])
 def test_the_hook_logs_start_end_and_the_session_it_was_handed(
@@ -267,6 +285,7 @@ def test_logging_off_leaves_the_hook_exactly_as_it_was(hook, build, src, tmp_pat
 
 # ── the verdict, not just the fact that the hook ran ────────────────────────
 
+@both_hosts
 def test_the_guards_verdict_is_in_the_log(tmp_path):
     """A `deny` that nothing records is a decision QA cannot review — and
     PreToolUse is fail-open, so "no verdict" and "allowed" look identical from
@@ -278,6 +297,7 @@ def test_the_guards_verdict_is_in_the_log(tmp_path):
         tmp_path, cwd=root)
     assert json.loads(denied.stdout)["hookSpecificOutput"][
         "permissionDecision"] == "deny"
+    assert _host().decision(json.loads(denied.stdout)) == "deny"
     assert "verdict=deny" in denied.log
 
     allowed = _run("contract-guard.sh", _c_edit(root), tmp_path / "b",
@@ -288,6 +308,7 @@ def test_the_guards_verdict_is_in_the_log(tmp_path):
 
 # ── stdin: read once, and the CLI still gets it ─────────────────────────────
 
+@both_hosts
 @pytest.mark.parametrize("hook,slot", [
     ("post-bash-bypass.sh", "hook-post-bash"),
     ("prompt-submit-turn.sh", "hook-prompt-submit"),
@@ -298,7 +319,9 @@ def test_the_payload_still_reaches_the_cli_when_the_log_captured_it(hook, slot,
                                                                     tmp_path):
     """These four hand their stdin straight to a `loci` verb, and the session id
     lives on that stdin. Reading it for the log must not starve the verb: the
-    hook re-feeds what it read, byte for byte."""
+    hook re-feeds what it read, byte for byte — under Copilot the adapted copy
+    of it, which also carries the turn resolved from the session's record
+    (AAD-7781) in place of the `prompt_id` Copilot never sent."""
     root = _project(tmp_path)
     payload = _payload(cwd=_to_bash_path(root), hook_event_name="Stop")
 
@@ -307,7 +330,15 @@ def test_the_payload_still_reaches_the_cli_when_the_log_captured_it(hook, slot,
     assert run.code == 0
     seen = run.stdin_of(slot)
     assert seen, f"{hook} sent {slot} an empty stdin"
-    assert json.loads(seen)["session_id"] == SESSION_ID
+    doc = json.loads(seen)
+    assert doc["session_id"] == SESSION_ID
+    if _host().copilot and hook == "stats-flush.sh":
+        # `loci stats flush-impacts` keys on no turn, so this is the one thin
+        # hook that never sources the adapter (`test_host_turn_id` lists the
+        # hooks that do): the verb gets the captured stdin exactly as it came.
+        assert "prompt_id" not in doc, seen
+    else:
+        assert doc["prompt_id"] == _host().turn("t-1"), seen
 
 
 # ── the payload is not to be trusted ───────────────────────────────────────
@@ -320,7 +351,11 @@ def test_the_payload_still_reaches_the_cli_when_the_log_captured_it(hook, slot,
 def test_a_forged_session_id_cannot_write_a_line_of_its_own(forged, tmp_path):
     """The id goes into the log line verbatim, and the payload is written by
     whoever is driving the harness. Anything outside the id charset is dropped
-    rather than escaped, so a crafted value cannot forge a second line."""
+    rather than escaped, so a crafted value cannot forge a second line.
+
+    One host only: the forged ids are not file names, so no `turn-<session_id>`
+    record can be seeded for them (AAD-7790) — the adapter's own refusal of
+    such a name is `test_host_turn_id`'s to pin."""
     root = _project(tmp_path)
     run = _run("contract-guard.sh", _payload(
         session_id=forged, cwd=_to_bash_path(root), tool_name="Edit",

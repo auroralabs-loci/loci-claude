@@ -2,37 +2,13 @@
   "skill_name": "loci-post-edit",
   "evals": [
     {
-      "id": "pe-3",
-      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited src/codec.c and post-edit fired. The LOCI session context block for this session carries only two lines: `project context: /home/me/proj/.loci/state/project-context-9f2a.json` and `plugin dir: /home/me/.claude/plugins/loci`. There is no `LOCI target:` line and no `recipe:` line. What does loci-post-edit do — specifically, what value does it pass to `--loci-target` / `--arch`, and does the missing target line tell you this project is uninitialized?",
-      "expected_output": "Does NOT invent, guess or default a target. `--loci-target` takes exactly one of aarch64 / armv7e-m / armv6-m / tc399 and anything else is rejected by argparse with exit 2 and no envelope to explain it, so no `loci analyse prepare` is attempted with a made-up value and no host architecture (x86_64, arm64, native) is substituted. Says a missing `LOCI target:` line is a fact about the SESSION and not a diagnosis of the project — a wiped state directory prints no target for a project that IS initialized — and that the target sitting in the persisted context file BEFORE an init is a scan's hint for an older CLI, not a fact to lift out and quote. Where the session block sends it to init it invokes the loci:init skill once; a SUCCESSFUL init records the target in `<project-context>`, which is where the contract's own `jq` reads it, so the skill reads it from there rather than waiting for a `LOCI target:` line that only appears at the next session. Does not re-run detection, sniff an ELF, read the build system or pick a compiler in order to derive an architecture. (Grade only this reasoning; the agent need not execute any loci command.)",
-      "files": [],
-      "assertions": [
-        {
-          "text": "Does not invent, guess or default a value for `--loci-target` / `--arch`, and does not substitute a host architecture (x86_64, arm64, native)",
-          "description": "the one thing a missing target line must never produce"
-        },
-        {
-          "text": "Says a missing `LOCI target:` line is a fact about the SESSION, not a diagnosis that the project has no recipe",
-          "description": "a wiped state directory prints no target for a project that IS initialized"
-        },
-        {
-          "text": "Concludes there is no `loci analyse prepare` to run on a made-up target, and does not lift the scan's pre-init target hint out of the persisted context file to get past that",
-          "description": "SKILL-ONLY: Step 0's own sentences — the contract's Pattern A says what a missing line means, not that the pre-init context value is a hint or that Step 1 is not run on a made-up value."
-        },
-        {
-          "text": "Says that after a SUCCESSFUL init the target is read from `<project-context>` (the contract's own `jq`), not from a `LOCI target:` line that only appears at the next session",
-          "description": "SKILL-ONLY: the read-it-from-the-context-file-after-init rule is Step 0's, and the earlier eval wording (wait for the next session) contradicted it."
-        }
-      ]
-    },
-    {
       "id": "pe-5",
       "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited codec.cpp and post-edit fired. Step 1's `loci analyse prepare` came back `ok:true`: `data.functions` is `[\"codec_decode\"]`, `data.requests[]` holds one `hot_path_time` request for it, `data.candidates[]` ranks three paths with `data.proposed` naming p1, and the `data.provenance[]` entry carries a `before` (the turn's pre-edit object) with `freshness: current`. I confirmed p1 in Step 3. Then Step 4's `loci analyse measure --prepared <id>` came back `ok:false` with `error.code == \"auth_required\"` and exit 1. What does the report look like? Session: Target: arm64, Compiler: g++, LOCI target: aarch64.",
-      "expected_output": "Stops at the metered half without inventing anything: says timing/energy is unavailable and tells the user to run `! loci login` — the skill's own remediation for `auth_required` — rather than describing an MCP connection problem or suggesting `/mcp`. Reports what `prepare` established for free: `codec_decode` is the changed function, the repo demands a `hot_path_time` measurement for it, the proposed hot path — named by the source line ranges it covers, never by its `p1` id, and that a pre-edit Before exists for this turn. Invents no timing or energy number and no percentage, and states that nothing was billed (`measure` checks lazily and refused before spending). Does not re-run `measure` hoping for a different answer, does not fall back to `loci elf asm` + `loci timing` to compute a path cost by hand (path cost is `measure`'s arithmetic), and does not present the run as having had no baseline — a `before` exists, so the no-baseline template is wrong here. Emits no footer and no `stats record --run` patch, since no run was recorded. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "expected_output": "Stops at the metered half without inventing anything: says timing/energy is unavailable and tells the user to run `! loci login` — the skill's own remediation for `auth_required` — rather than describing an MCP connection problem or pointing the user at any MCP command. Reports what `prepare` established for free: `codec_decode` is the changed function, the repo demands a `hot_path_time` measurement for it, the proposed hot path — named by the source line ranges it covers, never by its `p1` id, and that a pre-edit Before exists for this turn. Invents no timing or energy number and no percentage, and states that nothing was billed (`measure` checks lazily and refused before spending). Does not re-run `measure` hoping for a different answer, does not fall back to `loci elf asm` + `loci timing` to compute a path cost by hand (path cost is `measure`'s arithmetic), and does not present the run as having had no baseline — a `before` exists, so the no-baseline template is wrong here. Emits no footer and no `stats record --run` patch, since no run was recorded. (Grade only this reasoning; the agent need not execute any loci command.)",
       "files": [],
       "assertions": [
         {
-          "text": "Tells the user to run `! loci login`, and does not describe an MCP connection problem or suggest `/mcp`",
+          "text": "Tells the user to run `! loci login`, and does not describe an MCP connection problem or point the user at any MCP command",
           "description": "auth_required's remediation, in the vocabulary the skill actually uses"
         },
         {
@@ -103,7 +79,7 @@
     },
     {
       "id": "pe-14",
-      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited fw/src/adc.c in a fresh clone and post-edit fired. Step 1's `loci analyse prepare` came back `ok:false`, exit 1, with `error.stage == \"compile\"`, `error.code == \"not_initialized\"` and `error.message`: \"compile: this project is not initialized for LOCI — no .loci/build.yaml governs /home/me/fw. Run `/loci:init` (or `loci init --auto`) to record how this project builds; LOCI has no build knowledge for it until then.\"\n\nThe session-start block for this directory said \"this project is not initialized — no `.loci/build.yaml`\". Walk me through exactly what post-edit does from that envelope onward, and what it does NOT do.",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited fw/src/adc.c in a fresh clone and post-edit fired. Step 1's `loci analyse prepare` came back `ok:false`, exit 1, with `error.stage == \"compile\"`, `error.code == \"not_initialized\"` and `error.message`: \"compile: this project is not initialized for LOCI — no .loci/build.yaml governs /home/me/fw. Run `/loci:init` (or `loci init --auto`) to record how this project builds; LOCI has no build knowledge for it until then.\" Walk me through exactly what post-edit does from that envelope onward, and what it does NOT do.",
       "expected_output": "Routes the code through the shared contract's coded-error table rather than improvising a recovery, and takes the NO-RECIPE half of `not_initialized`: no `.loci/build.yaml` exists, so initializing this project is the user's decision. Says so in about one line, names `/loci:init` as what enables measurement here, and STOPS. Crucially it does NOT invoke the loci:init skill and does NOT run `loci init` itself — init writes files into the user's tree, and an edit to a .c file is not a request to adopt their repo; post-edit being MANDATORY after an edit does not license it either. It does not retry `prepare`, does not fall back to compiling on guessed or default flags, does not hunt for a compiler or try another driver, does not reuse a project-built .o or .elf, and emits no timing, energy or percentage from an artifact it never built — nothing was billed. (The other half of the code — a recipe on disk with degraded state — is the repair case, where the init skill does run; that is not this scenario.) Grade only this reasoning; the agent need not execute any loci command.",
       "files": [],
       "assertions": [
@@ -136,7 +112,7 @@
       "assertions": [
         {
           "text": "Prints the caveat on the Step 2a branch, where N is 0 and no footer is emitted",
-          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. The rule that it is not gated on N > 0, and that Step 2a is included, is post-edit's own."
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared house rules, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. The rule that it is not gated on N > 0, and that Step 2a is included, is post-edit's own."
         },
         {
           "text": "Prints a caveat for `confirmed_by_user: false`",
@@ -144,46 +120,18 @@
         },
         {
           "text": "Treats `compile-check` reached by a DROP as a real degradation and relays `validated_note`'s reason, rather than staying silent",
-          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. The contract gives rendering wording for `unvalidated` only; the floor-vs-drop distinction is post-edit's."
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared house rules, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. The contract gives rendering wording for `unvalidated` only; the floor-vs-drop distinction is post-edit's."
         },
         {
           "text": "Does not print the full absolute-verb provenance line (target, tier and recipe path)",
-          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared runtime contract, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. post-edit carries the caveat half only."
-        }
-      ],
-      "files": []
-    },
-    {
-      "id": "pe-16",
-      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. My session block says `LOCI target: armv6-m`. Mid-session I ran `/loci:init --refresh --target=armv7e-m` because I switched boards. I then edited a file and post-edit fired; the compile came back `ok:false` with `error.code` `arch_mismatch`, and `error.message` says the recipe now records armv7e-m while this compile asked for armv6-m, offering \"measure armv7e-m, or run /loci:init --refresh\". What does post-edit do?",
-      "expected_output": "Names the disagreement explicitly — the recipe records armv7e-m while this session is measuring as armv6-m — rather than silently substituting either value and running the analysis. Does NOT act on the first half of the CLI's own suggestion: measuring the recipe's target would mean sending a `--loci-target` this session cannot be seen to hold, which is the thing the contract forbids. Says a new session picks up the change. Relays the message rather than paraphrasing it away, and produces no timing, energy or percentage from a compile that never happened. Does not re-run the compile with a different target to see if it works. (Grade only this reasoning; the agent need not execute any loci command.)",
-      "assertions": [
-        {
-          "text": "Names the disagreement between the recipe's target and the session's target explicitly",
-          "description": "the check pe-3 used to make, in the form the new design can actually reach"
-        },
-        {
-          "text": "Does not substitute either target and does not re-run the compile with a different `--loci-target`",
-          "description": "silent substitution is the observed failure this replaces"
-        },
-        {
-          "text": "Does not act on the CLI's 'measure <recipe target>' suggestion, because this session cannot be seen to hold that target",
-          "description": "the half of the CLI's own message that is not the agent's to act on"
-        },
-        {
-          "text": "Reports no timing, energy or percentage, since no artifact was produced",
-          "description": "no compile, no numbers"
-        },
-        {
-          "text": "Does not run `/loci:init --refresh` to make the mismatch go away, which would re-derive the recipe back to the old board and can clear `confirmed_by_user`",
-          "description": "the CLI's message offers this as its second half; acting on it discards the user's deliberate mid-session switch"
+          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared house rules, which run_evals.sh inlines into every prompt — so it discriminates this task's diff. post-edit carries the caveat half only."
         }
       ],
       "files": []
     },
     {
       "id": "pe-go-1",
-      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and the shared runtime contract, and answer directly. This is a Go project: the session context shows `Build: go` and the recipe records `artifacts.elf: .loci/build/objects/aarch64/sensorfw.elf` with `go.gcflags: ''`. I edited `main.go`, changing the body of `func compute(n int) int`. `loci analyse prepare` succeeded and `loci elf diff` on the pair reports exactly one modified function: `main.main`. `main.compute` appears nowhere in the diff, and `loci elf asm --functions main.compute` reports it in `functions_not_found`. What do you report to the user?",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and the shared house rules, and answer directly. This is a Go project: the session context shows `Build: go` and the recipe records `artifacts.elf: .loci/build/objects/aarch64/sensorfw.elf` with `go.gcflags: ''`. I edited `main.go`, changing the body of `func compute(n int) int`. `loci analyse prepare` succeeded and `loci elf diff` on the pair reports exactly one modified function: `main.main`. `main.compute` appears nowhere in the diff, and `loci elf asm --functions main.compute` reports it in `functions_not_found`. What do you report to the user?",
       "expected_output": "Reports that `main.compute` was INLINED into its caller and that the change is therefore measured on `main.main` — not that the edit produced no change, and not that the measurement failed. Go inlines small functions by default, so a function having no symbol of its own is the ordinary case for Go rather than a defect or a stale build; the contract's Go section says exactly this. Reports the `main.main` numbers as the effect of the edit, naming that they cover the caller including the inlined body. May offer the remedy, and if it does, offers BOTH commands — `loci init set go.gcflags=-l` AND `loci init --refresh` — because a Go recipe freezes its knobs into `build.full_build`, so `set` alone changes no build; and states the cost, that with inlining off the figures describe code the release build does not contain. Does not call the artifact stale, does not re-run init to 'fix' it, does not suggest rebuilding, and does not present `functions_not_found` as an error. (Grade only this reasoning; the agent need not execute any loci command.)",
       "files": [],
       "assertions": [
@@ -203,7 +151,7 @@
     },
     {
       "id": "pe-go-2",
-      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and the shared runtime contract, and answer directly. A Go project (`Build: go`). I edited `main.go`, and `loci analyse prepare` came back with `provenance[0].kind: \"elf\"` and `provenance[0].artifact: \".loci/build/objects/aarch64/sensorfw.elf\"`. There is no `.o` anywhere under `.loci/build/`. The contract entry I am judging against is a worst-case stack-depth bound and a ROM budget. Is the artifact wrong or missing, where do you look for the object, and are those two signals answerable from this run?",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and the shared house rules, and answer directly. A Go project (`Build: go`). I edited `main.go`, and `loci analyse prepare` came back with `provenance[0].kind: \"elf\"` and `provenance[0].artifact: \".loci/build/objects/aarch64/sensorfw.elf\"`. There is no `.o` anywhere under `.loci/build/`. The contract entry I am judging against is a worst-case stack-depth bound and a ROM budget. Is the artifact wrong or missing, where do you look for the object, and are those two signals answerable from this run?",
       "expected_output": "Says nothing is wrong or missing: Go's unit IS the linked binary, so a Go edit relinks and `analyse prepare` reports `kind: \"elf\"` where a C edit reports `\"object\"`. There is no `.o` to look for — `gc`'s per-package output is content-addressed under `$GOCACHE` with no stable name and TinyGo emits no intermediate object at all — so it does not go hunting for one, does not construct a path, and does not conclude the build is broken or the recipe wrong. Takes every path from the envelope. On the two signals: BOTH are answerable, and answerable at full strength — `stack_depth` and `rom_size` are `verifiable` on an `elf` where they are `unmeasurable` / `breach_only` on an object, because the link is what makes the whole call graph and the whole image visible. Does NOT caveat them as scope-limited, does not say a whole-binary invariant cannot be confirmed at edit time, and does not escalate to stack-depth or memory-report on the grounds that this run cannot answer them. (Grade only this reasoning; the agent need not execute any loci command.)",
       "files": [],
       "assertions": [

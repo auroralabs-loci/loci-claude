@@ -34,6 +34,7 @@ value at it.
 """
 from __future__ import annotations
 
+import functools
 import json
 import random
 import re
@@ -45,7 +46,31 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.copilot_payloads import PAYLOADS as _COPILOT_PAYLOADS, Host, at as _at
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _legacy_bash() -> bool:
+    """bash 3 with no newer bash on the host: the profile `lib/bash-compat.sh`
+    describes (AAD-7771). `${v//pat/rep}` there costs O(matches x length^2) —
+    ~2 ms per match at 16 KB — so the hooks read a 4 KB prefix and the guard
+    tokenises 4 KB; the 64 KB shapes in this file are not what that host runs.
+    Probed once per process, on the bash the tests drive."""
+    if _legacy_bash.cache is None:
+        out = subprocess.run([_find_bash(), "-c", 'printf %s "${BASH_VERSINFO[0]}"'],
+                             capture_output=True, text=True, timeout=30)
+        v = out.stdout.strip()
+        _legacy_bash.cache = v.isdigit() and int(v) < 4
+    return _legacy_bash.cache
+
+
+_legacy_bash.cache = None
+
+_GUARD_CAP_SKIP = ("bash 3.2: contract-guard.sh reads a 4 KB field there "
+                   "(lib/bash-compat.sh), so a 64 KB shape is not one that host "
+                   "ever reads; test_the_legacy_profile_reads_dense_values_inside_"
+                   "the_budget pins the cost at the cap it does")
 LIB = PLUGIN_ROOT / "lib" / "loci_json.sh"
 
 #: A literal backslash, built rather than written: the tooling on this machine
@@ -130,6 +155,31 @@ def _dup(document: str, key: str, tmp_path: Path, *,
     assert not proc.stderr, proc.stderr.decode("utf-8", "replace")
     assert out.is_file() and out.read_bytes() == str(proc.returncode).encode()
     return proc.returncode
+
+
+@functools.lru_cache(maxsize=None)
+def _bash_has_locale(name: str) -> bool:
+    """Whether this host's bash can enter `LC_ALL=<name>` without complaint.
+
+    `setlocale: LC_ALL: cannot change locale` goes to stderr, and every driver
+    here asserts stderr is EMPTY — so a locale named but not installed failed the
+    read for the wrong reason. Git Bash has `en_US.UTF-8` and not `C.UTF-8`, WSL
+    has the reverse, macOS has both; `_a_multibyte_locale` probes the same way.
+    """
+    proc = subprocess.run(
+        [_find_bash(), "-c", "true"], capture_output=True, timeout=30,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "LC_ALL": name})
+    return proc.returncode == 0 and not proc.stderr
+
+
+def _installed_locales(names: tuple[str, ...]) -> list[str]:
+    """`names` minus the ones this host cannot enter. `C` is always one of them, and
+    at least one multibyte locale must be, or the run would prove nothing about the
+    UTF-8 half of the claim."""
+    have = [n for n in names if _bash_has_locale(n)]
+    assert "C" in have and any(n != "C" for n in have), \
+        f"no UTF-8 locale among {names} is installed here: {have}"
+    return have
 
 
 def _doc(body: str) -> str:
@@ -233,7 +283,7 @@ def test_an_invalid_byte_cannot_make_the_read_over_run_the_value(tmp_path):
     # a quote, the invalid escape is handed back as its two characters, and
     # the read STOPS at the closing quote.
     want_b = b'a"b\xff\\\xe4\xb8\xad/x'
-    for locale in ("C", "en_US.UTF-8"):
+    for locale in _installed_locales(("C", "C.UTF-8", "en_US.UTF-8")):
         out = tmp_path / "v.bin"
         proc = subprocess.run(
             [_find_bash(), "-c", DRIVER, "driver", _to_bash_path(LIB), "target",
@@ -339,7 +389,7 @@ def test_the_decode_is_the_same_bytes_under_LC_ALL_C(tmp_path):
     """
     for body in (r"\u041f", r"\ud83d\ude00", r"\u20ac", r"\u0041"):
         want = json.loads(_doc(body))["target"].encode("utf-8")
-        for locale in ("C", "C.UTF-8", "en_US.UTF-8"):
+        for locale in _installed_locales(("C", "C.UTF-8", "en_US.UTF-8")):
             got = _value(body, tmp_path, env={"LC_ALL": locale})
             assert got == want, f"{body!r} under LC_ALL={locale}"
 
@@ -438,6 +488,24 @@ def _quote_dense(chars: int) -> str:
     return (unit * (chars // len(unit) + 1))[:chars]
 
 
+#: The control's floor in the two ratio detectors below. The control is a plain read,
+#: and on WSL a plain read is 14 ms — bash's start-up, nothing else — so a floor of
+#: 10 ms made the ratio measure start-up against a 0.2 s windowed search and fail at
+#: 15× on a host with no defect. The quadratic shapes the detectors exist for cost
+#: 9.5 s and 14.7 s: a 50 ms floor keeps them at 190× and 290×, still far over 8.
+_RATIO_FLOOR_S = 0.05
+
+#: The line the two ratio detectors draw. It was 8, and 8 was never loose: the
+#: windowed search the F14 detector measures costs 0.41 s in-process, against a
+#: control that sits ON the floor on any fast host — 8.2 by the detector's own
+#: numbers, and 8.5 measured on a GitHub `macos-latest` runner (0.42 s over
+#: 0.046 s, floored), with bash 5.3 and nothing quadratic anywhere. The shapes
+#: the detectors exist for are 190× and 290× (9.5 s and 14.7 s over the same
+#: floor), so 20 keeps them nine times over the line and stops a slower host
+#: from reporting a regression that is not there.
+_RATIO_LIMIT = 20.0
+
+
 def test_a_quote_dense_value_is_read_in_the_same_time_as_a_plain_one(tmp_path):
     """F13's detector, and it is a ratio so that a slow machine cannot hide it.
 
@@ -447,10 +515,13 @@ def test_a_quote_dense_value_is_read_in_the_same_time_as_a_plain_one(tmp_path):
     `${v//pat/rep}` re-copies the tail per replacement, like the walk did — but
     with a ~60× smaller constant, and the ratio is what that buys. The probe is
     two substitution passes and
-    a windowed find, and the same pair is 0.44 s against 0.20 s. 8 is loose
-    enough that neither a loaded machine nor a faster one moves it, and tight
-    enough that nothing quadratic gets back in.
+    a windowed find, and the same pair is 0.44 s against 0.20 s. The line is
+    `_RATIO_LIMIT`, and why it is 20 rather than 8 is recorded there: loose
+    enough that a slower host does not move it, tight enough that nothing
+    quadratic gets back in.
     """
+    if _legacy_bash():
+        pytest.skip(_GUARD_CAP_SKIP)
     dense = _doc(_quote_dense(64_000))
     plain = _doc("  emit((line), (x));" * (64_000 // 20))
 
@@ -465,7 +536,7 @@ def test_a_quote_dense_value_is_read_in_the_same_time_as_a_plain_one(tmp_path):
     assert rc_p == 0 and rc_d == 0
     assert got_d == json.loads(dense)["target"].encode("utf-8")
     assert got_p == json.loads(plain)["target"].encode("utf-8")
-    assert dense_s / max(plain_s, 0.01) < 8.0, (
+    assert dense_s / max(plain_s, _RATIO_FLOOR_S) < _RATIO_LIMIT, (
         f"{dense_s:.2f}s on a value with ~11 600 escaped quotes against "
         f"{plain_s:.2f}s on the same 64 KB with none — the closing-quote scan "
         f"is quadratic in escaped quotes again (F13)")
@@ -482,6 +553,8 @@ def test_a_quote_dense_value_is_read_inside_the_hook_budget(tmp_path):
     tests have a history of going red under load and green idle, and a
     detector that cries wolf gets ignored.
     """
+    if _legacy_bash():
+        pytest.skip(_GUARD_CAP_SKIP)
     start = time.monotonic()
     rc, got = _read(_doc(_quote_dense(64_000)), "target", tmp_path,
                     env={"LOCI_JSON_MAX": "65536"})
@@ -597,10 +670,13 @@ def test_a_name_repeated_as_an_array_element_costs_what_an_absent_one_costs(tmp_
     pair. The control is the same document byte for byte, so what is measured is
     the occurrences and not the size.
 
-    8 is the same line `test_a_quote_dense_value_*` draws, and for the same
-    reason: loose enough that load does not move it, tight enough that nothing
-    quadratic gets back in.
+    `_RATIO_LIMIT` is the same line `test_a_quote_dense_value_*` draws, and
+    for the same reason: loose enough that a slower host does not move it (a
+    shared macOS runner measured this pair at 0.42 s over a control on the
+    floor, 8.5×), tight enough that nothing quadratic gets back in.
     """
+    if _legacy_bash():
+        pytest.skip(_GUARD_CAP_SKIP)
     guard_cap = {"LOCI_JSON_MAX": "65536"}  # what contract-guard.sh sets
     dense = _elements("cwd", 8_000)
     plain = _elements("xyz", 8_000).replace('"xyz": "/c/p"', '"cwd": "/c/p"')
@@ -615,7 +691,7 @@ def test_a_name_repeated_as_an_array_element_costs_what_an_absent_one_costs(tmp_
 
     assert rc_p == 0 and got_p == b"/c/p"
     assert rc_d == 0 and got_d == b"/c/p"
-    assert dense_s / max(plain_s, 0.01) < 8.0, (
+    assert dense_s / max(plain_s, _RATIO_FLOOR_S) < _RATIO_LIMIT, (
         f"{dense_s:.2f}s on a document naming the key 8 000 times without a "
         f"colon against {plain_s:.2f}s on the same document with a name that "
         f"does not collide — the key search is quadratic again (F14)")
@@ -635,6 +711,8 @@ def test_a_name_repeated_as_an_array_element_is_read_inside_the_hook_budget(tmp_
     replaced came in at 2.98 s under C — over the line, but by 1.19×, which is
     not a margin. Under the UTF-8 a real session has it is far clear of it.
     """
+    if _legacy_bash():
+        pytest.skip(_GUARD_CAP_SKIP)
     locale = _a_multibyte_locale(tmp_path)
     if locale is None:
         pytest.skip("no multibyte locale on this host")
@@ -831,7 +909,11 @@ def test_the_whole_op_tally_is_counted_inside_the_hook_budget(tmp_path):
     locale = _a_multibyte_locale(tmp_path)
     if locale is None:
         pytest.skip("no multibyte locale on this host")
-    doc = '{"ops": [%s{}]}' % ('{"op": "add"}, ' * 1_400)
+    # 1 400 ops overrun the 16 KB prefix by design (the last op is cut); under
+    # bash 3 the prefix is 4 KB (lib/bash-compat.sh), so the same overrun is
+    # 350 ops, and the floor below scales with it.
+    n_ops, at_least = (350, 250) if _legacy_bash() else (1_400, 1_000)
+    doc = '{"ops": [%s{}]}' % ('{"op": "add"}, ' * n_ops)
     start = time.monotonic()
     out = _bash(COUNT_DRIVER, ["op", ":"], tmp_path,
                 stdin=doc.encode("utf-8") + b"\0",
@@ -840,7 +922,7 @@ def test_the_whole_op_tally_is_counted_inside_the_hook_budget(tmp_path):
     counted = [int(c) for c in out.read_text(encoding="utf-8").split()]
     # `loci_json_load` keeps a 16 KB PREFIX, so the last op can be cut
     # between its key and its value: the key counts, the verb does not.
-    assert counted[0] > 1_000
+    assert counted[0] > at_least
     assert counted[0] - counted[1] in (0, 1), counted
     assert sum(counted[1:]) in (counted[0], counted[0] - 1), counted
     assert elapsed < 2.5, (
@@ -1245,6 +1327,8 @@ def test_the_duplicate_detector_answers_inside_the_hook_budget(
     A document with no `\u00` and no repetition — every payload a serializer
     produces — is one glob.
     """
+    if _legacy_bash():
+        pytest.skip(_GUARD_CAP_SKIP)
     locale = _a_multibyte_locale(tmp_path)
     if locale is None:
         pytest.skip("no multibyte locale on this host")
@@ -1497,21 +1581,13 @@ def test_a_name_the_escaped_pass_cannot_spell_is_left_to_the_first(tmp_path,
 #: Every shell call in this repository that asks the library for a named field.
 _FIELD_READ_RE = re.compile(
     r"\b(?:loci_json_get|loci_json_has|loci_json_kind|loci_json_count"
-    r"|loci_json_array_len|_loci_ctx_field)\s+"
+    r"|loci_json_array_len)\s+"
     r"""(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_$]+))""")
 
 
-def test_every_name_the_hooks_read_is_one_the_escaped_pass_can_see():
-    """The restriction above is only safe while every caller stays inside it.
-
-    A name outside `[A-Za-z0-9_]` is DECLINED by the second pass, which is the
-    old behaviour — an escaped spelling of it reads as ABSENT — so adding one
-    would be a silent hole rather than a loud failure. This is the enumeration
-    that stops that happening quietly: every literal name asked for anywhere in
-    `hooks/` or `lib/` is checked, and the one call site that passes a VARIABLE
-    (`_loci_ctx_field`, which forwards its own `$1`) is covered because its
-    callers are literal and are scanned here too.
-    """
+def _field_reads() -> tuple[set[str], list[str]]:
+    """Every literal name a `loci_json_*` read in `hooks/` or `lib/` asks for,
+    and every call site that passes a variable instead (`<file>: <$name>`)."""
     names, dynamic = set(), []
     for path in sorted(list((PLUGIN_ROOT / "hooks").glob("*.sh"))
                        + list((PLUGIN_ROOT / "lib").glob("*.sh"))):
@@ -1523,17 +1599,277 @@ def test_every_name_the_hooks_read_is_one_the_escaped_pass_can_see():
                 dynamic.append(f"{path.name}: {arg}")
             elif arg:
                 names.add(arg)
+    return names, dynamic
+
+
+def test_every_name_the_hooks_read_is_one_the_escaped_pass_can_see():
+    """The restriction above is only safe while every caller stays inside it.
+
+    A name outside `[A-Za-z0-9_]` is DECLINED by the second pass, which is the
+    old behaviour — an escaped spelling of it reads as ABSENT — so adding one
+    would be a silent hole rather than a loud failure. This is the enumeration
+    that stops that happening quietly: every literal name asked for anywhere in
+    `hooks/` or `lib/` is checked, and no call site may pass a VARIABLE, whose
+    name this scan cannot see. The one that did, `_loci_ctx_field`, went with
+    the session-start detector that called it (AAD-7744).
+
+    `lib/loci_host.sh` is in the scan too: under GitHub Copilot CLI it is the
+    first reader of every payload (AAD-7781/7782), and `session_id` — the key
+    it resolves a turn by where Copilot sends no `prompt_id` — is one of the
+    names expected below. The four Copilot names it RENAMES rather than reads
+    are pinned by `test_the_names_the_host_adapter_renames_are_the_ones_the_
+    fixture_respells`, since no `loci_json_*` call ever names them.
+    """
+    names, dynamic = _field_reads()
     assert len(names) >= 20, f"the scan found only {sorted(names)} — it broke"
-    for expected in ("file_path", "command", "cwd", "hook_event_name"):
+    for expected in ("file_path", "command", "cwd", "hook_event_name",
+                     "session_id", "tool_name"):
         assert expected in names, f"{expected} is read and the scan missed it"
     bad = sorted(n for n in names if not re.fullmatch(r"[A-Za-z0-9_]+", n))
     assert not bad, (
         f"these field names cannot be seen by the escaped-name pass in "
         f"`lib/loci_json.sh`, so an escaped spelling of one reads as ABSENT: "
         f"{bad}. Either rename the field or widen `_loci_json_seek_escaped`.")
-    assert dynamic == ["setup-steps.sh: $_key"], (
+    assert dynamic == [], (
         f"a new call site passes a variable name, so this enumeration no "
         f"longer covers every read: {dynamic}")
+
+
+# ── the payloads the two hosts send (AAD-7790) ─────────────────────────────
+#
+# Everything above reads one NAME out of a document built for one property of
+# the reader, and the name is `file_path` because that is the one whose
+# absence is an ALLOW. None of it spawns a hook and none of it depends on
+# which host wrote the document — an escape, a window edge or a duplicate key
+# costs the same whoever sent it — so no test above is doubled over the
+# `host` fixture. What a second host adds is a second set of DOCUMENTS: the
+# payloads GitHub Copilot CLI was observed sending (tests/fixtures/
+# copilot_payloads.py, COPILOT-PROBE-EVIDENCE.md §5 on Epic AAD-7779) beside
+# Claude Code's for the same actions. The reader is asked every name EITHER
+# host uses over BOTH — `path` beside `file_path`, `old_str` beside
+# `old_string`, `file_text` beside `content`, `session_id` beside `prompt_id`,
+# `tool_result` beside `tool_response` — and the oracle is `json.loads` on the
+# first key at any depth, which is the contract `_oracle` states. A name a
+# host does not send has to read as ABSENT on that host's payload too: the
+# adapter in `lib/loci_host.sh` exists because `file_path` IS absent from a
+# Copilot edit, and this is where that is measured rather than assumed.
+
+_PROJECT = "/c/p/probe-proj"
+_FILE = _PROJECT + "/a.txt"
+
+_CLAUDE_COMMON = {
+    "session_id": "0b7c9d2e-4f3a-4b1c-9e8d-7a6b5c4d3e2f",
+    "transcript_path": "/c/Users/User/.claude/projects/-c-p-probe-proj/0b7c9d2e.jsonl",
+    "cwd": _PROJECT,
+    "permission_mode": "default",
+}
+_CLAUDE_TURN = {"prompt_id": "p-7790-0001"}
+_CLAUDE_EDIT_INPUT = {"file_path": _FILE, "old_string": "hello", "new_string": "hello world"}
+_CLAUDE_WRITE_INPUT = {"file_path": _FILE, "content": "hello"}
+_CLAUDE_BASH_INPUT = {"command": "echo probe-done", "description": "Echo probe-done"}
+
+#: Claude Code's payloads for the actions the Copilot table holds, in the names
+#: every hook was written against — `prompt_id` on every payload of a turn,
+#: `tool_input.file_path`, a `tool_response` — so each Copilot row below sits
+#: BESIDE a Claude row rather than in place of one. The same events, by the
+#: same names, as `copilot_payloads.PAYLOADS`.
+_CLAUDE_PAYLOADS = {
+    "SessionStart": {**_CLAUDE_COMMON, "hook_event_name": "SessionStart",
+                     "source": "startup"},
+    "SessionStart-resume": {**_CLAUDE_COMMON, "hook_event_name": "SessionStart",
+                            "source": "resume"},
+    "UserPromptSubmit": {**_CLAUDE_COMMON, **_CLAUDE_TURN,
+                         "hook_event_name": "UserPromptSubmit", "prompt": "Say hello"},
+    "PreToolUse-Write": {**_CLAUDE_COMMON, **_CLAUDE_TURN, "hook_event_name": "PreToolUse",
+                         "tool_name": "Write", "tool_input": _CLAUDE_WRITE_INPUT,
+                         "tool_use_id": "toolu_01"},
+    "PreToolUse-Edit": {**_CLAUDE_COMMON, **_CLAUDE_TURN, "hook_event_name": "PreToolUse",
+                        "tool_name": "Edit", "tool_input": _CLAUDE_EDIT_INPUT,
+                        "tool_use_id": "toolu_02"},
+    "PreToolUse-Bash": {**_CLAUDE_COMMON, **_CLAUDE_TURN, "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash", "tool_input": _CLAUDE_BASH_INPUT,
+                        "tool_use_id": "toolu_03"},
+    "PostToolUse-Write": {**_CLAUDE_COMMON, **_CLAUDE_TURN, "hook_event_name": "PostToolUse",
+                          "tool_name": "Write", "tool_input": _CLAUDE_WRITE_INPUT,
+                          "tool_use_id": "toolu_01",
+                          "tool_response": {"type": "create", "filePath": _FILE,
+                                            "content": "hello", "structuredPatch": []}},
+    "PostToolUse-Edit": {**_CLAUDE_COMMON, **_CLAUDE_TURN, "hook_event_name": "PostToolUse",
+                         "tool_name": "Edit", "tool_input": _CLAUDE_EDIT_INPUT,
+                         "tool_use_id": "toolu_02",
+                         "tool_response": {"filePath": _FILE, "oldString": "hello",
+                                           "newString": "hello world",
+                                           "originalFile": "hello\n",
+                                           "structuredPatch": [{"oldStart": 1, "oldLines": 1,
+                                                                "newStart": 1, "newLines": 1,
+                                                                "lines": ["-hello",
+                                                                          "+hello world"]}],
+                                           "userModified": False, "replaceAll": False}},
+    "PostToolUse-Bash": {**_CLAUDE_COMMON, **_CLAUDE_TURN, "hook_event_name": "PostToolUse",
+                         "tool_name": "Bash", "tool_input": _CLAUDE_BASH_INPUT,
+                         "tool_use_id": "toolu_03",
+                         "tool_response": {"stdout": "probe-done", "stderr": "",
+                                           "interrupted": False, "isImage": False}},
+    "Stop": {**_CLAUDE_COMMON, **_CLAUDE_TURN, "hook_event_name": "Stop",
+             "stop_hook_active": False},
+    "SessionEnd": {**_CLAUDE_COMMON, "hook_event_name": "SessionEnd", "reason": "other"},
+}
+
+_HOST_PAYLOADS = (
+    [("claude", name, doc) for name, doc in _CLAUDE_PAYLOADS.items()]
+    + [("copilot", name, _at(doc, _PROJECT)) for name, doc in _COPILOT_PAYLOADS.items()]
+)
+
+_KIND = {str: "string", bool: "bool", int: "number", float: "number",
+         list: "array", dict: "object", type(None): "null"}
+
+
+def _keys_at_any_depth(o) -> list[str]:
+    out: list[str] = []
+    if isinstance(o, dict):
+        for k, v in o.items():
+            out.append(k)
+            out += _keys_at_any_depth(v)
+    elif isinstance(o, list):
+        for v in o:
+            out += _keys_at_any_depth(v)
+    return out
+
+
+#: Every name either host uses as a key, at any depth: what the reader is
+#: asked over every payload of both. One list, so a Copilot name is asked of
+#: a Claude payload and must read as absent there, and the other way round.
+_EVERY_HOST_NAME = sorted({k for _, _, doc in _HOST_PAYLOADS for k in _keys_at_any_depth(doc)})
+
+
+def _first_in_document_order(document: dict, key: str):
+    """(kind, value) of the first `key` in DOCUMENT order at any depth, or None
+    when no key is so named. `_oracle` above asks a dict's own keys before it
+    descends, which is the same answer on every row it serves; here a payload
+    nests `content` under `tool_input` and again under `tool_response`, and
+    the reader's answer is the textually first, so the walk is textual."""
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == key:
+                    return (_KIND[type(v)], v)
+                hit = walk(v)
+                if hit is not None:
+                    return hit
+        elif isinstance(o, list):
+            for v in o:
+                hit = walk(v)
+                if hit is not None:
+                    return hit
+        return None
+    return walk(document)
+
+
+#: Every name over one document, in ONE bash process: `<name> <rc>` per line,
+#: the kind in `$2/<name>.kind` and the raw value in `$2/<name>`. Both land
+#: through a redirect and never a `$( )`: a fork costs ~10 ms on Git Bash,
+#: and 47 names over 22 payloads forked twice each was 20 s of a test that
+#: does 4 s of reading.
+HOST_NAMES_DRIVER = """
+. "$1"
+out="$2"; shift 2
+IFS= read -r -d '' doc || true
+loci_json_load "$doc"
+for k in "$@"; do
+    loci_json_kind "$k" > "$out/$k.kind" || printf absent > "$out/$k.kind"
+    if loci_json_get "$k" > "$out/$k"; then rc=0; else rc=1; fi
+    printf '%s %s\\n' "$k" "$rc"
+done
+"""
+
+
+@pytest.mark.parametrize("host_name,event,doc", _HOST_PAYLOADS,
+                         ids=[f"{h}-{e}" for h, e, _ in _HOST_PAYLOADS])
+def test_every_name_either_host_uses_reads_as_json_loads_on_both_hosts_payloads(
+        tmp_path, host_name, event, doc):
+    """The reader over a real payload of each host, asked every name either sends.
+
+    Kind and value against `json.loads`, name by name: `path` and `old_str` out
+    of a Copilot edit, `file_path` and `old_string` out of Claude Code's, the
+    `text_result_for_llm` with a newline in it out of a Copilot `tool_result`,
+    the backslashed Windows `transcript_path` of a Copilot `Stop` — and, on
+    the same row, ABSENT for every name the other host uses, since that is the
+    reading `lib/loci_host.sh` and `contract-guard.sh` act on. An array or an
+    object is checked by kind alone: `loci_json_get` renders neither, and no
+    hook asks it to.
+    """
+    out = tmp_path / "values"
+    out.mkdir()
+    proc = subprocess.run(
+        [_find_bash(), "-c", HOST_NAMES_DRIVER, "driver", _to_bash_path(LIB),
+         _to_bash_path(out), *_EVERY_HOST_NAME],
+        input=json.dumps(doc).encode("utf-8") + b"\0",
+        capture_output=True, timeout=300,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(Path.home())},
+    )
+    assert not proc.stderr, proc.stderr.decode("utf-8", "replace")
+    rows = [ln.split(" ") for ln in proc.stdout.decode("utf-8").splitlines()]
+    assert [r[0] for r in rows] == _EVERY_HOST_NAME, rows
+    bad = []
+    for name, rc in rows:
+        want = _first_in_document_order(doc, name)
+        kind = (out / f"{name}.kind").read_text(encoding="utf-8")
+        got = (out / name).read_bytes()
+        if want is None:
+            if (kind, rc, got) != ("absent", "1", b""):
+                bad.append(f"{name}: absent in json.loads, read as {kind} rc={rc} {got!r}")
+            continue
+        want_kind, value = want
+        if kind != want_kind or rc != "0":
+            bad.append(f"{name}: json.loads says {want_kind}, read as {kind} rc={rc}")
+            continue
+        if want_kind in ("array", "object"):
+            continue
+        want_bytes = (value.encode("utf-8") if want_kind == "string"
+                      else json.dumps(value).encode("utf-8"))
+        if got != want_bytes:
+            bad.append(f"{name}: want {want_bytes!r}, got {got!r}")
+    assert not bad, (f"{host_name} {event}: the reader and json.loads disagree:\n  "
+                     + "\n  ".join(bad))
+
+
+def test_the_names_the_host_adapter_renames_are_the_ones_the_fixture_respells():
+    """`lib/loci_host.sh` reads four Copilot names the enumeration above cannot
+    see: `_loci_host_rename <copilot> <claude>` is a textual rename of the first
+    KEY occurrence in the loaded head, not a `loci_json_get`, and it is how
+    `path`, `file_text`, `old_str` and `new_str` reach the hooks as the names
+    they read (AAD-7782). Two things are pinned. Each pair is a literal inside
+    the alphabet the escaped pass accepts, renamed TO a name some hook reads —
+    a rename onto a name nothing reads is a rename of nothing. And the pairs
+    are exactly the ones `Host.respell()` produces: every hook test that runs
+    under the `host` fixture takes the fixture's model of Copilot for the real
+    thing, so a fifth rename in the adapter, or a fourth in the fixture, would
+    otherwise go unnoticed by the suite that exists to see it.
+    """
+    host_sh = (PLUGIN_ROOT / "lib" / "loci_host.sh").read_text(encoding="utf-8")
+    code = "\n".join(ln for ln in host_sh.splitlines() if not ln.lstrip().startswith("#"))
+    pairs = re.findall(r"_loci_host_rename\s+([^\s;)]+)\s+([^\s;)]+)", code)
+    assert len(pairs) >= 4, f"the adapter's rename call sites moved — found {pairs}"
+    names, _ = _field_reads()
+    for copilot_name, claude_name in pairs:
+        for n in (copilot_name, claude_name):
+            assert re.fullmatch(r"[A-Za-z0-9_]+", n), (
+                f"`{n}` is a variable or outside the alphabet; the rename's "
+                f"names must be literals the escaped pass could spell")
+        assert claude_name in names, (
+            f"`{copilot_name}` is renamed to `{claude_name}`, which no hook reads")
+    copilot = Host("copilot")
+    fixture: dict[str, str] = {}
+    for tool, claude_input in (("Edit", {"file_path": 1, "old_string": 2, "new_string": 3}),
+                               ("Write", {"file_path": 1, "content": 4})):
+        respelled = copilot.respell({"tool_name": tool, "tool_input": claude_input})
+        by_value = {v: k for k, v in claude_input.items()}
+        for copilot_key, v in respelled["tool_input"].items():
+            if copilot_key != by_value[v]:
+                fixture[copilot_key] = by_value[v]
+    assert dict(pairs) == fixture, (
+        f"the adapter renames {dict(pairs)} and the fixture respells {fixture}; "
+        f"the hook tests run against the fixture's model, so the two must agree")
 
 
 # ── the cost of the second pass (F17) ──────────────────────────────────────
@@ -1632,6 +1968,8 @@ def test_the_second_pass_answers_absent_inside_the_hook_budget(tmp_path, kind,
     0.09 s for the same read at `dea825d`. 2.5 s is the line this file already
     draws.
     """
+    if _legacy_bash():
+        pytest.skip(_GUARD_CAP_SKIP)
     locale = _a_multibyte_locale(tmp_path)
     if locale is None:
         pytest.skip("no multibyte locale on this host")
@@ -1677,20 +2015,32 @@ def test_twelve_absent_names_over_one_document_stay_inside_the_edge_budget(tmp_p
     `contract-guard.sh` is the only caller that raises `LOCI_JSON_MAX` and it
     reads three names — and that, not a margin, is what makes this safe.
     Anyone raising the cap in another hook owes this measurement again.
+
+    Under bash 3 the library reads a 4 KB prefix instead (`lib/loci_json.sh`),
+    and the same twelve reads cost about 0.3 s EACH there: Apple's 3.2.57 on
+    a mac-mini, 2.0 s; on a shared GitHub `macos-latest` runner, 3.7 s. That
+    is inside the 5 s the hook has and outside the 2.5 s kept as margin here,
+    so on that profile the line is the hook's real budget, stated as such —
+    a kill there loses the post-edit reminder silently, and the cure the
+    profile already names at session start is `brew install bash`.
     """
     locale = _a_multibyte_locale(tmp_path)
     if locale is None:
         pytest.skip("no multibyte locale on this host")
+    if _legacy_bash():
+        budget, cap = 5.0, "the 4 KB legacy cap"
+    else:
+        budget, cap = 2.5, "the 16 KB default"
     start = time.monotonic()
     out = _bash(TWELVE_READS_DRIVER, [":"], tmp_path,
                 stdin=_no_literal("bs").encode("utf-8") + b"\0",
                 env={"LANG": locale, "LC_ALL": locale})
     elapsed = time.monotonic() - start
     assert out.read_text(encoding="utf-8") == "done"
-    assert elapsed < 2.5, (
+    assert elapsed < budget, (
         f"twelve absent field reads over one hostile document took "
-        f"{elapsed:.1f}s at the 16 KB default; `post-edit-hook.sh` has 5 s "
-        f"before it is killed")
+        f"{elapsed:.1f}s at {cap}; `post-edit-hook.sh` has 5 s before it is "
+        f"killed")
 
 
 def test_no_literal_here_hides_an_escape_python_ate():
@@ -1724,3 +2074,70 @@ def test_no_literal_here_hides_an_escape_python_ate():
         "these literals hold an escape that Python decodes at parse time, so "
         "what reaches the shell is the character and not the escape. Build it "
         "from `B`, or make the literal raw:" + "".join("\n  " + e for e in eaten))
+
+
+def test_no_replacement_in_a_pattern_substitution_is_quoted():
+    r"""The replacement side of `${doc//pattern/replacement}` is never quoted,
+    and `lib/loci_json.sh` turns `patsub_replacement` off for every shell that
+    sources it. One rule with two halves, pinned together (AAD-7771).
+
+    bash 3.2 — stock macOS, the `bash` every hook runs under on a Mac without
+    Homebrew — KEEPS the quote characters of a quoted replacement:
+    `${doc//"$pat"/"$c"}` with `c=f` writes `"f"`. The escaped-key pass then
+    rewrote `{"\u0066oo":…}` to `{""f"oo":…}`, found no `"foo"`, and every
+    `\u`-escaped name read as ABSENT — the F17 hole open again on every stock
+    Mac: 52 reds in this file, 27 in `test_contract_guard.py`, 12 in
+    `test_draft_nudge.py`, and a `contract.yaml` write with an escaped
+    `file_path` key ALLOWED. bash 5.2+ removes the quotes, which is why the
+    idiom was green on both developer platforms.
+
+    The unquoted spelling is only safe with `patsub_replacement` off: bash 5.2
+    ships it ON, and under it an unquoted replacement from an expansion has its
+    `&` replaced with the match and its backslashes eaten — `r='\\'` writes one
+    backslash, and the `\\` the library parks and restores is exactly that
+    shape. Measured on bash 3.2.57, 5.2.21 and 5.3.15: with the option off and
+    the replacement unquoted all three agree.
+    """
+    quoted_replacement = re.compile(
+        r'\$\{[A-Za-z_0-9]+(?:\[[^\]]*\])?//?(?:"[^"]*"|[^/"}])+/"')
+    hits = []
+    for path in sorted([*(PLUGIN_ROOT / "lib").glob("*.sh"),
+                        *(PLUGIN_ROOT / "hooks").glob("*.sh")]):
+        for n, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if quoted_replacement.search(line):
+                hits.append(f"{path.relative_to(PLUGIN_ROOT).as_posix()}:{n}: "
+                            f"{line.strip()}")
+    assert not hits, (
+        "a quoted replacement keeps its quote characters under bash 3.2 (stock "
+        "macOS); spell it `${v//\"$pat\"/$rep}`, unquoted:"
+        + "".join("\n  " + h for h in hits))
+    lib = (PLUGIN_ROOT / "lib" / "loci_json.sh").read_text(encoding="utf-8")
+    assert "shopt -u patsub_replacement 2>/dev/null || :" in lib, (
+        "an unquoted replacement is only portable with `patsub_replacement` "
+        "off; bash 5.2 ships it on, and it eats `&` and backslashes")
+
+
+def test_the_legacy_profile_reads_dense_values_inside_the_budget(tmp_path):
+    r"""bash 3.2 (stock macOS, no newer bash): the cost the hooks actually pay.
+
+    `${v//pat/rep}` there costs ~2 ms per match at 16 KB and grows with the
+    square of the length, so the library's prefix is 4 KB under bash 3
+    (`lib/bash-compat.sh`) and the 64 KB shapes above are skipped on such a
+    host. This is what stands in for them: the worst shapes at the cap that
+    host reads, against the edge hooks' 5 s. Measured on a 3.2.57 built from
+    source, a quote-dense 2.5 KB value reads in about 0.4 s.
+    """
+    if not _legacy_bash():
+        pytest.skip("bash 4+: the 64 KB shapes above cover this host")
+    cap = {"LOCI_JSON_MAX": "4096"}
+    for label, body in (("quote-dense", _quote_dense(2_500)),
+                        ("backslash-dense", "C:" + (B + B) * 1_200),
+                        ("escape-dense", (B + "u0041") * 400)):
+        start = time.monotonic()
+        rc, got = _read(_doc(body), "target", tmp_path, env=cap)
+        elapsed = time.monotonic() - start
+        assert rc == 0, (label, rc, got[:80])
+        assert elapsed < 2.5, f"{label}: {elapsed:.1f}s at the 4 KB legacy cap"

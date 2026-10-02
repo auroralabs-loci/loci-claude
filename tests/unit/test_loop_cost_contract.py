@@ -49,7 +49,9 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS = PLUGIN_ROOT / "skills"
-CONTRACT = SKILLS / "_shared" / "loci-runtime-contract.md"
+# The compile route moved to its own file on 22 Sep (todo [082]): only a skill that
+# BUILDS or DIFFS an artifact reads it, so the three leaf skills stopped loading it.
+COMPILE_ROUTE = SKILLS / "_shared" / "compile-route.md"
 VERDICTS = SKILLS / "_shared" / "verdicts.md"
 PREFLIGHT = SKILLS / "loci-preflight" / "SKILL.md"
 POST_EDIT = SKILLS / "loci-post-edit" / "SKILL.md"
@@ -71,7 +73,7 @@ def skill(request) -> Path:
 # ── the rule lives in one place, and both skills reach it ────────────────────
 
 def test_the_contract_carries_the_loop_cost_section_with_an_anchor():
-    text = _text(CONTRACT)
+    text = _text(COMPILE_ROUTE)
     assert f'id="{ANCHOR}"' in text, (
         f"the shared contract has no `{ANCHOR}` anchor, so nothing can link to the rule"
     )
@@ -94,7 +96,7 @@ def test_the_rule_is_not_copied_into_the_skills():
 
 
 def test_the_contract_hands_path_cost_to_measure():
-    section = _text(CONTRACT).split(f'id="{ANCHOR}"')[1][:6000]
+    section = _text(COMPILE_ROUTE).split(f'id="{ANCHOR}"')[1][:6000]
     assert "loci analyse measure" in section, (
         "the path-cost rule does not name the verb that computes it, so the arithmetic "
         "has no owner and the prose will grow one back"
@@ -161,7 +163,7 @@ def test_no_skill_gates_the_feature_on_a_capability_flag(skill):
 
 
 def test_the_contract_forbids_reintroducing_the_gate():
-    section = _text(CONTRACT).split(f'id="{ANCHOR}"')[1]
+    section = _text(COMPILE_ROUTE).split(f'id="{ANCHOR}"')[1]
     assert "no capability check" in section.lower(), (
         "the path-cost rule does not state that there is no capability check, which is "
         "the instruction that stops the gate being added back"
@@ -236,7 +238,7 @@ def test_the_unknown_trip_count_stays_a_lower_bound(skill):
 
 
 def test_the_contract_forbids_inventing_a_trip_count():
-    text = _text(CONTRACT)
+    text = _text(COMPILE_ROUTE)
     assert re.search(r"[Nn]ever substitute a number", text), (
         "the path-cost rule does not forbid supplying a trip count of your own — the "
         "one failure mode that is both silent and always in the same direction"
@@ -248,9 +250,13 @@ def test_the_contract_forbids_inventing_a_trip_count():
 
 
 def test_the_report_layout_is_not_mistaken_for_expansion_prose():
-    """post-edit's "expanded form" is the multi-line report. The absence checks above
-    must not be tightened into anything that trips on it."""
-    assert "expanded form" in _text(POST_EDIT), (
-        "post-edit lost the expanded report form — if an assertion above was widened "
-        "to catch the word 'expand', widen it back"
+    """post-edit's footer is a multi-line box. The absence checks above must not be
+    tightened into anything that trips on it.
+
+    It used to anchor on the words "expanded form", from when the footer had a compact
+    and an expanded shape. 23 Sep collapsed those to one box, so the canary moved to
+    the box itself — the thing an over-broad absence check would actually catch."""
+    assert "─── LOCI · post-edit" in _text(POST_EDIT), (
+        "post-edit lost its footer box — if an assertion above was widened to catch a "
+        "layout character, widen it back"
     )

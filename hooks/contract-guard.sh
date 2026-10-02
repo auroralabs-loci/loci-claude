@@ -24,6 +24,11 @@
 # The one LOCI hook that BLOCKS — do not merge it into the advisory pre-edit hook,
 # and do not soften the deny into a warning. Two routes: an Edit/Write whose
 # file_path is a guarded file, and a Bash contract-writing verb.
+# The bash this runs under is decided first, while the payload is still on
+# stdin: on bash 3 (stock macOS) this re-executes under a newer bash when one
+# is installed, else sets `_LOCI_BASH_LEGACY=1` (AAD-7771; lib/bash-compat.sh).
+. "${0%/*}/../lib/bash-compat.sh" 2>/dev/null || :
+
 set -u
 
 # Byte semantics for ROUTE 2, and it is a correctness line rather than a
@@ -70,10 +75,12 @@ case "$0" in
     */*)
         . "${0%/*}/../lib/loci_log.sh" 2>/dev/null || true
         . "${0%/*}/../lib/loci_json.sh" 2>/dev/null || true
+        . "${0%/*}/../lib/loci_host.sh" 2>/dev/null || true
         ;;
 esac
 command -v loci_log >/dev/null 2>&1 \
     || { loci_log() { :; }; loci_log_session_from_payload() { :; }; }
+command -v loci_host_adapt >/dev/null 2>&1 || loci_host_adapt() { return 1; }
 
 # `cat`, with a builtin fallback — the third form tried here, and the reasons
 # matter because two plausible ones are wrong. `IFS= read -r -d ''` forks
@@ -90,6 +97,27 @@ if command -v cat >/dev/null 2>&1; then
 else
     IFS= read -r -d '' payload || true
 fi
+# GitHub Copilot CLI spells an edit's path `tool_input.path`, and the prefilter
+# below — like route 1 after it — names `file_path`: under Copilot a write to
+# the recipe exited ALLOW at the first arm. The host adapter respells the
+# Edit/Write keys in the bounded prefix before anything here reads the text
+# (lib/loci_host.sh, AAD-7782). ABOVE the prefilter of necessity, and still
+# forkless: outside Copilot the call is one environment-variable test; under
+# it, `fields` skips the turn step this guard has no use for (the one that
+# probes the state directory), and the field step is parameter expansions
+# over the prefix. Pinned by `test_the_guard_does_not_fork_under_copilot`.
+#
+# The head the adapter reads is THIS GUARD'S field cap, not the library's
+# 16 KB default: an apply_patch `Edit` (AAD-7788) lists every file it names
+# out of that head, and a header behind a 20 KB hunk is one the guard must
+# see. The cap is `_R2_MAX_TOKENISE`, set here and explained where route 2
+# measures it (below): 64 KB, 4 KB under bash 3.
+_R2_MAX_TOKENISE=65536
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    _R2_MAX_TOKENISE=4096
+fi
+LOCI_JSON_MAX=$_R2_MAX_TOKENISE
+loci_host_adapt "$payload" fields && payload="$LOCI_HOST_PAYLOAD"
 
 # Claude Code records neither PreToolUse nor its verdict anywhere QA can read, so
 # the log is the only trace this hook leaves. The session id comes off the payload
@@ -191,6 +219,11 @@ case "$payload" in
     *'"file_path"'*[Cc][Oo][Nn][Tt][Rr][Aa][Cc][Tt].[Yy][Aa][Mm][Ll]*) ;;
     *'"file_path"'*[Bb][Uu][Ii][Ll][Dd].[Yy][Aa][Mm][Ll]*) ;;
     *'"file_path"'*[Ff][Ll][Aa][Gg][Ss].[Jj][Ss][Oo][Nn]*) ;;
+    # An apply_patch (AAD-7788) whose headers the adapter could not read
+    # injects no `file_path` and may still name a guarded file: the two arms
+    # above need the key in front, so the patch's own opening stands in.
+    *'*** Begin Patch'*[Bb][Uu][Ii][Ll][Dd].[Yy][Aa][Mm][Ll]*) ;;
+    *'*** Begin Patch'*[Ff][Ll][Aa][Gg][Ss].[Jj][Ss][Oo][Nn]*) ;;
     *'\u00'*) ;;
     *) _cg_verdict="allow (prefilter: no guarded token)"; exit 0 ;;
 esac
@@ -209,6 +242,7 @@ deny() {
 # JSON, not about printf.
 REASON_DUPLICATE_FMT="This payload uses the JSON name '%s' twice as a key, and that is a question with two answers: JSON leaves a duplicate name to the parser, so this guard and the tool that performs the write do not have to agree on which one they are reading — and a guard whose verdict is about a different write is not a guard. Nothing produced this by serialising an object; send one '%s' and the decision is unambiguous."
 REASON_FILE="The Contract Envelope (.loci/contract.yaml) is read-only to you. It states the bounds your work is judged against, so only the user changes it. Draft the change instead: echo '<entry json>' | loci contract draft add   then hand the user exactly this line to run: ! loci contract accept"
+REASON_UNREAD="This tool call's file_path did not close inside the 4 KB this guard reads under bash 3.2 (stock macOS), so it cannot be checked against the guarded files and is refused. Spell the path plainly — no escapes, no ./ padding, under 1 KB — or install bash 4+ (brew install bash) for the full guard."
 REASON_VERB="That verb writes the Contract Envelope, which is the user's to apply. Draft with 'loci contract draft add|edit|disable|enable', then hand the user this line to run: ! loci contract accept"
 # These two name the sanctioned write path, and the consent that goes with it.
 # `loci init set` is agent-runnable on purpose — it is the interface these files
@@ -216,6 +250,7 @@ REASON_VERB="That verb writes the Contract Envelope, which is the user's to appl
 # just advertising its own bypass with one extra step.
 REASON_RECIPE="The build recipe (.loci/build.yaml) is written by 'loci init', never edited. It records the target ISA, compiler and flags every LOCI measurement is made with, so an edit here changes what your own numbers mean — and the recipe's integrity record turns a hand edit into a 'recipe_tampered' refusal for every file in the project, not just this one. Ask the user first, then record the knob: loci init set <key>=<value>   (switch targets with: loci init --refresh --target=<isa>)"
 REASON_FLAGS="That flag pin (.loci/build/flags.json) is the user's own, and a 'replace' pin OUTRANKS the recipe — so it is not yours to write either. Ask the user, then record the knob in the recipe: loci init set <key>=<value>   (e.g. loci init set rust.features=max-pure). If they want a raw flag pin instead, hand them the file and let them edit it themselves."
+REASON_PATCH_UNREAD="This patch names files past what this guard could read (more than 64 file headers, or a patch longer than the 64 KB it reads — 4 KB under bash 3.2), so not every file in it can be checked against the guarded files and it is refused. Send the edit as one file per patch, or a shorter patch."
 
 # Above this many bytes of command text, route 2 stops tokenising and falls back
 # to the SUBSTRING test it replaced. Tokenising is more work per byte than that
@@ -272,8 +307,18 @@ REASON_FLAGS="That flag pin (.loci/build/flags.json) is the user's own, and a 'r
 # command that long is a heredoc dumping a file; deciding it by substring
 # over-denies a mention of the verb inside such a file, which is the direction
 # this guard errs in everywhere else — and it is exactly what `bb4a547` did to
-# every command of every size.
-_R2_MAX_TOKENISE=65536
+# every command of every size. (The assignment itself sits above the host
+# adapter call, which reads its head by the same cap — AAD-7788.)
+#
+# ⚠ 4 KB UNDER BASH 3 (stock macOS with no newer bash — `lib/bash-compat.sh`
+# re-executes under one when it exists). Measured on 3.2.57 (AAD-7771): a
+# `${v//pat/rep}` costs ~2 ms per match at 16 KB and ~31 ms per match at
+# 64 KB, so the tokeniser's passes over a 64 KB command are 150 quote
+# characters away from the 5 s kill. At 4 KB a pass over a command that is
+# nothing but matches is 0.3 s. Above the cap route 2 takes the coarse regex
+# arm below, which is linear on 3.2 as well (25 ms at 1 MB, measured), and
+# over-denies a mention — the direction this guard errs in everywhere else.
+# `LOCI_JSON_MAX` takes the same value, so the field read is bounded alike.
 
 # THE FIELDS, forklessly. This used to be a three-rung ladder — jq, then sed,
 # then parameter expansion — and the bottom rung existed because the top two are
@@ -312,6 +357,23 @@ if command -v loci_json_load >/dev/null 2>&1; then
     # and is what the retired bottom rung did for every payload.
     if [ -n "${_LOCI_JSON_TRUNCATED:-}" ] && [ -z "$cmd" ]; then
         case "$payload" in *'"command"'*) cmd="$payload" ;; esac
+    fi
+    # Under bash 3 the prefix is 4 KB (see `_R2_MAX_TOKENISE`), and a
+    # `file_path` that did not close inside it is the one shape this guard can
+    # neither read nor afford there: a 4 KB path is longer than macOS lets a
+    # path be (PATH_MAX 1024), so nothing real is denied, while a path padded
+    # with `./` or spelled in `\u` escapes past the cap is exactly what a
+    # bypass looks like. Route 1 cannot run without the field, so this DENIES
+    # rather than falling through to "no field, no route" — the F17 hole. The
+    # payload shape is checked with two globs (linear on 3.2): a tool call that
+    # names `file_path` and is not a Bash call (those carry `command`, and a
+    # Bash payload's `"command"` key sits ahead of its text).
+    if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] && [ -n "${_LOCI_JSON_TRUNCATED:-}" ] \
+        && [ -z "$fp" ]; then
+        case "$payload" in
+            *'"command"'*) ;;
+            *'"file_path"'*) _cg_what="unread file_path"; deny "$REASON_UNREAD" ;;
+        esac
     fi
 else
     # The library did not source. Route 1 cannot run without a field, but route 2
@@ -991,7 +1053,14 @@ guard_path() {
     deny "$2"
 }
 
-if [ -n "$fp" ]; then
+# Route 1 is a FUNCTION of one path since AAD-7788: an apply_patch `Edit` (the
+# shape Copilot's default subagent model sends) batches files, and the recipe
+# may be its third, so every header the adapter read is decided — the loop
+# below `}`. One payload, one `file_path`, was the only shape before; that
+# call is the `elif`.
+_route1() {
+    fp="$1"
+    [ -n "$fp" ] || return 0
     # The ambient locale, back, for as long as route 1 runs — see the note at
     # the top. Everything below this line compares PATHS, and their case folding
     # has to be the filesystem's, not ASCII's. Restored to C at the end of the
@@ -1003,11 +1072,16 @@ if [ -n "$fp" ]; then
     # hand from the forkless read above; there is no jq fallback for it, because
     # the only host that read is unavailable on is one where the library did not
     # source, and route 1 is off there anyway.
-    root="${CLAUDE_PROJECT_DIR:-}"
-    if [ -z "$root" ]; then
-        root=$(cd "${cwd:-$PWD}" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
+    # Found once per hook: every file of a patch is decided against the same
+    # root, and the git fork is the one cost here worth not repeating.
+    if [ -z "${_cg_root_raw:-}" ]; then
+        _cg_root_raw="${CLAUDE_PROJECT_DIR:-}"
+        if [ -z "$_cg_root_raw" ]; then
+            _cg_root_raw=$(cd "${cwd:-$PWD}" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
+        fi
+        [ -n "$_cg_root_raw" ] || _cg_root_raw="${cwd:-$PWD}"
     fi
-    [ -n "$root" ] || root="${cwd:-$PWD}"
+    root="$_cg_root_raw"
 
     # A real payload carries the native spelling (`C:\proj\.loci\build.yaml`) —
     # `post-edit-hook.sh` says so twice. Git Bash resolves a backslash in a FILE
@@ -1063,7 +1137,7 @@ if [ -n "$fp" ]; then
             *) break ;;
         esac
     done
-    [ -n "$fp" ] || exit 0
+    [ -n "$fp" ] || { LC_ALL=C; return 0; }
 
     # From here to the end of route 1. Route 2's verb matching stays
     # case-SENSITIVE: those are shell commands, and a case-insensitive match
@@ -1161,6 +1235,34 @@ if [ -n "$fp" ]; then
     # place: route 2 measures its own work in bytes.
     shopt -u nocasematch
     LC_ALL=C
+}
+
+# Every file an apply_patch names, when the adapter read one
+# (`LOCI_HOST_PATCH_FILES`, one JSON-escaped path per line, AAD-7788): each is
+# decoded through the library — a one-field document, so the reader's own
+# unescaper does it — and decided as route 1 decides the single `file_path`.
+# A deny exits inside `_route1`; a `read` loop and not a pipe, so that it does.
+# Otherwise the one path the payload carries, as always.
+if [ -n "${LOCI_HOST_PATCH_FILES:-}" ] && command -v loci_json_load >/dev/null 2>&1; then
+    while IFS= read -r _cg_pf || [ -n "$_cg_pf" ]; do
+        [ -n "$_cg_pf" ] || continue
+        loci_json_load "{\"p\":\"$_cg_pf\"}"
+        _cg_p=$(loci_json_get p)
+        [ -n "$_cg_p" ] && _route1 "$_cg_p"
+    done <<< "$LOCI_HOST_PATCH_FILES"
+elif [ -n "$fp" ]; then
+    _route1 "$fp"
+fi
+# A patch the adapter could not read to its end — a header past its bound or
+# past the head, one its walker could not read, a relative one with no `cwd`
+# — may name a guarded file in what went unread, so it is refused, as the
+# bash-3 `REASON_UNREAD` rule refuses a path the guard cannot read. AFTER the
+# files it did read: a guarded file among them is denied for what it is, and
+# the reason says so. After the prefilter too, so a long patch with no guarded
+# token anywhere stays an ordinary edit.
+if [ -n "${LOCI_HOST_PATCH_TRUNCATED:-}" ]; then
+    _cg_what="unread patch"
+    deny "$REASON_PATCH_UNREAD"
 fi
 
 # ── route 2: a Bash command running a contract-writing verb ──────────────────

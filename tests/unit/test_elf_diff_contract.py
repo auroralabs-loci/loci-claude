@@ -38,18 +38,27 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.unit._skill_text import reach
+
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS_DIR = PLUGIN_ROOT / "skills"
-CONTRACT = SKILLS_DIR / "_shared" / "loci-runtime-contract.md"
+# The compile route moved to its own file on 22 Sep (todo [082]): only a skill that
+# BUILDS or DIFFS an artifact reads it, so the three leaf skills stopped loading it.
+COMPILE_ROUTE = SKILLS_DIR / "_shared" / "compile-route.md"
 
 # Skills whose own steps invoke `loci elf diff` and act on its answer. Declared here
 # for legibility and checked against a scan below, so a third skill that starts
 # calling the verb cannot stay invisible to every test in this file. `control-flow`
 # left when `analyse cfg` took its Incremental Path: the verb decides what to
 # compile and the skill diffs nothing.
-DIFF_CONSUMERS = ("loci-post-edit",)   # exec-trace runs the pair since T17
+# Empty since 22 Sep (todo [087]): `prepare` runs the differ itself and now carries
+# `removed_functions` + `orphaned_entries`, so post-edit's quiet branch reads the answer
+# instead of asking for it again. The fences that remain are the CONTRACT's own, in
+# `compile-route.md` — this names the skills that run the verb directly, and none does.
+# Not a dead tuple: the scan below is what turns an empty list into an assertion.
+DIFF_CONSUMERS: tuple[str, ...] = ()
 
 # One entry per reachable shape, in the form `diff_elfs` writes, with
 # `similarity_ratio` ordering them as the CLI's sort does.
@@ -104,11 +113,10 @@ def test_the_fixture_can_tell_a_right_recipe_from_a_wrong_one():
 
 def _docs() -> list[tuple[str, str]]:
     """(label, text) for the contract and every diff consumer."""
-    out = [("skills/_shared/loci-runtime-contract.md",
-            CONTRACT.read_text(encoding="utf-8"))]
+    out = [("skills/_shared/compile-route.md",
+            COMPILE_ROUTE.read_text(encoding="utf-8"))]
     for name in DIFF_CONSUMERS:
-        path = SKILLS_DIR / name / "SKILL.md"
-        out.append((f"skills/{name}/SKILL.md", path.read_text(encoding="utf-8")))
+        out.append((f"skills/{name}/", reach(name)))
     return out
 
 
@@ -153,6 +161,14 @@ def _is_denied(text: str, pos: int) -> bool:
     return bool(_DENIAL.search(_sentence_before(text, pos)))
 
 
+def _section(text: str, heading: str) -> str:
+    """One `##` section, heading to the next one — so a rule asserted here cannot be
+    satisfied by the same words sitting three sections away."""
+    start = text.index(heading)
+    end = text.find("\n## ", start + len(heading))
+    return text[start:] if end < 0 else text[start:end]
+
+
 def _fences(text: str) -> list[str]:
     return _FENCE.findall(text)
 
@@ -172,10 +188,17 @@ def test_the_declared_consumers_are_the_skills_that_actually_run_the_verb():
     """`DIFF_CONSUMERS` feeds both sides of the coverage assertion below, so on its
     own it is self-referential: dropping a skill from it removed that skill from the
     expectation too, and two mutations exploited exactly that. Scanning for the
-    invocation is what makes the list answerable to something."""
+    invocation is what makes the list answerable to something.
+
+    The list is EMPTY since todo [087], so this now reads as "no skill runs the verb
+    directly" — and the scan is the only thing holding that, which is why it matters
+    more empty than it did full. A skill that starts calling `loci elf diff` again is
+    re-deriving what `prepare` already put on its envelope."""
     found = set()
-    for path in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+    for path in sorted(SKILLS_DIR.glob("*/*.md")):
         text = path.read_text(encoding="utf-8")
+        if path.parent.name == "_shared":
+            continue                     # the contract, covered on its own below
         if any("loci elf diff" in fence for fence in _fences(text)):
             found.add(path.parent.name)
     assert found == set(DIFF_CONSUMERS), (
@@ -204,7 +227,7 @@ def test_the_contract_names_all_three_groups_and_keeps_them_apart():
     function has a Before to extract, an `added` one has none, and a `removed` one is
     not in the After at all. A contract naming `data.functions` and no group leaves
     the model to merge them."""
-    text = CONTRACT.read_text(encoding="utf-8")
+    text = COMPILE_ROUTE.read_text(encoding="utf-8")
     groups = _functions_groups(text) - {None}
     assert groups == {"added", "removed", "modified"}, (
         f"the contract names {sorted(groups)}; all three groups have to be named, "
@@ -362,7 +385,7 @@ def test_the_documented_entry_shape_is_the_one_the_cli_writes():
 
     Keyed on FIXTURE_ENTRIES so the fixture is answerable to the shipped prose rather
     than to itself — the failure this file's own docstring names."""
-    text = CONTRACT.read_text(encoding="utf-8")
+    text = COMPILE_ROUTE.read_text(encoding="utf-8")
     samples = [f for f in _fences(text) if '"stt_type"' in f]
     assert len(samples) == 1, (
         f"the contract shows {len(samples)} diff-entry samples; a reader matching "
@@ -399,7 +422,7 @@ def test_the_contract_states_both_filters_the_cli_applies():
     outright. The contract has to say the CLI applied them — a model that does not
     know the list is already filtered re-derives it from `diff_file`, which is the
     work this field exists to remove."""
-    text = CONTRACT.read_text(encoding="utf-8")
+    text = COMPILE_ROUTE.read_text(encoding="utf-8")
     assert re.search(r"`data\.functions` (?:is already filtered|holds functions only)",
                      text), (
         "the contract does not state that `data.functions` excludes the variables "
@@ -526,3 +549,45 @@ def test_every_documented_diff_fence_runs_and_prints_the_envelope(tmp_path: Path
             f"{label}: the fence did not put the envelope in front of the model; it "
             f"printed {proc.stdout!r}"
         )
+
+
+# ── what `prepare` answers instead ───────────────────────────────────────────
+
+def test_the_contract_routes_a_deletion_to_prepare_and_not_to_a_second_diff():
+    """Todo [087]: `prepare` already ran the differ. A skill that runs its own to ask
+    "was anything deleted" is re-deriving an answer it was handed, and that second call
+    was the last direct `loci elf diff` in a skill."""
+    text = COMPILE_ROUTE.read_text(encoding="utf-8")
+    section = _section(text, "## A function this edit deleted")
+    for field in ("data.removed_functions", "data.orphaned_entries"):
+        assert field in section, f"the section does not name {field}"
+    assert "never run one" in section.lower() or "never run a" in section.lower(), (
+        "the section has to forbid the second diff, not merely offer an alternative")
+
+
+def test_a_removed_function_is_never_a_measurement_target():
+    """It has no After, so a request for one could only sit unmeasured for ever. The
+    CLI enforces it; this keeps the prose from inviting a `--functions` workaround."""
+    section = _section(COMPILE_ROUTE.read_text(encoding="utf-8"),
+                       "## A function this edit deleted")
+    assert "never measured and never requested" in section
+    assert "--functions" in section, (
+        "name the workaround the rule forbids, or a reader invents it")
+
+
+def test_an_orphaned_entry_is_a_line_and_does_not_move_the_verdict():
+    """Nothing was measured, so it has no STATUS and cannot compose into a run verdict
+    without breaking the row matrix. It is the user's contract that needs the edit, not
+    a word on their code."""
+    section = _section(COMPILE_ROUTE.read_text(encoding="utf-8"),
+                       "## A function this edit deleted")
+    assert "line, never a row" in section
+    assert "does not move the run verdict" in section
+
+
+def test_the_quiet_branch_reads_the_fields_rather_than_the_differ():
+    quiet = (SKILLS_DIR / "loci-post-edit" / "quiet-run.md").read_text(encoding="utf-8")
+    assert "data.removed_functions" in quiet
+    assert "#removed-functions" in quiet, "cite the shared rule rather than restating it"
+    assert not any("loci elf diff" in f for f in _fences(quiet)), (
+        "the quiet branch ran its own diff again")

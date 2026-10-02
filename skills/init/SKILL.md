@@ -1,20 +1,21 @@
 ---
 name: init
+argument-hint: "[project path]"
 description: >
   Record how this project builds — one machine-local recipe
   (`.loci/build.yaml`) naming the target ISA, the compiler, the build system and
   the artifact — so every LOCI measurement compiles the way the project itself
-  does.
+  does. Use on /loci:init, "initialize LOCI", "set up this project for
+  LOCI", "switch the LOCI target" or "LOCI says this project is not
+  initialized", or a LOCI analysis failed with a recipe-related `error.code`
+  on a project that already has a recipe.
 when_to_use: >
-  "initialize LOCI", "set up this project for LOCI", "/loci:init", "switch the
-  LOCI target", "LOCI says this project is not initialized". Also whenever a LOCI
-  analysis failed with `error.code` `recipe_stale`, `recipe_tampered`,
-  `recipe_invalid`, `compiler_missing`, `arch_mismatch`, `outside_target`, or
-  `not_initialized` **on a project that already has a recipe**: this skill routes
-  each to its recovery, which is sometimes a knob rather than a re-init. **Not**
-  `not_initialized` with no recipe — adopting a project is the user's decision,
-  so a skill hitting that names `/loci:init` and stops.
-  Not for installing the CLI (that is `/loci:setup`), and not for bounds (that is
+  The codes it routes: `recipe_stale`, `recipe_tampered`, `recipe_invalid`,
+  `compiler_missing`, `recipe_foreign_host`, `arch_mismatch`, `outside_target`,
+  `not_initialized` — each to its recovery, sometimes a knob rather than a
+  re-init. **Not** `not_initialized` with no recipe — adopting a project is the
+  user's call, so a skill hitting that names `/loci:init` and stops. Not for
+  installing the CLI (that is `/loci:setup`), and not for bounds (that is
   `/loci:contract`, which authors requirements — this one records build facts).
 ---
 
@@ -27,12 +28,14 @@ reproducible. It is **machine-local**: `loci init` gitignores it via a
 `.loci/.gitignore` it writes.
 
 **The CLI never prompts. You do.** It refuses with a code at a genuine decision point;
-you turn that into a question. **One decision about the recipe: the target ISA** —
-everything else follows from it, the answer is recorded, and an initialized project is
-not asked it again. Two things are not that decision and do not spend it: **permission**
-before running anything that changes their build tree, and their **explicit acceptance
-of a weaker validation tier** where one is offered (`recovery.md`). Both are their call
-about their own tree, and each fires only in the branch that needs it.
+you turn that into a question.
+
+**There is one *decision* about the recipe — the target ISA — and it is asked once.**
+Everything else follows from it, the answer is recorded, and an initialized project is
+never asked it again. The rule is about that decision, not about a count of questions:
+a step needing the user's **permission**, their **acceptance of a weaker validation
+tier**, or a **fact only they know** — which container the toolchain runs in — asks on
+its own branch, and none of them re-opens the target.
 
 - **Never invent the answer.** `--confirmed` goes on the command line only after a
   real person said yes to what you showed them. Every report renders
@@ -46,7 +49,7 @@ One JSON envelope on stdout per call, refusals included: let it print, branch on
 `ok`, never on substrings. Bare `loci …`, never via Python. **NEVER** write to
 `/tmp` or anywhere outside the project.
 
-## Step 0 — the CLI has to exist
+## Step 0: the CLI has to exist
 
 Probe `loci` and `uv` with `command -v`. Either missing, not signed in, or a
 `loci` answering `loci init` with **empty stdout and `invalid choice: 'init'`** (a stale
@@ -62,14 +65,14 @@ rule that spares a CLI at or ahead of the pin.
 Empty stdout with any *other* argparse complaint is your malformed command: fix the
 call, do not run the installer, or you loop.
 
-## Step 1 — the project root, then evidence
+## Step 1: the project root, then evidence
 
 **Establish the project root first and pass it to every call.** Both `loci init` and
-`probe` default to the shell's own directory, so a session opened in `fw/src`
-initializes — or misdiagnoses — a subtree. Use the git toplevel
-(`git rev-parse --show-toplevel`; it exits non-zero outside a repo, and in a submodule
-or monorepo can sit above the tree that actually builds — the root build files are the
-check), else the highest directory holding them. Then `--project-root "<root>"` on every
+`probe` default to the shell's own directory; start from the path the user named or
+the file at hand. Use its git toplevel (`git rev-parse --show-toplevel`; it
+exits non-zero outside a repo, and in a submodule or monorepo can sit above the tree
+that actually builds — the root build files are the check), else the highest directory
+holding them. Then `--project-root "<root>"` on every
 `loci init` below, `probe` and the reference files' commands included.
 
 **If a coded refusal sent you here, start with its recovery, not this flow** —
@@ -84,7 +87,7 @@ tree's configure line comes from there, not from you. Then `probe`, whose `.data
 everything `loci init` decides from.
 
 - `.data.initialized == true` → a recipe is here; show `.data.recipe` and do not
-  re-initialize a project that only asked you to look. Its fields route you first.
+  re-initialize a project that only asked you to look.
   **`escrow` not `"ok"`** → **always go to Step 3**, whatever else the recipe says.
   Nothing outside the repo vouches for the file, so its `validated` and
   `confirmed_by_user` are claims, not facts: a hand-written or copied-in recipe reads
@@ -92,7 +95,7 @@ everything `loci init` decides from.
   measurement and silences the warning that sent the user here. Plain `loci init` is the
   repair — it re-vouches only for what this tree still demonstrates, and never
   re-blesses consent. (`.data.recipe.target` absent from `.data.candidates` is a second
-  reason to re-derive, not the only one.) Otherwise `confirmed_by_user: false` →
+  reason to re-derive.) Otherwise `confirmed_by_user: false` →
   **Step 4**, else **Step 5**.
 - `.data.recipe_untrusted` present → a recipe is here that **cannot be vouched for**;
   the value names which of `recipe_stale`, `recipe_tampered`, `recipe_invalid`,
@@ -118,7 +121,7 @@ walking build trees for ELFs. If probe found nothing, the answer is a coded outc
 Step 3, not a deeper search. (`probe --with-make` **runs the project's build** — see
 `compdb.md` first.)
 
-## Step 2 — the compile database (C/C++ build systems only)
+## Step 2: the compile database (C/C++ build systems only)
 
 **Skip this step when `.data.build_system` is `cargo` or `go`** — none of
 these is handed a compile database, so none of `compdb.md` applies, whatever
@@ -155,7 +158,7 @@ confirmation included. That means `--compdb`/`--compdb-kind`, and `--accept-tier
 tier has been accepted: init re-derives from scratch each time, so a `--confirmed` that
 drops a flag meets the refusal you already resolved.
 
-## Step 3 — run init, ask at most one question
+## Step 3: run init, ask at most one question
 
 Run `loci init --project-root "<root>" [--compdb="<path>" --compdb-kind=<kind>] [--target=<isa>]`.
 
@@ -163,23 +166,22 @@ Run `loci init --project-root "<root>" [--compdb="<path>" --compdb-kind=<kind>] 
 
 | code | what it is | what you do |
 |---|---|---|
-| `init_needs_user` | several supported ISAs, and a recipe records exactly one | the one question, below |
-| `init_unsupported` | not an ISA LOCI predicts for; never retried automatically | relay `.error.message` **plus `.error.detail`** (where the paths are), then **stop**. [`recovery.md`](recovery.md) has the caveat to pass on |
-| `init_failed` + `.error.transient` | a temporary state of the tree — unbuilt checkout, broken build, database gone or for another image | **read [`recovery.md`](recovery.md)'s `init_failed` shapes first, top-down in the order given** — the first is a dead end that repeats every session. Otherwise relay `.error.message` (it names the fix) and stop: no recipe was written, init re-arms next session start, and you must **not loop** |
+| `init_needs_user` | `.error.question` says which: `target` (several supported ISAs), `toolchain_unreachable` or `compdb_regen` | `target` → the one question, below. `toolchain_unreachable` → [`container-toolchain.md`](container-toolchain.md) — before the ISA, never beside it. `compdb_regen` → [`compdb-container.md`](compdb-container.md) |
+| `init_unsupported` | not an ISA LOCI predicts for; never retried automatically | relay `.error.message` **plus `.error.detail`**, then **stop**. [`recovery.md`](recovery.md) has the caveat to pass on |
+| `init_failed` + `.error.transient` | a temporary state of the tree — unbuilt checkout, broken build, database gone or for another image | **read [`recovery.md`](recovery.md)'s `init_failed` shapes first, top-down in the order given** — the first is a dead end that repeats every session. Otherwise relay `.error.message` (it names the fix) and stop: no recipe was written, the user runs `/loci:init` again once the tree is fixed, and you must **not loop** |
 | `auth_required` | not signed in | `bootstrap.md`'s sign-in line |
 | no `code` at all | a caller error, exit 2 | read `error.message`, fix the call, never re-send unchanged |
 
-**The one question** — exactly one `AskUserQuestion`, header `Target`:
+**The one question** — exactly one question-tool call, header `Target`:
 
 - Options come from `.error.candidates[]`, ordered by evidence class with ties
   alphabetical — the order is not a recommendation; do not present it as one.
-- There are at most four supported ISAs, so the list always fits `AskUserQuestion`'s
+- There are at most four supported ISAs, so the list always fits the question tool's
   four options with no folding. Name any the user expects and does not see, from
   `.error.supported`.
 - `evidence` is one `"; "`-joined string per candidate. Split it and describe each with
   the fact that **names the image** — the ELF or build directory — not necessarily the
-  first: where one database builds both images the leading facts are near identical.
-  Paths project-relative; the raw string runs to hundreds of characters.
+  first. Paths project-relative.
 
 Then re-invoke with the pick and — answering this question *is* the confirmation —
 `--confirmed`, carrying Step 2's flags and the project root. A free-form answer is
@@ -187,25 +189,24 @@ expected, so a board or part number is normal; **[`recovery.md`](recovery.md)** 
 comes back and why re-asking once is still one decision.
 
 Single candidate and no refusal? Init has already written the recipe with
-`confirmed_by_user: false`. Do not skip the confirmation and do not add a second question
-for it — Step 4's confirm *is* your one question.
+`confirmed_by_user: false`. Do not skip the confirmation or add a second question for it —
+Step 4's confirm *is* your one question.
 
 ### Headless runs: never ask
 
 With no user to answer — a pipeline, CI, print mode, a hook — **do not attempt
-`AskUserQuestion`.** On `init_needs_user`, print the candidates with their evidence and
+the question tool.** On `init_needs_user`, print the candidates with their evidence and
 the exact line the pipeline's author needs (`loci init --target=<isa>`), then stop; the
 outcome is recorded and the next interactive session asks. Do **not** pick a target
-yourself to keep the run moving: an unattended guess measures the wrong image for as long
+yourself: an unattended guess measures the wrong image for as long
 as the recipe lives.
 
 The same holds for **Step 4's confirmation**, which fires on every single-candidate
 project: with nobody to ask, **never pass `--confirmed`** — report the recipe as
 unconfirmed, hand over the `loci init --confirmed` line, and let the next interactive
-session earn it. `AskUserQuestion` does not exist in these runs, so there is no version of
-this where you asked. A tier acceptance is the user's too: never take one here.
+session earn it. A tier acceptance is the user's too: never take one here.
 
-## Step 4 — show it, get the confirmation
+## Step 4: show it, get the confirmation
 
 Reached from Step 3, or from Step 1 with an unconfirmed recipe — in that case run
 `loci init --project-root "<root>"` first for the envelope this step reads: **`probe`
@@ -218,8 +219,9 @@ lists. A caveat goes **under** that line, never folded into it.
 
 `.data.report` is the rendered summary; relay it (trimmed) rather than rebuilding one
 from `.data.recipe_summary`. What survives: **target**, **compiler**, **build system +
-compile-database kind**, the **artifact** where the report has one (a cargo recipe has
-none, and `compiler: unknown` is right there), `.data.validated`,
+compile-database kind**, the **artifact** where the report has one (cargo: the linked
+program, once built; `compiler: unknown` is right there), every **`toolchain:` and `mount:`**
+line ([`container-toolchain.md`](container-toolchain.md)), `.data.validated`,
 `.data.confirmed_by_user`, and — the part a trim always drops — **every line of
 `.data.notes`, every line of `.data.warnings`, and every `!` line in the report**. Those
 say a recipe it could not vouch for was replaced, that nobody confirmed this one, or
@@ -233,16 +235,15 @@ which renders the document: after init re-establishes a missing integrity record
 report can read `confirmed by user: True` one line above a `.data.confirmed_by_user` of
 `false`. Relay the report, then correct it from the field.
 
-If `.data.confirmed_by_user` is false, ask once with `AskUserQuestion` (header
+If `.data.confirmed_by_user` is false, ask once with the question tool (header
 `Recipe`; options **Looks right** / **Wrong target** / **Something else is wrong**),
 the summary in the question so they decide on what they see:
 
 - **Looks right** → `loci init --project-root "<root>" --confirmed`, plus Step 2's
   flags and any accepted `--accept-tier`: it re-derives, so a dropped flag brings back
-  the refusal you resolved. The command the CLI's own note names.
+  the refusal you resolved.
 - **Wrong target** → take the alternatives from **`loci init probe`**'s
-  `.data.candidates[]`. This envelope is not reliable for them: the already-initialized
-  path omits the key entirely. Run
+  `.data.candidates[]` — this envelope omits the key on the already-initialized path. Run
   `loci init --project-root "<root>" --refresh --target=<one>` (carrying the same
   answer flags), come back here, and pass **no `--confirmed`**: they said the setup was
   wrong, which is not consent for the next one. No alternative offered →
@@ -254,23 +255,25 @@ both re-derive, so they meet the same states Step 3 does: take the refusal back 
 3's table rather than re-asking, and never read a refusal here as the user's answer
 being wrong.
 
-The recipe governs the hooks immediately — init writes the same keyed project-context
-file session start does — but the measurement skills read the target from the
-session-start line, so after a mid-session **switch** the next `/loci:exec-trace` does not
-silently use the old target: it **refuses** with `arch_mismatch` until the session
-restarts. Say both when you switch one. Close in one short block on what a first init
+The recipe governs at once: the hooks and the measuring verbs read it on the next edit or
+measurement, so after a mid-session **switch** the next `/loci:exec-trace` measures the
+new target — no restart. Close in one short block on what a first init
 unlocks: **one invitation**, naming this recipe's artifact and target, with
 `/loci:exec-trace`, `/loci:stack-depth` and an edit as the words they can type — not a
 command list, and no function you have not seen. Never print the recipe YAML unless
 asked, nor the plumbing (integrity record, context file, plugin dir).
 
-On a first init only, one more line: `loci cockpit` — this machine's measurements,
-live, in a *separate* terminal. You never run it.
+On a first init or a target switch, offer the cockpit in these words (a
+*separate* terminal: it takes over the one it starts in):
 
-## Step 5 — an existing recipe, and knob-fixable refusals
+> Run `loci cockpit` in a separate terminal to see what LOCI catches that your coding agent might miss during planning and coding.
+
+You never run it.
+
+## Step 5: an existing recipe, and knob-fixable refusals
 
 **[`recovery.md`](recovery.md)** has the four variants (`--refresh`, `set`, `add-file`,
 `--from-existing`) with their consent rules, the `init_failed` shapes in precedence
 order, and the routing easiest to get wrong: `outside_target` is always
-`loci init set build.compdb.select.prefer_output`, but **`arch_mismatch` has four causes
+`loci init set build.compdb.select.prefer_output`, but **`arch_mismatch` has five causes
 and only one is that knob** — read what the message names before acting.

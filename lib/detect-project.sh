@@ -109,6 +109,55 @@ _has_nested_build_declaration() {
     2>/dev/null | grep -q .
 }
 
+# A colcon (ROS 2) workspace root, which declares NO build of its own and is a
+# project anyway. It holds `src/` with the packages and `build/ install/ log/`
+# with what colcon wrote, so every anchor above misses it by exactly one level:
+# a package's `CMakeLists.txt` is `src/<pkg>/CMakeLists.txt`, depth 3, and the
+# walk above stops at 2. Reproduced on a real ROS workspace — the session went
+# inactive at the workspace root under a sentence saying no build file declares
+# a build here, while `cd src/<pkg>` armed fine and `loci init` there found no
+# compile database, because colcon writes it to the SIBLING `build/<pkg>/`.
+#
+# Two independent halves, because each covers a state the other cannot. The
+# packages are there before anything has ever been built, which is when someone
+# is most likely to open a session; colcon's output bases are there for a
+# workspace whose `src/` is empty (every package `vcs import`ed and then
+# removed) or built with `--base-paths` pointing elsewhere.
+#
+# `build`/`install`/`log` are ordinary directory names, so the triple is never
+# the evidence on its own — one of colcon's own STAMPS has to be in it.
+# `COLCON_IGNORE` is what colcon writes into its own output so the next crawl
+# for packages skips it, and `log/latest_build` is the symlink its log base
+# keeps; the per-package directories under `build/` get `AMENT_IGNORE` instead,
+# which is what keeps this from firing one level down.
+#
+# `-maxdepth 3` under `src/` ONLY, never from `$CWD`: `src/<pkg>/…` and
+# `src/<repo>/<pkg>/…` are both ordinary (the second is what `vcs import`
+# produces from a `.repos` file), and three levels reaches both. The prune list
+# is the dependency/VCS half of the one above and not the content half — inside
+# `src/` a directory called `tests` or `docs` is a PACKAGE name, while a
+# `CMakeLists.txt` inside an imported repo's `.git` is still nothing.
+_is_colcon_workspace() {
+  if [ -d "$CWD/src" ]; then
+    if find "$CWD/src" -mindepth 1 -maxdepth 3 \
+        -type d \( -name .git -o -name node_modules -o -name .venv \
+        -o -name target -o -name vendor -o -name third_party \
+        -o -name .loci -o -name .loci-build \) -prune -o \
+        \( -name package.xml -o -name CMakeLists.txt \) -type f -print -quit \
+        2>/dev/null | grep -q .; then
+      return 0
+    fi
+  fi
+  [ -d "$CWD/build" ] || return 1
+  [ -d "$CWD/install" ] || return 1
+  [ -d "$CWD/log" ] || return 1
+  # `-e`, not `-f`: `COLCON_IGNORE` is an empty file and `log/latest_build` is a
+  # symlink to the newest log directory. A check insisting on one shape would
+  # miss the other.
+  [ -e "$CWD/build/COLCON_IGNORE" ] || [ -e "$CWD/install/COLCON_IGNORE" ] ||
+    [ -e "$CWD/log/COLCON_IGNORE" ] || [ -e "$CWD/log/latest_build" ]
+}
+
 # A directory's device:inode, into `$_DEV_INODE`. Returns 1 when there isn't a
 # usable one: a ":0" inode (FAT/exFAT and some SMB mounts on Windows report 0
 # for every file) would make an inode compare call every directory the same one.
@@ -292,6 +341,14 @@ _project_gate() {
   # single `~/Downloads/demo.uvprojx` would otherwise claim the entire home
   # tree — the same shape of false positive the source sweeps produced.
   if ! _is_home_dir && _depth2_belongs_to_cwd && _has_nested_build_declaration; then
+    echo "ok"; return
+  fi
+  # A colcon workspace root, which declares its build one level below where the
+  # walk above looks. Under the SAME two guards, for the same two reasons: a
+  # single `~/src/x/CMakeLists.txt` must not claim the whole home tree, and a
+  # directory whose children are other people's repos is not one project because
+  # one of them has a `src/`.
+  if ! _is_home_dir && _depth2_belongs_to_cwd && _is_colcon_workspace; then
     echo "ok"; return
   fi
   # Declared at the root of the checkout CWD is INSIDE. `cd repo/firmware &&

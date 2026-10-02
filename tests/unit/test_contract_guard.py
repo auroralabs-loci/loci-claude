@@ -32,8 +32,27 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.copilot_payloads import current as _host
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 GUARD = PLUGIN_ROOT / "hooks" / "contract-guard.sh"
+
+
+def _legacy_bash() -> bool:
+    """bash 3 with no newer bash on the host: the profile `lib/bash-compat.sh`
+    describes (AAD-7771). `${v//pat/rep}` there costs O(matches x length^2) —
+    ~2 ms per match at 16 KB — so the hooks read a 4 KB prefix and the guard
+    tokenises 4 KB; the 64 KB shapes in this file are not what that host runs.
+    Probed once per process, on the bash the tests drive."""
+    if _legacy_bash.cache is None:
+        out = subprocess.run([_find_bash(), "-c", 'printf %s "${BASH_VERSINFO[0]}"'],
+                             capture_output=True, text=True, timeout=30)
+        v = out.stdout.strip()
+        _legacy_bash.cache = v.isdigit() and int(v) < 4
+    return _legacy_bash.cache
+
+
+_legacy_bash.cache = None
 
 #: A literal backslash, built rather than written: the tooling on this
 #: machine decodes a `\uXXXX` in file content into the character it names.
@@ -132,12 +151,27 @@ def _run(payload: dict, project_dir: Path, *, env: dict | None = None,
     `\\uXXXX` escape. Neither `json.dumps` nor `JSON.stringify` will produce
     one — which is the reachability argument for F15 as much as it is the
     reason this parameter exists.
+
+    The host (AAD-7790): a test that took the `host` fixture runs this once
+    per host. Under Copilot the payload is respelled to what Copilot sends
+    (`tool_input.path` / `file_text` / `old_str` / `new_str`, no `prompt_id`),
+    the host's exports (`COPILOT_CLI`, both spellings of the plugin root and of
+    the project, the project in whatever spelling the test chose) ride beside
+    the test's own env, and the guard starts in the PLUGIN root rather than the
+    project. `raw_json` is never respelled: it is about escapes, not hosts.
+    Under Claude Code every one of these is the identity and the run is the
+    run it always was. The guard reads no turn id, so no record is seeded.
     """
     base = {
         "PATH": _base_path(),
         "HOME": str(Path.home()),
         "CLAUDE_PROJECT_DIR": _to_bash_path(project_dir),
     }
+    host = _host()
+    if raw_json is None:
+        payload = host.respell(payload)
+    run_env = {**base, **(env or {})}
+    run_env.update(host.env(project=run_env["CLAUDE_PROJECT_DIR"]))
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(GUARD)],
         input=(raw_json if raw_json is not None
@@ -146,7 +180,8 @@ def _run(payload: dict, project_dir: Path, *, env: dict | None = None,
         text=True,
         encoding="utf-8",
         timeout=30,
-        env={**base, **(env or {})},
+        env=run_env,
+        cwd=host.cwd(None),
     )
     assert proc.returncode == 0, f"guard must always exit 0; got {proc.returncode}"
     out = proc.stdout.strip()
@@ -194,6 +229,7 @@ def _denied(decision) -> bool:
 
 # ── route 1: direct writes to the file ──────────────────────────────────────
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("spelling", [
     "{root}/.loci/contract.yaml",          # absolute
     "./.loci/contract.yaml",               # cwd-relative
@@ -206,6 +242,7 @@ def test_edit_and_write_are_denied_for_every_spelling(tmp_path, spelling):
     assert _denied(_run(_write(path), tmp_path)), f"Write {path} should be denied"
 
 
+@pytest.mark.usefixtures("host")
 def test_deny_reason_points_at_the_user_executed_command(tmp_path):
     # The reason must not hand the agent a command to run itself — that is how a
     # guard ends up advertising its own bypass.
@@ -215,6 +252,7 @@ def test_deny_reason_points_at_the_user_executed_command(tmp_path):
     assert "! loci contract accept" in reason
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("path", [
     "src/contract.yaml",                   # same basename, wrong place
     "vendor/other/.loci/contract.yml",     # .yml, not the guarded file
@@ -235,7 +273,7 @@ def test_unrelated_files_are_allowed(tmp_path, path):
 # `flags.json` joins it because an explicit `mode:"replace"` pin OUTRANKS the
 # recipe: guarding one without the other leaves a higher-precedence side door.
 #
-# These ship in the same release as the runtime-contract rewrite that stopped
+# These ship in the same release as the house-rules rewrite that stopped
 # instructing the flags.json write. A guard that denies what the prose in the
 # model's context tells it to do is worse than no guard.
 
@@ -247,6 +285,7 @@ RECIPE_FILES = (
 )
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", RECIPE_FILES)
 @pytest.mark.parametrize("shape", [
     "{root}/{rel}",             # absolute
@@ -265,6 +304,7 @@ def _win(path: str) -> str:
     return path.replace("/", "\\")
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 @pytest.mark.parametrize("case", ["upper", "title", "dir-upper"])
 def test_a_case_variant_of_a_guarded_path_is_denied(tmp_path, rel, case):
@@ -288,6 +328,7 @@ def test_a_case_variant_of_a_guarded_path_is_denied(tmp_path, rel, case):
     assert _denied(_run(_write(spelled), tmp_path)), f"Write {spelled} should be denied"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 @pytest.mark.parametrize("suffix", [".", " ", "..", ". "])
 def test_a_trailing_dot_or_space_does_not_evade_the_guard(tmp_path, rel, suffix):
@@ -297,6 +338,7 @@ def test_a_trailing_dot_or_space_does_not_evade_the_guard(tmp_path, rel, suffix)
     assert _denied(_run(_edit(rel + suffix), tmp_path)), f"{rel + suffix!r}"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 @pytest.mark.parametrize("shape", ["{root}\\{rel}", "{rel}", "{root}\\src\\..\\{rel}"])
 def test_the_native_windows_spelling_is_denied(tmp_path, rel, shape):
@@ -319,6 +361,7 @@ def test_the_native_windows_spelling_is_denied(tmp_path, rel, shape):
     assert _denied(_run(_edit(path), tmp_path)), f"Edit {path} should be denied"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 def test_a_spelling_only_the_walk_can_normalise_is_denied(tmp_path, rel):
     """Pins the resolution branch, which nothing pinned before.
@@ -344,6 +387,7 @@ def test_a_spelling_only_the_walk_can_normalise_is_denied(tmp_path, rel):
     assert _denied(_run(_write(path), tmp_path)), f"Write {path} should be denied"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 def test_a_symlinked_guarded_directory_is_resolved(tmp_path, rel):
     """The resolution must see through a symlinked `.loci` / `.loci-build`.
@@ -407,6 +451,7 @@ def test_a_symlink_that_hides_the_name_is_a_known_gap(tmp_path, rel):
         f"protection that is not there.")
 
 
+@pytest.mark.usefixtures("host")
 def test_recipe_deny_reason_names_the_sanctioned_write_path(tmp_path):
     # Unlike contract.yaml's, this reason DOES hand the agent a command — `loci
     # init set` is the interface the file lost, and §6.5 makes it agent-runnable
@@ -420,6 +465,7 @@ def test_recipe_deny_reason_names_the_sanctioned_write_path(tmp_path):
         "the reason must say why going round the guard by shell does not work")
 
 
+@pytest.mark.usefixtures("host")
 def test_flag_pin_deny_reason_names_the_sanctioned_write_path(tmp_path):
     rel = ".loci/build/flags.json"
     reason = _run(_edit(rel), tmp_path)["permissionDecisionReason"]
@@ -428,6 +474,7 @@ def test_flag_pin_deny_reason_names_the_sanctioned_write_path(tmp_path):
         f"{rel} reason no longer says why this file is guarded at all")
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("shape", ["{root}/.loci-build/flags.json", ".loci-build/flags.json"])
 def test_the_legacy_flag_pin_is_not_guarded_because_nothing_reads_it(tmp_path, shape):
     """The pre-move `.loci-build/flags.json` was guarded while the CLI read it:
@@ -441,6 +488,7 @@ def test_the_legacy_flag_pin_is_not_guarded_because_nothing_reads_it(tmp_path, s
     assert _run(_write(path), tmp_path) is None, f"Write {path} is denied for nothing"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("path", [
     ".loci/build/dumps/stack-analysis.json",   # LOCI's own output, not a pin
     ".loci/build/objects/armv6-m/blink.o.meta.json",   # a sidecar
@@ -456,6 +504,7 @@ def test_neighbours_of_the_guarded_files_are_allowed(tmp_path, path):
     assert _run(_edit(path), tmp_path) is None, f"{path} must not be guarded"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("command", [
     "loci init --auto",
     "loci init --refresh --target=armv7e-m",
@@ -477,6 +526,7 @@ def test_the_sanctioned_recipe_verbs_and_reads_are_allowed(tmp_path, command):
     assert _run(_bash(command), tmp_path) is None, f"{command!r} must be allowed"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 def test_an_alternate_data_stream_spelling_is_denied(tmp_path, rel):
     """`path::$DATA` opens the file itself on NTFS.
@@ -490,6 +540,7 @@ def test_an_alternate_data_stream_spelling_is_denied(tmp_path, rel):
     assert _denied(_run(_write(rel + "::$DATA"), tmp_path)), f"{rel}::$DATA"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 def test_the_verdict_does_not_depend_on_any_external_binary(tmp_path, rel):
     """No fork may sit between the payload and the verdict.
@@ -809,6 +860,7 @@ def test_the_hook_is_registered_for_every_tool_it_claims_to_guard():
         f"never invoked for.")
 
 
+@pytest.mark.usefixtures("host")
 def test_the_guard_does_not_fork_on_a_payload_it_cannot_deny(tmp_path):
     """The prefilter's early exit, asserted rather than described.
 
@@ -862,6 +914,7 @@ def test_the_guard_does_not_fork_on_a_payload_it_cannot_deny(tmp_path):
         "deny it — the prefilter's file_path condition is gone")
 
 
+@pytest.mark.usefixtures("host")
 def test_the_prefilter_admits_the_new_files(tmp_path):
     """The prefilter used to require the literal `contract`.
 
@@ -874,6 +927,7 @@ def test_the_prefilter_admits_the_new_files(tmp_path):
         assert _denied(_run(_edit(rel), tmp_path)), f"{rel} never reached route 1"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("path", [
     "src/main.c", "src/app.cpp", "include/api.h", "src/lib.rs",
 ])
@@ -884,6 +938,7 @@ def test_source_files_pass_through_untouched(tmp_path, path):
 
 # ── route 2: Bash commands that write it ────────────────────────────────────
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("command", [
     "loci contract accept",
     "loci contract init",
@@ -1130,6 +1185,7 @@ def test_contract_writing_verbs_are_denied(tmp_path, command):
     assert _denied(_run(_bash(command), tmp_path)), f"{command!r} should be denied"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("command", [
     "loci contract show",
     "loci contract lint --draft",
@@ -1146,12 +1202,14 @@ def test_reading_and_drafting_are_allowed(tmp_path, command):
     assert _run(_bash(command), tmp_path) is None, f"{command!r} must be allowed"
 
 
+@pytest.mark.usefixtures("host")
 def test_draft_edit_and_edit_land_on_opposite_sides(tmp_path):
     # One token apart. The single most important pair in this file.
     assert _run(_bash("loci contract draft edit --index 0"), tmp_path) is None
     assert _denied(_run(_bash("loci contract edit --index 0"), tmp_path))
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("command", [
     "sed -i 's/2048/8192/' .loci/contract.yaml",
     "cat > .loci/contract.yaml <<'EOF'\nversion: 1\nEOF",
@@ -1177,6 +1235,7 @@ def test_shell_writes_to_the_file_are_deliberately_not_guarded(tmp_path, command
     assert _run(_bash(command), tmp_path) is None, f"{command!r} must be allowed"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("command", [
     "cat .loci/contract.yaml",
     "git diff -- .loci/contract.yaml",
@@ -1191,6 +1250,7 @@ def test_reads_of_the_contract_are_allowed(tmp_path, command):
     assert _run(_bash(command), tmp_path) is None, f"{command!r} must be allowed"
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("command", [
     "make -j4",
     "loci build compile --source src/main.c",
@@ -1441,6 +1501,7 @@ def test_a_megabyte_command_is_still_decided_inside_the_hook_budget(tmp_path, mb
         f"timeout in hooks.json — past it the hook is killed and fails open")
 
 
+@pytest.mark.usefixtures("host")
 def test_only_the_key_that_is_there_is_parsed(tmp_path):
     """No `jq` at all, for any field.
 
@@ -2034,6 +2095,7 @@ def test_a_duplicate_whose_second_spelling_is_escaped_is_refused_too(
         f"harness writes the Contract Envelope")
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("tool_input,what", [
     ({"command": "forge build", "cwd": "contracts"}, "an MCP shell call"),
     ({"file_path": "contracts/Token.sol", "cwd": ".", "patch": "x"},
@@ -2092,6 +2154,7 @@ def test_a_nested_name_is_refused_too_and_that_is_deliberate(tmp_path):
     assert "file_path" in decision.get("permissionDecisionReason", "")
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("tool_input,what", [
     ({"file_path": "src/main.c", "new_string": "x"}, "one file_path"),
     ({"command": "echo contract"}, "one command"),
@@ -2320,7 +2383,14 @@ def test_an_escape_dense_payload_is_decided_inside_the_hook_budget(tmp_path):
     start = time.monotonic()
     decision = _run({}, tmp_path, raw_json=_raw_edit(dense))
     elapsed = time.monotonic() - start
-    assert decision is None, "a path of 10 900 escaped A's is not a guarded file"
+    if _legacy_bash():
+        # 4 KB prefix under bash 3 (lib/bash-compat.sh): a file_path that does
+        # not close inside it is denied unread, and the reason says so. Failing
+        # CLOSED is the profile's point — the decode this test times is a shape
+        # that host cannot afford, and the clock below still holds.
+        assert _denied(decision) and "4 KB" in decision["permissionDecisionReason"], decision
+    else:
+        assert decision is None, "a path of 10 900 escaped A's is not a guarded file"
     assert elapsed < 5.0, (
         f"the arm's worst fully-decoded payload took {elapsed:.1f}s against "
         f"the 5 s timeout in hooks.json — past it the hook is killed and fails "
@@ -2341,6 +2411,7 @@ def _spellings(p: Path) -> dict:
             "win": str(Path(p))}
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 @pytest.mark.parametrize("root_is,fp_is", [
     ("native", "msys"),   # THE LIVE ONE: what Claude Code and Git Bash produce
@@ -2743,6 +2814,7 @@ def test_a_leading_double_slash_is_collapsed_on_both_sides():
             f"one that is slow")
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 def test_a_project_root_with_a_trailing_slash_is_the_same_root(tmp_path, rel):
     """`CLAUDE_PROJECT_DIR` is not guaranteed to be spelled without one.
@@ -2930,6 +3002,7 @@ def _guarded_tree(root: Path) -> None:
         (root / rel).write_text("x\n", encoding="utf-8")
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 @pytest.mark.parametrize("spelling", ["bash", "native"])
 def test_a_dotted_component_is_read_the_way_win32_reads_it(tmp_path, rel, spelling):
@@ -3005,6 +3078,7 @@ def test_a_spelling_win32_does_not_open_is_still_allowed(tmp_path, rel, suffix, 
         f"has widened past the rule it implements")
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("path", [
     "src./main.c",                      # an ordinary dotted directory
     ".loci./notes.txt",                 # …inside the guarded one, unguarded name
@@ -3446,11 +3520,17 @@ def test_both_readings_are_decided_inside_the_hook_budget(tmp_path):
     worst = f"{root}/deep/../.loci/{unit * n}contract.yaml"
     assert len(worst) < 65536, "the field read would truncate this instead"
     start = time.monotonic()
-    assert _run(_edit(worst), tmp_path) is None, (
-        "this path is NOT a guarded file and both readings say so — a deny "
-        "here means the walk short-circuited and the clock below is timing "
-        "nothing")
+    decision = _run(_edit(worst), tmp_path)
     elapsed = time.monotonic() - start
+    if _legacy_bash():
+        # The path is longer than the 4 KB prefix bash 3 reads, so it is
+        # denied unread there (lib/bash-compat.sh) — the clock still holds.
+        assert _denied(decision) and "4 KB" in decision["permissionDecisionReason"], decision
+    else:
+        assert decision is None, (
+            "this path is NOT a guarded file and both readings say so — a deny "
+            "here means the walk short-circuited and the clock below is timing "
+            "nothing")
     assert elapsed < 3.0, (
         f"the two readings took {elapsed:.1f}s on a {len(worst)}-byte, "
         f"{n}-component path, against the 5 s in hooks.json — past it the "
@@ -3489,6 +3569,8 @@ def test_the_decode_cap_is_a_recorded_allow(tmp_path):
     the decode is flat across all three rows at 0.15 s ± 0.04. Attributing a
     cost to the wrong line is how a cap gets moved for no gain.
     """
+    if _legacy_bash():
+        pytest.skip("bash 3.2: a value past the 4 KB prefix is denied unread, never decoded (lib/bash-compat.sh); the legacy-profile test pins that")
     (tmp_path / ".loci").mkdir(parents=True)
     root = _to_bash_path(tmp_path)
     pad = _esc("./")
@@ -4259,6 +4341,8 @@ def test_the_lift_charges_itself_against_the_work_cap(tmp_path):
     before the lift is counted at all, so that shape was over the cap at
     `43ed7a9` too and proves nothing about this line.
     """
+    if _legacy_bash():
+        pytest.skip("bash 3.2: the tokeniser is not reached above the 4 KB cap (lib/bash-compat.sh); the coarse arm answers, and the legacy-profile test pins its budget")
     bash = _find_bash()
     # Read the command from a FILE, not from argv: these shapes are ~64 KB and
     # Windows refuses a command line that long with WinError 206.
@@ -4447,11 +4531,16 @@ def test_each_cap_is_where_it_says_it_is(tmp_path):
     sizes — the direction a mutation in either direction breaks.
     """
     quoted = "echo 'see loci contract accept' >> n.md"
+    # 4 KB under bash 3 (lib/bash-compat.sh). The segment and scan caps sit
+    # above that byte cap there, so their "under" rows are over the byte cap
+    # on such a host and only the byte-cap row is a property of it.
+    legacy = _legacy_bash()
+    under_pad, over_pad = (3_500, 8_000) if legacy else (60_000, 70_000)
     for label, under, over in [
-        # bytes: _R2_MAX_TOKENISE = 65536
+        # bytes: _R2_MAX_TOKENISE = 65536 (4096 under bash 3)
         ("byte cap",
-         f"{quoted} # {'x' * 60_000}",
-         f"{quoted} # {'x' * 70_000}"),
+         f"{quoted} # {'x' * under_pad}",
+         f"{quoted} # {'x' * over_pad}"),
         # segments: _R2_MAX_SEGMENTS = 512
         ("segment cap",
          quoted + "; echo y" * 400,
@@ -4465,6 +4554,8 @@ def test_each_cap_is_where_it_says_it_is(tmp_path):
          "echo " + '""' * 380 + " " + "a" * 40_000 + f"; {quoted}"),
     ]:
         assert len(over) < 200_000, label
+        if legacy and label != "byte cap":
+            continue
         assert _run(_bash(under), tmp_path) is None, (
             f"{label}: a quoted mention UNDER the cap is denied — the cap is "
             f"too low, and ordinary prose is reaching the coarse regex")
@@ -4590,11 +4681,13 @@ def no_jq(tmp_path):
     return {"PATH": str(stub), "HOME": str(tmp_path / "home")}
 
 
+@pytest.mark.usefixtures("host")
 def test_no_jq_still_denies_the_file(tmp_path, no_jq):
     assert _denied(_run(_edit(".loci/contract.yaml"), tmp_path, env=no_jq))
     assert _denied(_run(_write(".loci/contract.yaml"), tmp_path, env=no_jq))
 
 
+@pytest.mark.usefixtures("host")
 def test_no_jq_still_denies_the_verbs(tmp_path, no_jq):
     assert _denied(_run(_bash("loci contract accept"), tmp_path, env=no_jq))
     assert _denied(_run(_bash("loci contract disable --index 0"), tmp_path, env=no_jq))
@@ -4667,6 +4760,7 @@ def test_no_jq_decides_a_large_command_inside_the_hook_budget(tmp_path, no_jq):
         f"fails open")
 
 
+@pytest.mark.usefixtures("host")
 def test_no_jq_leaves_an_edit_or_write_to_route_1(tmp_path, no_jq):
     """Route 2 must not read a payload that has no command in it.
 
@@ -4758,6 +4852,7 @@ def test_no_jq_does_not_deny_a_source_file_that_merely_names_the_path(tmp_path, 
     assert _run(payload, tmp_path, env=no_jq) is None
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", RECIPE_FILES)
 def test_no_jq_still_denies_the_recipe_and_the_pin(tmp_path, rel, no_jq):
     # Same degradation as contract.yaml's: `file_path` is extracted with sed, so
@@ -4781,6 +4876,7 @@ def test_no_jq_does_not_deny_a_source_file_that_merely_names_the_recipe(tmp_path
     assert _run(payload, tmp_path, env=no_jq) is None
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
 def test_a_minimal_path_without_cat_does_not_fail_open(tmp_path, rel):
     """The guard must read its payload with a builtin, not with `cat`.
@@ -4835,6 +4931,7 @@ def _stub_path(tmp_path, keep):
     return {"PATH": str(stub), "HOME": str(home)}
 
 
+@pytest.mark.usefixtures("host")
 @pytest.mark.parametrize("keep", [("bash", "jq"), ("bash",)])
 def test_neither_route_forks_its_way_to_a_verdict(tmp_path, keep):
     """No external binary may sit between the payload and either verdict.
@@ -4930,6 +5027,7 @@ def test_without_realpath_the_guard_still_denies(tmp_path, rel, no_realpath):
     assert _denied(_run(_edit(abs_path), tmp_path, env=no_realpath)), abs_path
 
 
+@pytest.mark.usefixtures("host")
 def test_no_jq_leaves_drafting_alone(tmp_path, no_jq):
     assert _run(_bash("echo '{}' | loci contract draft add"), tmp_path, env=no_jq) is None
     assert _run(_bash("loci contract draft edit --index 0"), tmp_path, env=no_jq) is None
@@ -4937,6 +5035,7 @@ def test_no_jq_leaves_drafting_alone(tmp_path, no_jq):
 
 # ── the prefilter ────────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("host")
 def test_payload_without_the_subject_exits_before_forking(tmp_path):
     # This hook runs on every Bash call in every repo the plugin is installed
     # for. A payload without the literal `contract` cannot be denied by either
@@ -4944,3 +5043,42 @@ def test_payload_without_the_subject_exits_before_forking(tmp_path):
     # subshell route 1's walk runs in.
     assert _run(_bash("npm test -- --watch=false"), tmp_path) is None
     assert _run(_edit("web/src/index.ts"), tmp_path) is None
+
+
+def test_the_legacy_profile_decides_dense_shapes_inside_the_budget(tmp_path):
+    r"""bash 3.2 (stock macOS, no newer bash): decided inside the budget, and
+    CLOSED where it cannot be decided.
+
+    `${v//pat/rep}` costs ~2 ms per match at 16 KB there and grows with the
+    square of the length, so the guard's tokenise cap and field read are 4 KB
+    under bash 3 (`lib/bash-compat.sh`); above it the coarse arm answers (a
+    regex, 25 ms at 1 MB on 3.2), and a `file_path` that did not close inside
+    the prefix is denied with `REASON_UNREAD`. The 64 KB budget tests above are
+    skipped on such a host; this is what they mean there. Measured on a 3.2.57
+    built from source.
+    """
+    if not _legacy_bash():
+        pytest.skip("bash 4+: the 64 KB budget tests above cover this host")
+    (tmp_path / ".loci").mkdir(parents=True)
+    bs = chr(92)
+    quoted = "echo " + bs + '"contract' + bs + '" '        # names `contract`, so it is tokenised
+    verb = "loci contract accept"
+    dense = quoted * 200                                    # ~3.8 KB, 400 escaped quotes: under the cap
+    huge = quoted * 4_000                                   # ~76 KB: over the cap, the coarse arm
+    cases = [
+        ("dense command under the cap", _raw_bash(dense), None),
+        ("dense command over the cap, no verb", _raw_bash(huge), None),
+        ("dense command over the cap, verb", _raw_bash(huge + "; " + verb), "deny"),
+        ("file_path past the prefix", _raw_edit((bs + "u0041") * 900), "unread"),
+    ]
+    for label, raw, want in cases:
+        start = time.monotonic()
+        decision = _run({}, tmp_path, raw_json=raw)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"{label}: {elapsed:.1f}s against the 5 s in hooks.json"
+        if want is None:
+            assert decision is None, (label, decision)
+        else:
+            assert _denied(decision), (label, decision)
+            if want == "unread":
+                assert "4 KB" in decision["permissionDecisionReason"], decision

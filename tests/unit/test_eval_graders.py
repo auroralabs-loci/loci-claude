@@ -132,9 +132,47 @@ NO_BASELINE = """## Post-Edit: aes_encrypt
 | --- | --- | --- | --- |
 | Performance | — | 5104 ns | no pre-edit artifact — absolute values only |
 
-Verdict: **PASS**
+Verdict: **OK**
 
 LOCI post-edit · aes_encrypt (first measurement)
+"""
+
+# The shape since AAD-7554: the heading says `(no baseline)`, not `(NEW)`, and the
+# last line relays the CLI's own reason (here `not_captured`'s, whole) instead of
+# "first measurement".
+NO_BASELINE_RELAYED = """## Post-Edit: debounce_wait (no baseline)
+
+| ENTRY | FUNCTION | AFTER | STATUS | AGENT ASSESSMENT | NOTE |
+| --- | --- | --- | :---: | :---: | --- |
+| Performance (Hot-Path) | debounce_wait | 5104 ns | — | Looks good | on the ranked hot path |
+
+Verdict: **OK** — nothing raised on the absolute figures
+(no pre-edit baseline was captured for this object this turn. The snapshot is armed by
+the Edit/Write tools; an edit made by a shell command, git, or a generator skips it, as
+does an edit with no turn id. This turn's regression bounds on it cannot be judged.
+Next time: run `loci build snapshot --source <f> --turn <id>` BEFORE a shell edit, or
+make the edit with Edit)
+"""
+
+# A function the pre-edit object does not hold, beside a Before (AAD-7554).
+NEW_ONLY = """## Post-Edit: crc_update (NEW)
+
+| ENTRY | FUNCTION | AFTER | STATUS | AGENT ASSESSMENT | NOTE |
+| --- | --- | --- | :---: | :---: | --- |
+| Performance (Hot-Path) | crc_update | 812 ns | — | Looks good | on the ranked hot path |
+
+Verdict: **OK** — nothing raised on the absolute figures
+(not in the pre-edit object)
+"""
+
+NEW_BESIDE_MODIFIED_NO_DIFF = NEW_ONLY + """
+## Post-Edit: aes_encrypt
+
+| ENTRY | FUNCTION | BEFORE | AFTER | STATUS | AGENT ASSESSMENT | NOTE |
+| --- | --- | --- | --- | :---: | :---: | --- |
+| Performance (Hot-Path) | aes_encrypt | 5104 ns | 5390 ns | — | Looks good | on the ranked hot path |
+
+Verdict: **OK** — within noise
 """
 
 NO_CHANGE = """## Post-Edit: aes_encrypt
@@ -143,7 +181,7 @@ NO_CHANGE = """## Post-Edit: aes_encrypt
 unchanged, so there is no timing delta to report. ROM and RAM are identical and
 no stack frame moved.
 
-Verdict: **PASS**
+Verdict: **OK**
 
 LOCI post-edit · aes_encrypt (no net change)
 """
@@ -344,7 +382,7 @@ PREFLIGHT = """## Preflight: aes_encrypt
 | --- | --- | --- | --- |
 | aes_round | ok | 812 ns | 2.1 uWs |
 
-Execution fit: **PASS**
+Execution fit: **GOOD**
 """
 
 
@@ -371,16 +409,16 @@ def test_the_argued_verdict_vocabulary_is_a_verdict_too():
     graders knew only the judged vocabulary, so every correct run with no
     contract (the fixtures' common case) was "invoked but produced no real
     verdict line"; found by the third real eval pass of T14 on the BLE project."""
-    cleared = PREFLIGHT.replace("Execution fit: **PASS**",
+    cleared = PREFLIGHT.replace("Execution fit: **GOOD**",
                                 "Execution fit: ○ cleared — 136.9 ns / 21.21 mWs measured; no contract covers this function")
     assert "PASS" not in cleared.split("Execution fit")[1]
     verdict, reason = grade_preflight(cleared)
     assert verdict == "PASS", reason
-    flagged = PREFLIGHT.replace("Execution fit: **PASS**",
+    flagged = PREFLIGHT.replace("Execution fit: **GOOD**",
                                 "Execution fit: ⚑ flagged — unbounded recursion in parser_descend")
     assert grade_preflight(flagged)[0] == "PASS"
     # …and a sentence that merely contains the words is still not a verdict line.
-    assert grade_preflight(PREFLIGHT.replace("Execution fit: **PASS**",
+    assert grade_preflight(PREFLIGHT.replace("Execution fit: **GOOD**",
                                              "The path was cleared of obstacles."))[0] == "FAIL"
 
     argued = FULL.replace("Verdict: **CAUTION**",
@@ -413,6 +451,37 @@ def test_a_missing_baseline_fails_when_the_eval_requires_one():
     verdict, reason = grade(NO_BASELINE, expect_baseline="true")
     assert verdict == "FAIL", reason
     assert "baseline was required" in reason
+
+
+def test_the_relayed_no_baseline_report_is_still_read_as_one():
+    """AAD-7554 dropped "first measurement" and "no pre-edit artifact" from the
+    template. A grader still keyed to them read this report as a baseline run
+    missing its % diff: failed where no baseline is required, and failed for the
+    wrong reason where one is."""
+    verdict, reason = grade(NO_BASELINE_RELAYED)
+    assert verdict == "PASS", reason
+    verdict, reason = grade(NO_BASELINE_RELAYED, expect_baseline="true")
+    assert verdict == "FAIL" and "baseline was required" in reason, reason
+
+
+def test_a_report_on_new_functions_alone_owes_no_delta():
+    """A function the pre-edit object does not hold has nothing to compare, even
+    on an eval whose Before must exist, and its line is not a missing Before."""
+    for expect in ("false", "true"):
+        verdict, reason = grade(NEW_ONLY, expect_baseline=expect)
+        assert verdict == "PASS" and "new functions only" in reason, (expect, reason)
+
+
+def test_a_new_function_does_not_excuse_a_modified_ones_missing_delta():
+    verdict, reason = grade(NEW_BESIDE_MODIFIED_NO_DIFF, expect_baseline="true")
+    assert verdict == "FAIL" and "no signed % diff" in reason, reason
+
+
+def test_a_new_function_beside_a_measured_delta_keeps_the_baseline_pass():
+    """AAD-7554 review: the first footer for a new function beside a Before said
+    "no pre-edit baseline", and an expect-baseline eval failed on it."""
+    verdict, reason = grade(NEW_ONLY + "\n" + FULL, expect_baseline="true")
+    assert verdict == "PASS", reason
 
 
 def test_requiring_a_baseline_does_not_change_a_run_that_has_one():
@@ -452,7 +521,7 @@ def test_edit_and_revert_fails_when_the_report_is_merely_silent():
     that state its own shape precisely so it could be stated."""
     quiet = """## Post-Edit: aes_encrypt
 
-Verdict: **PASS**
+Verdict: **OK**
 
 LOCI post-edit · aes_encrypt
 """
@@ -465,8 +534,8 @@ def test_edit_and_revert_fails_when_it_had_no_baseline():
     could have been compared against. Reachable: the pre-edit hook is killed,
     the skill reports absolute values, and the model writes "no change" about a
     single measurement."""
-    both = NO_BASELINE.replace("Verdict: **PASS**",
-                               "The functions are unchanged.\n\nVerdict: **PASS**")
+    both = NO_BASELINE.replace("Verdict: **OK**",
+                               "The functions are unchanged.\n\nVerdict: **OK**")
     verdict, reason = grade(both, expect_baseline="true", expect_no_change="true")
     assert verdict == "FAIL", reason
 
@@ -483,7 +552,7 @@ def test_a_percent_sign_in_unrelated_text_is_not_a_delta():
 I rewrote the loop and the `printf("%d bytes\\n", n)` call it contained. This
 covers 100% of the callees.
 
-Verdict: **PASS**
+Verdict: **OK**
 """
     verdict, reason = grade(decoy)
     assert verdict == "FAIL", reason
@@ -778,11 +847,13 @@ def test_an_edit_flow_eval_is_skipped_when_the_installed_plugin_is_not_this_tree
 def test_the_skip_reaches_the_report_not_only_the_console(tmp_path):
     """`report.md` is the artifact that gets cited. It used to say 'fixture
     unavailable on this host' for every skip and name none of them."""
+    import time as _time
     results = PLUGIN_ROOT / "eval-results"
-    before = set(results.glob("*/report.md")) if results.is_dir() else set()
+    t0 = _time.time()
     proc = _run_evals(tmp_path, installed_sha="0" * 40,
                       flags=("--installed-plugin",))
-    fresh = set(results.glob("*/report.md")) - before
+    fresh = ({p for p in results.glob("*/report.md") if p.stat().st_mtime >= t0}
+             if results.is_dir() else set())
     # Not "the newest on disk". `_run_evals` runs the real run_evals.sh with
     # cwd=PLUGIN_ROOT, so the reports of every other caller land in this same
     # directory. Taking the newest gave two wrong answers: under a concurrent
@@ -793,8 +864,17 @@ def test_the_skip_reaches_the_report_not_only_the_console(tmp_path):
     # `installed plugin` and lacks `fixture unavailable` too. Measured on a
     # developer machine: 4 of 8 accumulated reports satisfied all three
     # assertions, so the old guard was reliable only on a fresh CI checkout,
-    # where `eval-results/` is empty. A report that did not appear during THIS
-    # call is not evidence about this call.
+    # where `eval-results/` is empty. A report that was not written during
+    # THIS call is not evidence about this call.
+    #
+    # "Written during", by mtime — not "a path that did not exist before".
+    # run_evals.sh keys its results directory on a one-second timestamp, so
+    # when the skip test above finishes within the same second this run lands
+    # in the SAME directory and overwrites a report.md that was already on the
+    # before-list; the path-difference test then found nothing new and failed
+    # on any machine fast enough (every WSL run; the Mac, as a race). The
+    # report is this run's either way — the harness rewrote it — and its
+    # mtime says so.
     assert fresh, (
         "this run wrote no report.md of its own; the ones already on disk belong "
         "to other runs and cannot stand in for it\n" + proc.stdout[-2000:])
@@ -1301,10 +1381,27 @@ def _run_harness(tree, tmp_path, *args, stage_fresh=False):
     `stage_fresh` puts a `basic_ble.out` and a `loci` stub in place so the
     fresh-BLE gate passes — otherwise its skip fires first and the failure under
     test is never reached.
+
+    A `claude` stub is always on PATH. The harness validates `command -v claude`
+    before it reads a single eval file, so on a host without one — every CI
+    runner (AAD-7772) — each test here stopped at "'claude' CLI not found" and
+    never reached the failure it is about. The stub answers exit 1: what is
+    under test is the harness before the model, and a test that did reach the
+    model ran the developer's real `claude` for two minutes (the known-
+    placeholder test), which is a metered call a unit test must not make.
     """
     ble = tmp_path / "ble"
     ble.mkdir(exist_ok=True)
-    env_prefix = ""
+    binp = tmp_path / "hbin"
+    binp.mkdir(exist_ok=True)
+    claude = binp / "claude"
+    claude.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo 'stub claude: the harness reached the model' >&2\n"
+        "exit 1\n",
+        encoding="utf-8", newline="\n")
+    claude.chmod(0o755)
+    env_prefix = f'PATH="{_to_bash_path(binp)}:$PATH" '
     if stage_fresh:
         out = (ble / "examples" / "rtos" / "LP_EM_CC2340R5" / "ble5stack"
                / "basic_ble" / "freertos" / "ticlang" / "basic_ble.out")
@@ -1312,8 +1409,6 @@ def _run_harness(tree, tmp_path, *args, stage_fresh=False):
         out.write_bytes(b"\x7fELF" + b"\0" * 64)
         (out.parent / "basic_ble.map").write_text(
             "MEMORY CONFIGURATION\n", encoding="utf-8")
-        binp = tmp_path / "hbin"
-        binp.mkdir(exist_ok=True)
         loci = binp / "loci"
         loci.write_text(
             "#!/usr/bin/env bash\n"
@@ -1324,10 +1419,9 @@ def _run_harness(tree, tmp_path, *args, stage_fresh=False):
             "exit 1\n",
             encoding="utf-8", newline="\n")
         loci.chmod(0o755)
-        env_prefix = f'PATH="{_to_bash_path(binp)}:$PATH" '
     # The state directory is the test's: the harness's BLE block runs `loci init`,
-    # and a real `claude -p` from here runs the installed plugin's session-init,
-    # which writes a context for the copied tree — neither belongs in `~/.loci`.
+    # which writes a context for the copied tree — that does not belong in
+    # `~/.loci`.
     script = (env_prefix + f'LOCI_STATE_DIR="{(tmp_path / "state").as_posix()}" '
               f'"{_to_bash_path(tree / "run_evals.sh")}" '
               f'--ble-root "{ble.as_posix()}" ' + " ".join(args))

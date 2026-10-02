@@ -3,6 +3,11 @@
 # ALWAYS exits 0 — a failing hook must never block a session.
 # Works on Linux, macOS, and Windows (MSYS2/Git Bash).
 
+# The bash this runs under is decided first, while the payload is still on
+# stdin: on bash 3 (stock macOS) this re-executes under a newer bash when one
+# is installed, else sets `_LOCI_BASH_LEGACY=1` (AAD-7771; lib/bash-compat.sh).
+. "${0%/*}/../lib/bash-compat.sh" 2>/dev/null || :
+
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # State lives outside the versioned plugin dir so it survives upgrades; fall
@@ -37,8 +42,17 @@ export LOCI_STATE_DIR="$STATE_DIR"
 # is piped, so manual invocations never block on stdin. Fast-fail reads it too:
 # an unattributable ERROR line is the state todo 021 exists to end, and nothing
 # further in this hook reads stdin.
+#
+# Under GitHub Copilot CLI the payload is read too: its `source` says whether
+# this is a first start or a resumed session's repeat (lib/loci_host.sh,
+# AAD-7784). The host is the library's to recognise; a plugin whose lib did not
+# source keeps Claude Code's path.
+command -v loci_host_reads_payload >/dev/null 2>&1 || loci_host_reads_payload() { return 1; }
+command -v loci_host_session_resumed >/dev/null 2>&1 || loci_host_session_resumed() { return 1; }
+command -v loci_host_name >/dev/null 2>&1 || loci_host_name() { return 1; }
+command -v loci_host_notice >/dev/null 2>&1 || loci_host_notice() { return 1; }
 LOCI_HOOK_INPUT=""
-if { loci_is_dev || loci_fail_fast; } && [ ! -t 0 ]; then
+if { loci_is_dev || loci_fail_fast || loci_host_reads_payload; } && [ ! -t 0 ]; then
     LOCI_HOOK_INPUT=$(cat 2>/dev/null || true)
 fi
 
@@ -58,6 +72,16 @@ loci_log INFO session-init "start: SessionStart hook (cwd=$(pwd) state_dir=$STAT
 # WARN, not INFO: fast-fail alone logs from WARN, and a session running in this
 # mode is exactly the session whose log a reader needs to see it in.
 loci_fail_fast && loci_log WARN session-init "fail-fast: on (LOCI_FAIL_FAST=${LOCI_FAIL_FAST})"
+
+# The `startup` matcher, enforced here for a host that runs every SessionStart
+# entry regardless of it (Copilot: `source: resume` on `--continue`). A resumed
+# session has its context in the transcript and its bootstrap already launched,
+# so this is the whole hook for it: nothing on stdout, nothing started. Under
+# Claude Code the matcher means this line is never true (lib/loci_host.sh).
+if loci_host_session_resumed "$LOCI_HOOK_INPUT"; then
+    loci_log INFO session-init "end: resumed session — context and bootstrap not repeated"
+    exit 0
+fi
 
 # The plugin's own version, out of its manifest. `$(<file)` is a subshell and no
 # process — this used to be a `jq`, which is a host tool the plugin does not
@@ -110,14 +134,12 @@ loci_log INFO session-init "end: exec-bit fixup"
 # so it never holds this hook's stdin open; nohup so it survives the hook.
 nohup bash "${PLUGIN_DIR}/hooks/ensure-loci-cli.sh" </dev/null >/dev/null 2>&1 &
 
-loci_log INFO session-init "start: project detection"
-detect_and_write_context
-loci_log INFO session-init "end: project detection (state=$_CTX_STATE status=$_CTX_STATUS init_status=${_CTX_INIT_STATUS:-none} recipe=${_CTX_RECIPE:-none} target=$_CTX_TARGET)"
-
 # Cleaning the build directory is NOT done here. It is `hooks/turn-clean.sh`, which
 # hooks.json registers on both `Stop` and `SessionStart`. This file is registered
 # with `"matcher": "startup"` and therefore does not run on `resume`, `clear` or
-# `compact` — a user living in `claude --continue` would never clean anything.
+# `compact` under Claude Code — a user living in `claude --continue` would never
+# clean anything. Copilot runs it regardless of the matcher; the resume gate
+# above is what keeps it to a first start there (AAD-7784).
 
 # AUTH_PLUGIN_DIR is the highest-semver version in the cache root, not
 # necessarily $0's location — see _resolve_authoritative_plugin_dir.
@@ -139,12 +161,6 @@ _VERSION_LINE="loci version: ${_LOCI_VER} — LOCI's only user-facing version; w
 _LOCI_STATUS_LINE=$(printf 'loci: installing in background — usable shortly. Install-on-miss: if a LOCI skill or analysis is requested (or a C/C++/Rust/Go edit needs it) while `loci` is still absent, run `bash %s/hooks/ensure-loci-cli.sh` (waits for the in-flight install or performs it, self-locking), then retry the loci call.' \
     "$AUTH_PLUGIN_DIR")
 _INSTALL_FAIL_MSG=""
-# Non-empty ONLY when something is wrong with the CLI. The armed and initialized
-# blocks always report CLI health; the inactive ones report it only when it is
-# bad, so a docs repo does not pay for "loci command: loci (on PATH)" — but a
-# broken or shadowed CLI stays visible in a directory LOCI will not analyze,
-# which is often exactly where the user asks about it.
-_CLI_ADVISORY=""
 # What the ready context says about the CLI. The healthy line, until the stale
 # check below has something to add — the ready branch of the context builder
 # never emitted _LOCI_STATUS_LINE, which is why a stale CLI reached nobody.
@@ -153,7 +169,6 @@ if ! $_DETECTION_READY && ! have_uv; then
     _LOCI_STATUS_LINE=$(printf 'loci: NOT installed — its prerequisite `uv` is missing and the plugin does not install it. If the user requests a LOCI skill/analysis, determine the uv install command for their OS/package manager, tell them to run it (e.g. `! <install command>`), then run /loci:setup (or `bash %s/hooks/ensure-loci-cli.sh`) to install the loci CLI. Execution-aware analysis is unavailable until then.' \
         "$AUTH_PLUGIN_DIR")
     _INSTALL_FAIL_MSG=$(printf '⚠ LOCI: the loci CLI is not installed — prerequisite `uv` is missing.\nAsk Claude for the uv install command for your system, then run /loci:setup.')
-    _CLI_ADVISORY="$_LOCI_STATUS_LINE"
 elif ! $_DETECTION_READY; then
     _install_status="" _install_log="${STATE_DIR}/loci-cli-install.log"
     if [ -f "${STATE_DIR}/loci-cli-status.json" ]; then
@@ -173,7 +188,6 @@ elif ! $_DETECTION_READY; then
             _LOCI_STATUS_LINE="loci: install skipped (bootstrap/test mode)"
             ;;
     esac
-    _CLI_ADVISORY="$_LOCI_STATUS_LINE"
 else
     # Present but behind the pin. Every branch above tests ABSENCE, so a CLI that
     # exists and never upgrades used to report nothing at all — the failure was
@@ -239,30 +253,11 @@ else
                 "$_CLI_VER" "$LOCI_CLI_VERSION" "${STATE_DIR}/loci-cli-install.log")
         fi
         _LOCI_READY_LINE=$(printf 'loci command: loci (on PATH)\n%s' "$_LOCI_STATUS_LINE")
-        _CLI_ADVISORY="$_LOCI_STATUS_LINE"
         loci_log WARN session-init "stale loci CLI: have=${_CLI_VER} pinned=${LOCI_CLI_VERSION} path=${_CLI_PATH} shadowed=${_SHADOW:-0}"
     fi
 fi
 
 # additionalContext — injected into the session, invisible to the user.
-#
-# Four blocks, one per branch of report §6.3; `detect_and_write_context` has
-# already decided which (`$_CTX_STATE`). The pieces are shared so each rule is
-# written once:
-#
-#   initialized           a recipe governs this project and `loci init` recorded
-#                         it — the compact block: target, compiler, build system,
-#                         artifact, auto-run rules. No scan ran.
-#   initialized_degraded  the same, minus half the facts, plus one line saying
-#                         which half is missing and what heals it. Still armed.
-#   armed                 no recipe, but the cheap gate found a declared build:
-#                         armed, plus the `not_initialized` → auto-init rule and
-#                         one /loci:init suggestion.
-#   inactive_*            not a project, or the CLI recorded a status that means
-#                         "do not arm". The disarm sentence is EXPLICIT there,
-#                         because loci-post-edit's own description says MANDATORY
-#                         and that text is in the model's context regardless of
-#                         what this block says.
 #
 # The 1 385-byte LOCI_VOICE block is gone from here, but not all of it. Every
 # skill that renders a measurement carries its own "## LOCI voice remark"
@@ -280,25 +275,37 @@ fi
 # sit between these two. It was a 62-byte restatement of the line below it, in a
 # block with a byte budget, and nothing reads the label.
 _AVAILABLE='Available: /loci:help, /loci:init, /loci:exec-trace, /loci:stack-depth, /loci:memory-report, /loci:control-flow, /loci:contract, /loci:bug-report'
-_AUTORUN_RULES='LOCI auto-run rules: When in /plan mode and the user describes new C/C++/Rust/Go logic to implement, you MUST invoke the loci:loci-preflight skill on existing callees before proposing edits. After any Edit/Write to a C/C++/Rust/Go source (.c,.cc,.cpp,.cxx,.c++,.rs,.go) or any header it includes, you MUST invoke the loci:loci-post-edit skill immediately. These are not optional — they are required whenever LOCI is active.'
-# AAD-7607. The auto-run rules are WRONG under an artifact-only recipe, so this
-# REPLACES them rather than following them. Both halves of that matter. Printing
-# both would put "you MUST invoke loci-post-edit" and "do not" in one block, and
-# the `_DISARM` note below is the record of why that loses: a session-start line
-# does not win an argument it starts with the MANDATORY wording it is arguing
-# against. And it must still be SAID, because the two skills' auto-runs have two
-# different levers — post-edit's is the PostToolUse reminder, which
-# `post-edit-hook.sh` now suppresses at source, while preflight's is a /plan-mode
-# prompt with no hook behind it at all. This line is the only lever preflight has.
+# The host-shaped pieces of the two rules below (AAD-7784). Claude Code's text
+# is what the two literals have always spelled, byte for byte, so the pieces
+# default to it. Under GitHub Copilot CLI the edit tools are `edit`/`create`,
+# the permission sentence is about Claude Code alone, and one `host:` line
+# tells the model what the host is and how the tool names in LOCI's skills read
+# there (`/plan`, `! <command>` and `/loci:<skill>` are the same on both).
+# Decided by the library's gate, never by this file (lib/loci_host.sh).
 #
-# It also carries the rebuild refusal. That is not belt-and-braces: the session
-# that produced this ticket had post-edit stop on `compdb_absent` exactly as
-# written, and then offer "rebuild the project so basic_ble.out picks up the
-# change, and re-run stack-depth" — which the user did, destroying the only
-# pre-edit binary the project had and taking a 160 B → 1,032 B stack regression
-# with it. Under this recipe the linked artifact IS the baseline.
-_AUTORUN_ARTIFACT_ONLY='LOCI scope: this project'"'"'s recipe is artifact-only — the linked binary, no compile database, because the project has none. stack-depth, memory-report and control-flow read that binary and work normally. Timing and energy compile a source first, so every `loci analyse prepare` here answers `compdb_absent`, and the loci-preflight and loci-post-edit auto-run rules do NOT apply in this session: never invoke either automatically, whatever the "MANDATORY"/"You MUST invoke" wording in their own descriptions says. Scope, not a fault — do NOT run /loci:init (it wrote this recipe because no database exists, and would find none again), and do NOT rebuild or relink the recorded artifact to reach a measurement: under this recipe that binary is the only pre-edit state there is. Asked for timing or energy, say a compile database enables it and that `loci init --compdb=<path>` records one, the user'"'"'s to generate between turns.'
-_TOOL_POLICY='LOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); read it and branch on `ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory — Claude Code prompts the user for permission on every out-of-project access, halting automated preflight/post-edit/eval runs. Always write inside the project (e.g. `.loci/build/`) so every tool sees the same path.'
+# The preflight clause is host-shaped too (AAD-7787). Copilot's plan mode
+# reaches its model as a `[[PLAN]]` prefix on the prompt, not as a mode it is
+# told about, so the rule names the prefix. And it names what preflight runs
+# on, because "its existing callees" read as "nothing" for a new function that
+# calls nothing — while the function that will call it is the one the plan
+# modifies and preflight measures (a live `--plan` run skipped on exactly that
+# reading). Claude Code's clause is the one it has always been.
+_EDIT_TOOLS='Edit/Write'
+_PATH_WHY=' — Claude Code prompts the user for permission on every out-of-project access, halting automated preflight/post-edit/eval runs'
+_PLAN_MODE='In /plan mode'
+_PREFLIGHT_ON='on its existing callees'
+_HOST_LINE=''
+if _HOST_NAME=$(loci_host_name) && [ -n "$_HOST_NAME" ]; then
+    _EDIT_TOOLS='edit/create'
+    _PATH_WHY=''
+    _PLAN_MODE='In plan mode (a [[PLAN]] prompt)'
+    _PREFLIGHT_ON='on the functions it changes and the existing callees of its new code (a new function changes its caller)'
+    _HOST_LINE="host: ${_HOST_NAME}. Tool names in LOCI's skills read as yours: Edit/Write is edit/create, Bash is bash or powershell, Read is view, the question tool is ask_user; /plan, /loci:<skill> and ! <command> work as written."
+fi
+# The reminder is the trigger, not "any edit": the hook emits it only for edits a
+# recipe governs.
+_AUTORUN_RULES='LOCI auto-run rules: '"$_PLAN_MODE"', when the user describes new C/C++/Rust/Go logic in a project a LOCI recipe governs, you MUST invoke loci:loci-preflight '"$_PREFLIGHT_ON"' before proposing edits. After an '"$_EDIT_TOOLS"' to a C/C++/Rust/Go source (.c,.cc,.cpp,.cxx,.c++,.rs,.go) or a header it includes, invoke loci:loci-post-edit as soon as the hook'"'"'s `You MUST invoke` reminder appears; it appears only for edits a recipe governs.'
+_TOOL_POLICY='LOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); read it and branch on `ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory'"$_PATH_WHY"'. Always write inside the project (e.g. `.loci/build/`) so every tool sees the same path.'
 # Adopting a project is the USER'S decision, so this rule no longer auto-runs
 # init — it used to, and that was the intrusive half. `loci init` writes four
 # things into someone's tree (`.loci/build.yaml`, `.loci/.gitignore`, an escrow
@@ -306,37 +313,20 @@ _TOOL_POLICY='LOCI tool policy: All analysis runs through the `loci` command on 
 # and consent is asked afterwards. On a project nobody pointed LOCI at, that is
 # LOCI deciding to adopt a repo because an edit happened to touch a `.c` file.
 #
-# This line is emitted ONLY in the armed-but-uninitialized branch (the case
-# statement below skips it for `failed` and `unknown`, which both mean a recipe
-# IS on disk). So the split is structural, not a judgement the model has to
-# make: no recipe → stop and let the user choose; recipe present → the repair
-# recoveries are unchanged, because that project was already adopted.
-_INIT_RULE='LOCI init rule: this project has NO recipe, and initializing it is the user'"'"'s decision, not yours. When a `loci` call fails with `error.code` `not_initialized`, say so in one line, name `/loci:init` as what enables measurement here, and STOP. Do NOT invoke the loci:init skill, and do not run `loci init` yourself — it writes files into this project and adopting a repo is not a side effect of an edit. This applies however the call was reached, auto-run rules included. If the user asks for LOCI analysis here, the same one line is the answer. Once they run /loci:init themselves, everything arms normally.'
+# Scoped to "no recipe governs": a degraded recipe still gets init's repair.
+_INIT_RULE='LOCI init rule: adopting a project is the user'"'"'s decision. When a `loci` call answers `not_initialized` and no LOCI recipe governs the code, say so in one line, name `/loci:init`, and stop: do not invoke the loci:init skill or run `loci init` for it, auto-run rules included.'
 # Fast-fail, and it is the ONE rule that governs every skill: a skill halts by
 # instruction, so the instruction has to reach the model, and this line is the
 # only channel every skill and every turn shares. It is EMPTY unless the switch
 # is on, so the steady-state block pays nothing for a mode nobody but QA sets;
-# the full statement lives in the shared runtime contract's `#fail-fast` section,
+# the full statement lives in the shared house rules' `#fail-fast` section,
 # which is what a skill reads for the detail.
 _FAIL_FAST_RULE=""
 if loci_fail_fast; then
-    _FAIL_FAST_RULE='LOCI fast-fail: LOCI_FAIL_FAST is set. When any `loci` call fails — a non-zero exit, or an envelope with `"ok":false` — stop there. Report the command, its exit code and its output verbatim, say the analysis did not run, and wait for the user. Do not retry it, do not route around it, do not repair it, and make no further loci call this turn. This OVERRIDES every retry, fallback and recovery written in the skills and in the shared runtime contract, a coded error'"'"'s own recovery included.'
+    _FAIL_FAST_RULE='LOCI fast-fail: LOCI_FAIL_FAST is set. When any `loci` call fails — a non-zero exit, or an envelope with `"ok":false` — stop there. Report the command, its exit code and its output verbatim, say the analysis did not run, and wait for the user. Do not retry it, do not route around it, do not repair it, and make no further loci call this turn. This OVERRIDES every retry, fallback and recovery written in the skills and in the shared house rules, a coded error'"'"'s own recovery included.'
 fi
 _VOICE_RULES='LOCI voice, every report: cite the number, no emoji, never vague, a presentation tone and not a persona. Each skill'"'"'s own voice section carries the rest.'
-# The disarm sentence, and it has to beat two things that outrank a session-start
-# line: `loci-post-edit`'s own description says MANDATORY, and the PostToolUse
-# hook prints "You MUST invoke the loci:loci-post-edit skill NOW" after every
-# edit, later in the context and file-specific (that hook is T09's to gate). So
-# this names the competitors instead of contradicting them in the abstract, and
-# it bounds the recovery: the pre-T08 text ended by telling the model to SUGGEST
-# starting a session elsewhere, and dropping that clause left an unbounded "run
-# /loci:init" as the only written way out.
-_DISARM='The loci-preflight and loci-post-edit auto-run rules do NOT apply in this session: do not invoke any LOCI skill automatically. This OVERRIDES the "MANDATORY"/"You MUST invoke" wording in those skills'"'"' own descriptions and in any post-edit reminder you see later in this session — in this directory they do not apply, and an edit to a C/C++/Rust/Go file here is not a reason to run one. /loci:help and /loci:bug-report remain available. If the user explicitly asks for LOCI analysis, say why it is inactive here and suggest either starting a session in the project directory or running /loci:init if this directory really is the project.'
 
-# Built line by line rather than by one big printf: the blocks differ by which
-# lines are PRESENT, and a format string with conditional `%s`es is how a
-# missing value becomes a blank line — or an off-by-one that shifts every
-# remaining line up by one argument.
 CONTEXT=""
 _ctx_line() {
     [ -n "$1" ] || return 0
@@ -350,112 +340,46 @@ fi
 
 _ctx_line "$_VERSION_LINE"
 _ctx_line "$_FAIL_FAST_RULE"
-# What `detect_and_write_context` has to say about a `loci` call that failed
-# under fast-fail. Empty in every other session.
-_ctx_line "${_LOCI_FF_SESSION_NOTE:-}"
-
-case "$_CTX_STATE" in
-initialized|initialized_degraded)
-    # Only facts that exist. A degraded context (wiped state directory) has none
-    # of them, and printing `Target: unknown` is how a session acquires a
-    # fabricated target — the failure this change exists to end.
-    if [ "$_CTX_COMPILER" != "unknown" ] || [ "$_CTX_BUILD" != "unknown" ]; then
-        _ctx_line "Compiler: ${_CTX_COMPILER}, Build: ${_CTX_BUILD}"
-    fi
-    case "$_CTX_TARGET" in
-        unknown|null|"") ;;
-        # The one spelling of the target in the whole block. Every skill reads
-        # it from this exact line ("LOCI target:"), and it used to be printed
-        # twice — once here and once in a `Target:` display line.
-        *) _ctx_line "LOCI target: ${_CTX_TARGET}" ;;
-    esac
-    # Both come from the recipe's mirror and both are `-f`-checked there, so a
-    # recipe recorded on another machine and an artifact since deleted are
-    # simply not asserted — the degraded-recipe block used to name both as fact
-    # in the same breath as saying the recipe could not be found.
-    _ctx_line "${_CTX_RECIPE:+recipe: $_CTX_RECIPE}"
-    _ctx_line "${_CTX_ARTIFACT:+artifact: $_CTX_ARTIFACT}"
-    _ctx_line "Branch: $_CTX_BRANCH"
-    _ctx_line "$_CLI_LINE"
-    _ctx_line "plugin dir: $AUTH_PLUGIN_DIR"
-    _ctx_line "project context: $_CTX_PROJECT_CONTEXT"
-    case "$_CTX_DEGRADED" in
-        state)
-            _ctx_line 'LOCI: this project has a recipe but no recorded state on this machine (a wiped state directory, or a checkout init has not seen). The first analysis rebuilds it — `loci init --auto` is a no-op on an initialized project — so invoke the loci:init skill once if a call reports missing context or answers `not_initialized`.' ;;
-        recipe)
-            _ctx_line 'LOCI: the recorded state says this project is initialized, but no `.loci/build.yaml` was found walking up from this directory. If a `loci` call answers `not_initialized`, invoke the loci:init skill once to re-establish the recipe.' ;;
-    esac
-    _ctx_line "$_AVAILABLE"
-    # One or the other, never both — see the note above the artifact-only rule.
-    if [ -n "$_CTX_ARTIFACT_ONLY" ]; then
-        _ctx_line "$_AUTORUN_ARTIFACT_ONLY"
-    else
-        _ctx_line "$_AUTORUN_RULES"
-    fi
-    _ctx_line "$_TOOL_POLICY"
-    _ctx_line "$_VOICE_RULES"
-    ;;
-armed)
-    # No target line. An uninitialized project has no recorded target, and since
-    # T14 nothing guesses one: the scan that used to derive a target from PATH
-    # is gone, so there is no hint to leave for a hook either.
-    _ctx_line "Branch: $_CTX_BRANCH"
-    _ctx_line "$_CLI_LINE"
-    _ctx_line "plugin dir: $AUTH_PLUGIN_DIR"
-    _ctx_line "project context: $_CTX_PROJECT_CONTEXT"
-    if [ "$_CTX_DEGRADED" = unknown ]; then
-        _ctx_line 'LOCI: this project has a build recipe, and its recorded initialization status is one this version of LOCI does not recognise — most likely written by a newer CLI. Analysis still runs, and no target is asserted here. Whatever coded error the first `loci` call answers with, invoke the loci:init skill ONCE with that code and let it route the recovery; do not retry after a second failure.'
-    elif [ "$_CTX_DEGRADED" = failed ]; then
-        # A recipe IS on disk; the last `loci init` failed against it (stale,
-        # invalid, tampered, or a compiler that has gone). §6.2 makes that
-        # transient, so the session is armed — but the coded error the next
-        # compile answers with will not be `not_initialized`, and telling the
-        # model there is no recipe would send it down the wrong recovery.
-        _ctx_line 'LOCI: this project has a build recipe, but the last initialization of it FAILED and no target is recorded. Analysis still runs. Whatever coded error the first `loci` call answers with — `recipe_stale`, `recipe_invalid`, `recipe_tampered`, `compiler_missing`, `not_initialized` — invoke the loci:init skill ONCE with that code and let it route the recovery; do not retry after a second failure.'
-    else
-        # This branch is a project nobody has pointed LOCI at. It used to say
-        # "the first call initializes the project", which was true of no route,
-        # and then to name the init skill as the recovery — which auto-adopted
-        # the repo. `_INIT_RULE` just below carries the rule; this line only has
-        # to stop asserting that measurement is available here.
-        _ctx_line 'LOCI: this project is not initialized — no `.loci/build.yaml` records its target ISA, compiler or flags, so no target is asserted and nothing can be measured yet. Whether LOCI runs on this project is the user'"'"'s choice: `/loci:init` records how it builds, and until they run it a `loci` call answers `not_initialized`.'
-    fi
-    _ctx_line "$_AVAILABLE"
-    _ctx_line "$_AUTORUN_RULES"
-    case "$_CTX_DEGRADED" in failed|unknown) ;; *) _ctx_line "$_INIT_RULE" ;; esac
-    _ctx_line "$_TOOL_POLICY"
-    _ctx_line "$_VOICE_RULES"
-    ;;
-*)
-    # Inactive. No analysis target, no mandatory auto-run rules. A parent dir
-    # holding many repos, a docs tree, or a project the CLI has already found it
-    # cannot support must not get a fabricated "Target: <host arch>" context.
-    _ctx_line "Branch: $_CTX_BRANCH"
-    _ctx_line "plugin dir: $AUTH_PLUGIN_DIR"
-    _ctx_line "project context: $_CTX_PROJECT_CONTEXT"
-    case "$_CTX_STATE" in
-        inactive_status)
-            case "$_CTX_STATUS" in
-                unsupported)
-                    _ctx_line 'LOCI: inactive (init: unsupported) — `loci init` found no target ISA LOCI supports in this project. That is recorded and permanent: only /loci:init changes it, and nothing should retry initialization on its own.' ;;
-                *)
-                    _ctx_line 'LOCI: inactive (init: needs_user) — initialization stopped on a question nobody has answered (most likely a headless run). Do not arm anything; if the user asks for LOCI analysis, invoke the loci:init skill, which asks it.' ;;
-            esac ;;
-        inactive_failed)
-            _ctx_line 'LOCI: inactive (detection: failed) — project detection could not run in this directory, so LOCI cannot say what this project is. This is not a claim that it is not a project. /loci:init records how it builds and activates LOCI for it; /loci:bug-report collects what went wrong.' ;;
-        inactive_multi)
-            _ctx_line "$(printf 'LOCI: inactive (detection: multi_project) — this directory contains %s independent projects (each with its own repo or build files) and is not itself a project. To analyze one of them, start a session in that project'"'"'s directory.' \
-                "${_CTX_SUBPROJECT_COUNT:-multiple}")" ;;
-        *)
-            _ctx_line 'LOCI: inactive (detection: no_project) — no build file (Makefile, CMakeLists.txt, Cargo.toml, meson.build, a vendor project file, …) declares a build in this directory, so nothing here is a LOCI analysis target. If this IS a project, /loci:init records how it builds and activates LOCI for it.' ;;
-    esac
-    _ctx_line "$_DISARM"
-    _ctx_line "$_CLI_ADVISORY"
-    ;;
-esac
+_ctx_line "$_CLI_LINE"
+# Once, plainly, and only where it is true: stock macOS bash with no newer bash
+# installed. The hooks still run; what changes is the size they decide exactly
+# (AAD-7771; lib/bash-compat.sh has the measurements).
+[ -z "${_LOCI_BASH_LEGACY:-}" ] || _ctx_line "bash: ${BASH_VERSION%%(*} (stock macOS), no newer bash found — hooks run reduced: the contract guard reads 4 KB per tool call and decides larger commands coarsely (over-denies, never under). Fix: brew install bash"
+_ctx_line "plugin dir: $AUTH_PLUGIN_DIR"
+_ctx_line "$_HOST_LINE"
+_ctx_line "$_AVAILABLE"
+_ctx_line "$_AUTORUN_RULES"
+_ctx_line "$_INIT_RULE"
+_ctx_line "$_TOOL_POLICY"
+_ctx_line "$_VOICE_RULES"
 
 # Impact-token minting was removed with the MCP server; analysis now
 # authenticates on demand via `! loci login`.
+
+WELCOME=$(_welcome_text)
+
+# systemMessage = one-time welcome plus, on install failure, a banner. The
+# banner is NOT gated by the welcome marker, so it recurs until install succeeds.
+SYSTEM_MSG="$WELCOME"
+if [ -n "$_INSTALL_FAIL_MSG" ]; then
+    if [ -n "$SYSTEM_MSG" ]; then
+        SYSTEM_MSG="${SYSTEM_MSG}
+
+${_INSTALL_FAIL_MSG}"
+    else
+        SYSTEM_MSG="$_INSTALL_FAIL_MSG"
+    fi
+fi
+
+# A host that shows `systemMessage` to nobody (Copilot, AAD-7783) gets the text
+# inside the context instead, fenced as text to display, for the model to relay
+# (lib/loci_host.sh, AAD-7784) — instead, not as well: a host that one day
+# renders the field would show the welcome twice. Under Claude Code the call
+# answers nothing and the banner stays where Claude Code renders it.
+if loci_host_notice "$SYSTEM_MSG"; then
+    _ctx_line "$LOCI_HOST_NOTICE"
+    SYSTEM_MSG=""
+fi
 
 # Persist the exact additionalContext we inject: Claude Code never writes
 # session-start context to the transcript, so this is the only record of what
@@ -472,21 +396,6 @@ if loci_is_dev; then
         loci_log WARN session-init "session-context dump failed ($_dbg_file)"
     fi
     unset _dbg_sid _dbg_file
-fi
-
-WELCOME=$(_welcome_text)
-
-# systemMessage = one-time welcome plus, on install failure, a banner. The
-# banner is NOT gated by the welcome marker, so it recurs until install succeeds.
-SYSTEM_MSG="$WELCOME"
-if [ -n "$_INSTALL_FAIL_MSG" ]; then
-    if [ -n "$SYSTEM_MSG" ]; then
-        SYSTEM_MSG="${SYSTEM_MSG}
-
-${_INSTALL_FAIL_MSG}"
-    else
-        SYSTEM_MSG="$_INSTALL_FAIL_MSG"
-    fi
 fi
 
 # Claude Code renders systemMessage visibly and injects additionalContext. The

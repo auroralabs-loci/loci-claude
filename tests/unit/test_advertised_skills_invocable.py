@@ -222,6 +222,7 @@ _DELIBERATE_CONTROL_CHARS = {
     ("tests/unit/test_post_edit_hook.py", "\x1e"),
     ("tests/unit/test_pre_edit_hook.py", "\x1e"),
     ("tests/unit/test_turn_clean_hook.py", "\x1e"),
+    ("tests/unit/test_host_turn_id.py", "\x1e"),
     # A swap sentinel: `--elf` → NUL → `--comparing-elf` exchanges two
     # flags in one pass without the second replacement eating the first.
     ("tests/unit/test_pair_gate_contract.py", "\x00"),

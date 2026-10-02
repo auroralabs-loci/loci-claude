@@ -1,10 +1,12 @@
 ---
-description: Install the loci CLI and verify the environment.
+name: setup
+description: >
+  Install the loci CLI and verify the environment. Use when the user asks to
+  set up, install, reinstall, or repair LOCI ("set up loci", "install loci",
+  "loci is not installed", "fix my loci install"), or when a loci command fails
+  because the CLI is absent. When the ask is just "doctor", only run diagnostics.
 when_to_use: >
-  When the user asks to set up, install, reinstall, or repair LOCI ("set up
-  loci", "install loci", "loci is not installed", "fix my loci install"), or
-  when a loci command fails because the CLI is absent. With the argument
-  "doctor", only run diagnostics without installing anything.
+  "doctor" installs nothing: diagnostics only.
 ---
 
 # LOCI Setup
@@ -26,15 +28,14 @@ context) as *the* LOCI version. The CLI version is plumbing — don't print it;
 
 ## Step 0: Locate the plugin
 
-Read `plugin dir: <path>` from the LOCI session context in the
-`system-reminder` block emitted at session start, or use the
-`CLAUDE_PLUGIN_ROOT` environment variable. Do this silently — never announce or
+Read `plugin dir: <path>` from the LOCI session context injected at session
+start, or use the `CLAUDE_PLUGIN_ROOT` environment variable. Do this silently — never announce or
 print the plugin dir; it's internal. If neither is available, stop and tell the
-user to restart Claude Code so the plugin loads.
+user to restart the coding agent so the plugin loads.
 
 ## Step 1: Route by argument
 
-- `$ARGUMENTS` is `doctor` → diagnostics only: skip the install, run
+- the ask is just `doctor` (`/loci:setup doctor`) → diagnostics only: skip the install, run
   `loci doctor`, and report all checks — healthy ones in one line, any warning
   or failure with its `detail` and what to do about it. If `loci` itself is
   absent, say so and offer the full setup.
@@ -55,7 +56,7 @@ command -v uv >/dev/null 2>&1 && echo "uv: ok" || echo "uv: MISSING"
 If it is MISSING, **stop and give the user the exact install command for their
 platform** — do not run the setup script yet, and do not install uv yourself.
 It is a host tool that needs root and an interactive password prompt, so it can
-NEVER be installed from inside Claude (no TTY for `sudo`); the user runs the
+NEVER be installed from inside the agent (no TTY for `sudo`); the user runs the
 command in their own terminal, then re-runs `/loci:setup`.
 
 First determine the platform and package manager yourself — then give the single
@@ -98,10 +99,8 @@ bash "<plugin-dir>/setup/setup.sh"
 (If a prerequisite still slips through, the script exits early printing
 `PREREQ_MISSING: <tool> …` — handle it exactly as above.) It installs the loci
 CLI as a uv tool (via the same self-locking installer the hooks use), then fixes
-exec bits. Project detection is NOT re-run unconditionally — the
-SessionStart hook owns that; setup writes per-project state only as a fallback
-when none exists yet for this cwd (e.g. a plugin installed mid-session). It
-prints a line-per-step report — read it, but relay only what the user needs:
+exec bits, and ends with a `Project:` line when it was run inside a project. It
+writes no project state. It prints a line-per-step report — read it, but relay only what the user needs:
 whether the install succeeded and any dependency that failed. The plumbing lines
 (exec bits, hooks.json validation, hook registration — including a "skipped"
 registration, which is normal in plugin mode) are internal: do NOT surface them
@@ -133,14 +132,16 @@ unhealthy check), treat that as an install problem and fall back to the
 CLI-failure handling in Step 2.
 
 Doctor checks the whole environment (Python, bundled deps, `c++filt`,
-cross-compilers, credential store, sign-in state, state dir), but most of those
-are our internal diagnostics. Relay only the user-facing verdict:
+cross-compilers, credential store, sign-in state, state dir — and the container
+engine, as `engine-*` checks, only when the project's recipe puts the toolchain in
+one), but most of those are our internal diagnostics. Relay only the user-facing verdict:
 
 - If `healthy` → one sentence ("Environment checks passed"). Do NOT enumerate
   the passing checks, and never surface internal ones (state dir, credential
   store, individual Python imports).
 - Otherwise → surface only the `warn`/`fail` checks that the user can act on
-  (e.g. no cross-compiler for their target), each with its `detail` and the fix.
+  (e.g. no cross-compiler for their target, or an unreachable container engine),
+  each with its `detail` and the fix.
   Required-check failures block usage; optional ones are advisories.
 
 Keep doctor's `session` check result for the sign-in offer in the next step.
@@ -163,17 +164,24 @@ Declining is not a failure; setup is complete either way.
 ## Step 5: Report
 
 End with a short, user-facing status — two things only: any action still
-required (sign-in, a missing compiler for their target, adding an SSH key), and
-the verdict. If everything is healthy, one line that setup is complete plus a
+required (sign-in, a missing compiler for their target, adding an SSH key, or the
+`Project:` line's `/loci:init <root>`), and the verdict. If everything is healthy, one line that setup is complete plus a
 pointer to `/loci:help`. Do NOT list checks that passed, internal paths, the
 state dir, or hook-registration details.
 
-If the install succeeded, close with one more line: `loci cockpit` opens a live
-terminal view of this machine's LOCI measurements, and the user runs it in a
-separate terminal because it takes over the one it starts in. One line only,
-here and nowhere else in the report — no flags, no panel list. Do not run it
-yourself: it does not exit on its own, so a Bash call to it hangs the session.
+**Whenever setup finishes healthy**, close with one more line, phrased as
+something they may want rather than a step they owe, and in these words — the
+*separate* terminal is there because it takes over the one it starts in:
 
-Do NOT tell the user to restart or reload Claude Code — this skill only runs
+> Run `loci cockpit` in a separate terminal to see what LOCI catches that your coding agent might miss during planning and coding.
+
+**Healthy is the trigger, not a fresh
+install** — setup over an already-current CLI is the commonest run there is, and
+gating this on "the install succeeded" is why a user who was already set up never
+heard the cockpit existed. One line only, here and nowhere else in the report — no
+flags, no panel list. Do not run it yourself: it does not exit on its own, so a
+Bash call to it hangs the session.
+
+Do NOT tell the user to restart or reload the coding agent — this skill only runs
 when the plugin is already loaded, so its hooks and skills are already active
 in the session.

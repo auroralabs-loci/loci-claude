@@ -66,7 +66,24 @@ GO = SKILL_DIR / "go.md"
 # every screen in this file reads it — and read once at Step 1, because the lines it
 # governs are produced by four different steps.
 VOICE = SKILL_DIR / "voice.md"
-DOCS = (SKILL, BOOTSTRAP, COMPDB, RECOVERY, GO, VOICE)
+# D37. The corpus-wide half of the voice — outcome first, the two classes of
+# sentence that never shrink, the voice remark — now shared by twelve skills. Its
+# basename collides with init's own `voice.md`, which is why the coverage screen
+# below keys on the path and not on `.name`.
+SHARED_VOICE = PLUGIN_ROOT / "skills" / "_shared" / "voice.md"
+# AAD-7641. The container-toolchain branch of Step 3: what `toolchain_unreachable`
+# carries, the one fact-finding question it may cost, the `toolchain:`/`mount:`
+# lines Step 4 relays, and the codes only a `build.exec` recipe raises. In `DOCS`
+# for the reason `go.md` is — prose a model executes, reached from Step 3 — so every
+# flag, verb, field and contradiction screen in this file reads it.
+CONTAINER = SKILL_DIR / "container-toolchain.md"
+# AAD-7674. The `compdb_regen` branch: what the regeneration would run, the one
+# question it may cost, and what the recipe records afterwards. In `DOCS` for
+# the reason `container-toolchain.md` is — prose a model executes, reached from
+# Step 3's row — so every flag, verb, field and contradiction screen reads it.
+REGEN = SKILL_DIR / "compdb-container.md"
+DOCS = (SKILL, BOOTSTRAP, COMPDB, RECOVERY, GO, VOICE, SHARED_VOICE, CONTAINER,
+        REGEN)
 DETECT = PLUGIN_ROOT / "lib" / "detect-project.sh"
 INSTALLER_REL = "hooks/ensure-loci-cli.sh"
 
@@ -264,14 +281,33 @@ DATA_FIELDS = {
     "go",
 }
 ERROR_FIELDS = {"code", "message", "candidates", "supported", "regen", "detail",
-                "recorded_target", "target"}
+                "recorded_target", "target",
+                # AAD-7641: the `toolchain_unreachable` question's payload. All
+                # three are quoted in `init.py` (the probe envelope carries them
+                # too); `question` is not, and sits in KWARG_ONLY below.
+                "exec_candidates", "inferred_mount", "exec_symptoms"}
 #: Only ever `LociError(**details)` kwargs, so they have no quoted form to find —
 #: `error_envelope` merges `err.details` into the body, so the key never appears as a
 #: literal. Named individually rather than by loosening the pattern for all 24, which
 #: is what made the earlier version self-satisfying. A name that DOES have a quoted
 #: form must not sit here: `test_the_kwarg_exemption_is_not_a_laundry` enforces that,
 #: because adding a real field here silently exempts it from the whole cross-check.
-KWARG_ONLY = {"transient", "supported", "recorded_target"}
+KWARG_ONLY = {"transient", "supported", "recorded_target",
+              # `question=QUESTION_TARGET|QUESTION_TOOLCHAIN|QUESTION_COMPDB_REGEN`
+              # at every raise site, never spelled as a key — the discriminator
+              # Step 3 branches on.
+              "question",
+              # AAD-7674: `regen_steps=steps` on the one refusal that carries
+              # the command list it would have run. One raise site, no probe
+              # path emits it, so there is no quoted form to cross-check —
+              # which is exactly what this set is for.
+              "regen_steps",
+              # AAD-7680: `artifact_only_elf=left` on that same refusal — the
+              # binary a no would record, or `null` where there is none, which
+              # is how the reference knows whether the second answer leads
+              # anywhere. Same raise site, same absence of a quoted form. NOT
+              # `artifact_only`, which is a context field and a boolean.
+              "artifact_only_elf"}
 #: `detail` left this set with loci-tools 0.1.135 (T17): `_validate_go` now reads
 #: the compiler's stderr back out with `(exc.details or {}).get("detail")`, so the
 #: name has a quoted form in the CLI and can be cross-checked like any other field.
@@ -281,6 +317,8 @@ ERROR_CODES = {
     "init_needs_user", "init_unsupported", "init_failed", "auth_required",
     "not_initialized", "recipe_stale", "recipe_tampered", "recipe_invalid",
     "compiler_missing", "arch_mismatch", "outside_target",
+    # AAD-7641: the two codes only a `build.exec` recipe raises.
+    "exec_unavailable", "recipe_foreign_host",
 }
 
 
@@ -737,7 +775,7 @@ def test_the_frontmatter_carries_the_trigger_surface():
     for phrase in ("initialize LOCI", "set up this project for LOCI", "/loci:init",
                    "switch the LOCI target", "not initialized", "not_initialized",
                    "recipe_stale", "arch_mismatch", "outside_target", "/loci:setup",
-                   "/loci:contract"):
+                   "/loci:contract", "recipe_foreign_host"):
         assert phrase in fm, f"when_to_use/description must cover {phrase!r}"
 
 
@@ -888,7 +926,7 @@ def test_voice_puts_the_machinery_second_rather_than_deleting_it():
     """The failure mode of a messaging pass is a skill that stops saying true things.
     `voice.md` demotes the vocabulary; it does not drop it, and it names the two
     classes of sentence that never shrink."""
-    flat = _flat(VOICE)
+    flat = _flat(VOICE) + "\n" + _flat(SHARED_VOICE)
     assert re.search(r"[Ss]ay it \*\*second\*\*|it is \*\*second\*\*", flat), (
         "the technical vocabulary is deferred, not banned")
     for term in ("compile database", "translation unit", "validation tier"):
@@ -990,8 +1028,8 @@ def test_the_close_out_is_one_invitation_and_not_a_second_question():
     assert re.search(r"naming this recipe's artifact and target", step4), (
         "project-specific from recipe facts — the only project facts this skill has")
     assert re.search(r"not a\s*command list", step4)
-    close = _section("Step 4 — ready", VOICE)
-    assert re.search(r"\*\*not\*\* an `AskUserQuestion`", close), (
+    close = _section("Step 4: ready", VOICE)
+    assert re.search(r"\*\*not\*\* a question-tool call", close), (
         "Step 3 and Step 4 spend the one question between them; a CTA that asks is "
         "a second one")
 
@@ -1088,7 +1126,7 @@ def test_step_1_skips_step_2_but_does_not_call_an_unsupported_tree_permanent():
 
 
 def test_step_1_establishes_and_passes_the_project_root():
-    """The plugin's own house rule (`_shared/loci-runtime-contract.md`: "Pass
+    """The plugin's own house rule (`_shared/house-rules.md`: "Pass
     `--project-root` explicitly"), and the init skill had it nowhere. A session opened
     in `fw/src` of a healthy initialized tree probed as `initialized: true` with
     `compdbs: []` — so the skill asked to reconfigure a build tree in a directory with
@@ -1370,7 +1408,7 @@ def test_step_3_branches_on_every_code_and_on_the_uncoded_refusal():
     assert "never retried" in row and ".error.detail" in row
     assert "recovery.md" in row, "the permanent-vs-unbuilt caveat lives there"
     row = _row("| `init_failed`")
-    assert "re-arms next session start" in row and "not loop" in row
+    assert "runs `/loci:init` again" in row and "not loop" in row
     assert "recovery.md" in row, (
         "three init_failed shapes need more than relaying; the row must send the "
         "reader there BEFORE it stops")
@@ -1435,7 +1473,7 @@ def test_the_unsupported_caveat_distinguishes_permanent_from_unbuilt():
 
 def test_the_one_question_is_one_and_the_option_cap_is_stated():
     step3 = _section("Step 3")
-    assert re.search(r"[Ee]xactly one `AskUserQuestion`", step3)
+    assert re.search(r"[Ee]xactly one question-tool call", step3)
     assert "at most four supported ISAs" in step3, (
         "state why the list always fits: four supported ISAs, so no fold is needed")
     assert "no folding" in step3
@@ -1447,13 +1485,14 @@ def test_the_one_question_is_one_and_the_option_cap_is_stated():
         "where one database builds both images the first evidence facts are near "
         "identical; the artifact path distinguishes them")
     intro = _flat()[:_flat().index("## Step 0")]
-    assert "One decision about the recipe: the target ISA" in intro
+    assert "There is one *decision* about the recipe — the target ISA" in intro
     # Two things are NOT that decision, and the claim was flatly false until both were
     # carved out: a reviewer counted three AskUserQuestions on an ordinary path
     # (reconfigure consent, tier acceptance, the confirm) against a headline of "one
     # question, ever".
-    assert re.search(r"[Tt]wo things are not that decision", intro)
+    assert re.search(r"none of them re-opens the target", intro)
     assert "permission" in intro and "weaker validation tier" in intro
+    assert "fact only they know" in intro
 
 
 def test_a_free_form_answer_has_a_documented_route():
@@ -1467,11 +1506,11 @@ def test_a_free_form_answer_has_a_documented_route():
 
 def test_the_headless_rule_covers_the_target_question_and_the_confirmation():
     """`AskUserQuestion` does not exist under `claude -p` — verified empirically by a
-    reviewer. The target question had a headless branch; Step 4's confirmation, which
+    reviewer — and `copilot -p` has no `ask_user` either (AAD-7786 probe). The target question had a headless branch; Step 4's confirmation, which
     fires on every single-candidate project, had none, leaving the model pressed
     toward the one act the skill forbids absolutely."""
     headless = _section("Headless runs")
-    assert "do not attempt `AskUserQuestion`" in headless
+    assert "do not attempt the question tool" in headless
     assert "loci init --target=<isa>" in headless
     assert re.search(r"[Dd]o \*\*not\*\* pick a target yourself", headless)
     assert "wrong image" in headless
@@ -1488,8 +1527,9 @@ def test_a_first_init_points_at_the_cockpit():
     assert "loci cockpit" in step4
     assert "*separate* terminal" in step4
     assert "You never run it" in step4
-    assert "On a first init only" in step4, (
-        "a re-init or a knob fix must not repeat the line")
+    assert "On a first init or a target switch, offer" in step4, (
+        "a re-init or a knob fix must not repeat the line — but a target switch "
+        "changes what the view shows, so that one earns it too")
 
 
 def test_confirmation_is_never_fabricated_or_carried_onto_a_rejected_setup():
@@ -1513,8 +1553,10 @@ def test_step_4_relays_the_notes_and_names_the_authoritative_field():
     assert re.search(r"top-level field is authoritative", step4)
     assert "recipe_summary" in step4
     assert "one short block" in step4
-    assert re.search(r"cargo recipe has none", step4), (
-        "the trim list must not demand an artifact line a cargo report lacks")
+    assert re.search(r"cargo: the linked\s+program, once built", step4), (
+        "a cargo report carries an artifact line once the project has built one "
+        "(AAD-7769); the trim list must say so rather than call the line absent")
+    assert not re.search(r"cargo recipe has none", step4)
 
 
 def test_step_4_has_an_error_branch_for_its_own_commands():
@@ -1557,42 +1599,39 @@ def test_step_4_says_the_report_can_overstate_the_confirmation():
 
 
 def test_step_4_qualifies_what_takes_effect_immediately():
-    """The unqualified claim was false: the hooks read the keyed context per fire,
-    but the measurement skills take `<loci_target>` from the SessionStart line, so a
-    mid-session switch does not reach `/loci:exec-trace` until a restart."""
+    """The measuring verbs read the target from the recipe on every call (AAD-7531),
+    so a mid-session switch reaches the next measurement with no restart."""
     step4 = _section("Step 4")
-    assert "governs the hooks immediately" in step4
-    assert re.search(r"session-start line", step4)
-    assert re.search(r"until the session\s*restarts", step4)
-    # It does not silently measure the old target — it REFUSES. Saying "does not
-    # reach" understated it and left the user unprepared for the refusal.
-    assert re.search(r"\*\*refuses\*\* with `arch_mismatch`", step4)
+    assert "governs at once" in step4
+    assert re.search(r"measures the\s*new target", step4)
+    assert "no restart" in step4
 
 
-def test_outside_target_is_the_knob_and_arch_mismatch_is_four_things():
+def test_outside_target_is_the_knob_and_arch_mismatch_is_five_things():
     """Round 1 fixed a mis-route by over-correcting into the opposite universal.
 
     `outside_target` has one raise site and `prefer_output` is its fix. `arch_mismatch`
-    has FOUR (`recipe_flags.py:303`, `:958`, `:1106`, `cargo.py:1216`) and only `:958`
-    names that knob; two of the others name `/loci:init --refresh` in their own
-    message, and on a cargo project `set …prefer_output` is *refused* ("there is no
-    compile database for it to select from") — leaving the agent in recovery.md's
-    "never re-send it unchanged" with the real fix forbidden.
+    has FIVE (`recipe_flags.py:303`, `:958`, `:1106`, `cargo.py:1216`, and since
+    AAD-7758 loci-cli's `analyse._named_admission`, an `--elf` binary for another ISA)
+    and only `:958` names that knob; two of the others name `/loci:init --refresh` in
+    their own message, and on a cargo project `set …prefer_output` is *refused*
+    ("there is no compile database for it to select from") — leaving the agent in
+    recovery.md's "never re-send it unchanged" with the real fix forbidden.
     """
     sect = _section("`arch_mismatch` and `outside_target`", RECOVERY)
     assert re.search(r"\*\*`outside_target` has one cause and one fix", sect)
     assert "build.compdb.select.prefer_output" in sect
-    assert re.search(r"\*\*`arch_mismatch` has four causes", sect), (
+    assert re.search(r"\*\*`arch_mismatch` has five causes", sect), (
         "and only one of them is that knob")
     for cause in ("this compile asked for one target",
-                  "`mode:\"replace\"` pin", "rust.triple"):
-        assert cause in sect, f"the four-cause table must carry {cause!r}"
+                  "`mode:\"replace\"` pin", "rust.triple", "named with `--elf`"):
+        assert cause in sect, f"the five-cause table must carry {cause!r}"
     assert re.search(r"no compile database here", sect), (
         "the cargo row must say why the knob cannot apply")
-    assert "mid-session target switch" in sect, (
-        "Step 4's own instruction produces one of these four")
+    assert "only an explicit `--loci-target`" in sect, (
+        "skills pass no target, so a mid-session switch no longer reaches this row")
     step5 = _section("Step 5")
-    assert "arch_mismatch" in step5 and "four causes" in step5, (
+    assert "arch_mismatch" in step5 and "five causes" in step5, (
         "the pointer must not restate the false universal")
     refresh = _row("| `loci init --refresh`", RECOVERY)
     assert "arch_mismatch" not in refresh and "outside_target" not in refresh, (
@@ -1674,25 +1713,44 @@ CONTRADICTIONS: tuple[tuple[Path, str, str, str], ...] = (
     (COMPDB, "Consent, before anything runs",
      r"do not need to (?:get a yes|ask)|no need to ask|without asking",
      "reverses the consent rule where the commands actually are"),
+    # AAD-7674. Three sections, three rules, three ways to walk around them: run
+    # the regeneration without asking (the whole reason it is a question), read
+    # the blocked Dockerfile candidate as a licence to guess the tag, and record
+    # init's own cheap reconfigure as the `regen` the user is later told to run.
+    (REGEN, "What it would run",
+     r"do not need to (?:get a yes|ask)|no need to ask|without asking"
+     r"|safe to run unasked",
+     "reverses the consent rule where the commands actually are"),
+    (REGEN, "The one question",
+     r"guess the (?:image|tag)|any image with|the likeliest image"
+     r"|pass `--confirmed`",
+     "licenses inventing the one fact a repository cannot hold"),
+    (REGEN, "Afterwards",
+     r"record (?:it|the reconfigure) as `?regen|`?regen`? is the `?cmake"
+     r"|drop the notes",
+     "puts init's own reconfigure in the recipe as the user's rebuild command"),
     (SKILL, "Headless runs",
      r"pick (?:the|a) (?:first|likeliest|best)|must not stop|ask anyway",
      "licenses guessing a target, or asking, with nobody to answer"),
     (SKILL, "Step 3", r"[Oo]ffer every candidate|as many options as",
-     "ignores AskUserQuestion's four-option maximum"),
+     "ignores the question tool's four-option maximum"),
     # The reorder's own reversal: a readiness line that absorbs the caveat, or one
     # printed whatever `.data.validated` says. Either turns the strongest claim this
     # skill makes into decoration.
     (SKILL, "Step 4", r"fold (?:it|the warning|the caveat) into|inside the readiness"
                       r" line|say it validated either way|whatever `\.data\.validated`",
      "lets the readiness line absorb the caveats, or claims validation it has not"),
-    (VOICE, "Outcome first",
+    (SHARED_VOICE, "Outcome first",
      r"drop the (?:notes|warnings)|paraphrase the refusal|shorten `\.error\.detail`"
      r"|the vocabulary is banned",
      "trims the two classes of sentence that never shrink, or deletes the machinery "
      "instead of demoting it"),
-    (VOICE, "Step 1 \u2014 say what you recognised",
+    (VOICE, "Step 1: say what you recognised",
      r"give (?:them|the user) an ETA|usually takes a|say how long it will take",
      "puts back a duration this step cannot know"),
+    (SHARED_VOICE, "The voice remark",
+     r"drop the remark|only when it (?:helps|fits)|a verdict on their code",
+     "turns the remark into a verdict, or makes it optional"),
     (VOICE, "Before you ask to run something",
      r"skip the specifics|no need to say what it changes|tell them afterwards",
      "turns consent into an announcement"),
@@ -1701,8 +1759,8 @@ CONTRADICTIONS: tuple[tuple[Path, str, str, str], ...] = (
      r"|narrate each command|tick every stage up front|drop the offer",
      "restores the narration, ticks a stage that has not happened, or takes the "
      "detail away instead of offering it"),
-    (VOICE, "Step 4 \u2014 ready",
-     r"ask (?:it )?with `AskUserQuestion`|a second question is fine"
+    (VOICE, "Step 4: ready",
+     r"ask (?:it )?with the question tool|a second question is fine"
      r"|name a function you think",
      "spends a question this skill does not have, or invents a function"),
     (SKILL, "Step 4", r"[Ss]kip the confirmation|no need to confirm",
@@ -1868,6 +1926,22 @@ CONTRADICTIONS: tuple[tuple[Path, str, str, str], ...] = (
     (RECOVERY, "`arch_mismatch` and `outside_target`",
      r"edit(?:ing)? `?\.loci/build\.yaml`? (?:by hand )?is",
      "licenses hand-editing the recipe"),
+    # AAD-7641. The container branch's three reversals: guessing the image (the one
+    # fact init could not observe, and the one thing the user is asked), confirming
+    # a recipe nobody saw, or treating the question as a second decision.
+    (CONTAINER, "Candidates first",
+     r"pick (?:the|a) (?:likeliest|first|closest|best) (?:image|candidate)"
+     r"|guess the image|invent an image yourself|pass `?--confirmed`? here"
+     r"|a second decision",
+     "licenses guessing the image or confirming on the user's behalf"),
+    (CONTAINER, "The confirmation shows",
+     r"drop the mount lines|summari[sz]e the toolchain line|runs in a container is enough",
+     "hides which image and which directories the user is approving"),
+    (CONTAINER, "Codes only a container recipe raises",
+     r"install (?:a|the) compiler (?:on this|here)|`?--refresh`? (?:fixes|clears) `?recipe_foreign_host"
+     r"|treat `?exec_unavailable`? as (?:a )?compile failure",
+     "sends the user to install a compiler on a host that was never meant to have one, "
+     "or repairs a foreign recipe in place"),
 )
 
 def test_every_rule_section_has_a_hatch_entry():
@@ -1884,13 +1958,13 @@ def test_every_rule_section_has_a_hatch_entry():
     real exemption for free. Every section in these four files carries a rule; if one
     ever does not, it probably should not be a section.
     """
-    covered = {(p.name, h) for p, h, _pat, _why in CONTRADICTIONS}
+    covered = {(p, h) for p, h, _pat, _why in CONTRADICTIONS}
     missing = [
-        f"{path.name}: {m.group(1).strip()}"
+        f"{path.relative_to(PLUGIN_ROOT)}: {m.group(1).strip()}"
         for path in DOCS
         for m in re.finditer(r"(?m)^ {0,3}#{2,3} (.+)$", _body(path))
         if not any(m.group(1).strip().startswith(h)
-                   for p, h in covered if p == path.name)
+                   for p, h in covered if p == path)
     ]
     assert not missing, (
         "every section in these files carries a rule, so every one needs a "
@@ -2053,3 +2127,167 @@ def test_the_reference_files_stay_proportionate():
     refs = sum(len(p.read_bytes()) for p in (BOOTSTRAP, COMPDB, RECOVERY))
     assert refs <= 2 * skill, (
         f"reference files total {refs} bytes against SKILL.md's {skill}")
+
+
+# ── AAD-7641: the toolchain is in a container ───────────────────────────────
+
+def test_step_3_names_both_questions_and_routes_the_toolchain_one():
+    """`init_needs_user` is one code asking two different questions, answered with
+    different flags. The row has to say which field tells them apart and where the
+    container one goes — and keep the ISA question as THE question."""
+    row = _row("| `init_needs_user`")
+    assert ".error.question" in row, "the discriminator is `.error.question`"
+    assert "`target`" in row and "`toolchain_unreachable`" in row
+    assert "the one question, below" in row, "the ISA question stays the one decision"
+    assert "container-toolchain.md" in row, "the container branch lives out of line"
+    assert re.search(r"before the ISA, never beside it", row), (
+        "the CLI asks the toolchain question first and never alongside the target")
+
+
+def test_the_container_reference_never_invents_or_confirms():
+    sect = _section("Candidates first", CONTAINER)
+    assert re.search(r"[Nn]ever invent\s+an image", sect)
+    assert re.search(r"never pass `--confirmed` here", sect)
+    assert re.search(r"[Cc]arry the `--exec-\*` flags through\s+every later init call", sect), (
+        "init re-derives on every call, so the answer has to ride the confirmation too")
+    assert "fact-finding" in sect and "one decision" in sect, (
+        "the toolchain question must not spend the recipe's one decision")
+    assert re.search(r"Headless: print .* then stop", sect), (
+        "with nobody to answer, print the line and stop — the SKILL.md rule, restated "
+        "where the flags are")
+
+
+def test_the_container_reference_asks_only_for_what_init_could_not_see():
+    """Three shapes, three actions: one complete candidate is recorded, several are
+    a choice, none means the image is the one missing fact."""
+    sect = _section("Candidates first", CONTAINER)
+    assert re.search(r"\*\*Exactly one `complete`\*\* → no question", sect)
+    assert re.search(r"\*\*Several `complete`\*\* → one question-tool call", sect)
+    assert re.search(r"\*\*None\*\* → the one missing fact is the image", sect)
+    assert "--exec-mount" in sect and "inferred_mount" in sect, (
+        "the mount flag is for the case init could not infer the map, and only that")
+    assert "`blocked`" in sect and "relay its sentence" in sect, (
+        "a found-but-unusable candidate names the real obstacle")
+
+
+def test_step_4_relays_the_toolchain_and_mount_lines():
+    """A recipe recorded off a single running container never passes through the
+    container reference — Step 4 is the first place the model meets the `toolchain:`
+    line, so Step 4 itself has to say it survives the trim."""
+    step4 = _section("Step 4")
+    assert re.search(r"every \*\*`toolchain:` and `mount:`\*\*\s+line", step4)
+    assert "container-toolchain.md" in step4
+    conf = _section("The confirmation shows", CONTAINER)
+    assert "`toolchain:`" in conf and "`mount:`" in conf
+    assert re.search(r"on a\s+recipe that asked and on one that did not", conf)
+    assert re.search(r"starts containers on their machine", conf), (
+        "what the user is approving, in words")
+
+
+def test_the_container_codes_route_foreign_host_to_init_here_and_relay_exec_unavailable():
+    """D39 (2026-09-21) made these two members of the closed set, whose recoveries
+    are written once in the shared contract — `test_the_coded_error_has_one_recovery`
+    rejects a second recovery table anywhere in the corpus, and this file used to be
+    it. What this reference owes the reader now is the ROUTE: both codes named, and
+    the section that carries their recovery linked."""
+    sect = _section("Codes only a container recipe raises", CONTAINER)
+    for code in ("`recipe_foreign_host`", "`exec_unavailable`"):
+        assert code in sect, (
+            f"the container branch no longer names {code}, so a model that meets it "
+            f"here has nothing telling it the code is expected on this route")
+    assert "house-rules.md#coded-errors" in sect, (
+        "the codes are named with no link to the one place their recovery is "
+        "written, which is how a second copy gets added back")
+    assert "`loci doctor`" in sect, (
+        "the engine check that reports the same thing is this reference's own fact")
+    # `init_unsupported` is not one of the eleven, so its recovery stays here.
+    row = _row("| `init_unsupported`", CONTAINER)
+    assert "Step 3's row" in row
+
+
+def test_the_init_skill_frontmatter_routes_the_foreign_host_code_here():
+    fm = re.sub(r"\s+", " ", _frontmatter())
+    assert "`recipe_foreign_host`" in fm, (
+        "a `build.exec` recipe read on another machine is answered by `/loci:init` "
+        "there; the code has to reach this skill's trigger surface")
+
+
+def test_recovery_points_at_the_container_reference_and_lists_its_keys():
+    body = _body(RECOVERY)
+    assert "container-toolchain.md" in body
+    row = _row("| `loci init set", RECOVERY)
+    for key in ("build.exec.kind", "build.exec.image", "build.exec.container",
+                "build.exec.mounts", "build.exec.timeout_s"):
+        assert f"`{key}`" in row, f"{key} is settable and the row must say so"
+
+
+@needs_cli_src
+def test_every_exec_flag_the_docs_name_is_one_init_declares():
+    """`--exec-*` is a closed family the CLI declares in one table (`_EXEC_FLAGS`);
+    a flag the docs invent — `--exec-env`, say — is an argparse exit 2 on every run,
+    and the per-verb usage check only sees flags inside a `loci init …` span."""
+    src = (_cli_src() / "init.py").read_text(encoding="utf-8")
+    block = src[src.index("_EXEC_FLAGS"):]
+    block = block[:block.index("\n)\n")]
+    declared = {"--" + m.replace("_", "-") for m in re.findall(r'\("(exec_[a-z_]+)"', block)}
+    assert len(declared) >= 5, f"_EXEC_FLAGS parse looks wrong: {sorted(declared)}"
+    # `_EXEC_FLAGS` is the family that records a `build.exec` KEY, and it is a
+    # subset of the `--exec-*` surface: AAD-7674's `--exec-regen-compdb` is an
+    # answer to a question, not a knob, so it is declared to argparse and
+    # nowhere else. What an invented flag costs is an argparse exit 2, so what
+    # this has to read is argparse.
+    #
+    # `--no-exec-*` is inside the family and has to be read as one: AAD-7680
+    # spells the decline `--no-exec-regen-compdb`, which the `--exec-` pattern
+    # matches nowhere — not in argparse and not in the docs — so the docs could
+    # invent one and this test would say nothing, which is the thing it exists
+    # to stop.
+    declared |= set(re.findall(r'add_argument\(\s*"(--(?:no-)?exec-[a-z-]+)"', src))
+    # …and the one argparse is handed as a constant, because the CLI spells that
+    # flag once (`DECLINE_REGEN_FLAG`) and uses it in the parser, in the refusal
+    # and in the note. A read that saw only string literals inside
+    # `add_argument` would call a real flag invented.
+    declared |= set(re.findall(r'(?m)^[A-Z_]+ = "(--(?:no-)?exec-[a-z-]+)"$', src))
+    assert "--exec-regen-compdb" in declared, (
+        "init no longer declares the flag that answers `compdb_regen`")
+    assert "--no-exec-regen-compdb" in declared, (
+        "init no longer declares the flag that declines `compdb_regen`")
+    named = set()
+    for path in DOCS:
+        named |= set(re.findall(r"(--(?:no-)?exec-[a-z]+(?:-[a-z]+)*)\b",
+                                _flat(path)))
+    assert named, "the docs name no `--exec-*` flag at all"
+    assert named <= declared, f"docs name flags init lacks: {sorted(named - declared)}"
+    # And the answer flags themselves — the ones the refusal's message names — are
+    # the ones the reference instructs, not a `--set` spelling of them.
+    assert {"--exec-kind", "--exec-image", "--exec-container"} <= named
+    assert "--set build.exec" not in _flat(CONTAINER), (
+        "the reference answers a question with `--exec-*`; `--set build.exec.*` is "
+        "recipe surgery and belongs to `loci init set`")
+
+
+def test_the_regen_reference_offers_the_second_answer():
+    """AAD-7680. `compdb_regen` had one answer for as long as the reference had
+    one to relay, so a user with no engine — or no appetite for starting one —
+    met a question they could not settle and a project left uninitialized beside
+    a binary LOCI could already measure.
+
+    Three things make the offer honest, and all three are asserted: the no is a
+    flag, it is keyed on the field that says whether it leads anywhere rather
+    than made on every `compdb_regen`, and it routes to the section that states
+    what an artifact-only recipe can and cannot do.
+    """
+    sect = _section("What it would run", REGEN)
+    assert "--no-exec-regen-compdb" in sect, (
+        "the reference relays one answer to a question that has two")
+    assert ".error.artifact_only_elf" in sect, (
+        "the offer is made where there is a binary to record, and that field is "
+        "what says so — offering it unconditionally ends in a second refusal")
+    assert "`null`" in sect, "…and withheld where the field names nothing"
+    assert "compdb.md" in sect, (
+        "what an artifact-only recipe measures is `compdb.md`'s last section, "
+        "and a copy of it here is a second thing to keep true")
+    # …and that section says which shape has to pass a word for it, because a
+    # reader who wants an artifact-only recipe reads it rather than this file.
+    assert "compdb-container.md" in _section(
+        "When the build cannot be observed", COMPDB)

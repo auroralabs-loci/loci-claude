@@ -26,7 +26,11 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS = PLUGIN_ROOT / "skills"
-CONTRACT = SKILLS / "_shared" / "loci-runtime-contract.md"
+# The shared contract is two files since 22 Sep (todo [082]): what every skill
+# reads, and `compile-route.md` for the sections only a skill that BUILDS or
+# DIFFS an artifact reads. A check scopes itself to the one that owns its subject.
+HOUSE_RULES = SKILLS / "_shared" / "house-rules.md"
+COMPILE_ROUTE = SKILLS / "_shared" / "compile-route.md"
 DETECT = PLUGIN_ROOT / "lib" / "detect-project.sh"
 
 
@@ -214,7 +218,7 @@ _FORBIDDEN_PATTERNS = (
 )
 
 # The compiler ladder the recipe replaced with `compiler_missing`. Screened in
-# the CONTRACT and, since T11, in the two skills T11 cleared. NOT in the
+# the HOUSE_RULES and, since T11, in the two skills T11 cleared. NOT in the
 # Pattern-B skills: they still carry it, which is T12's to remove and is
 # recorded in `KNOWN_LADDER_REFERENCES` — so applying this to them would fail on
 # the recorded debt rather than on a regression. It exists because
@@ -295,6 +299,45 @@ def _git_rc(*args: str) -> int | None:
     return r.returncode
 
 
+#: Files this corpus has renamed, newest name first. A pin is keyed by the path the
+#: file has NOW, and the ratchet reads that path at an older commit — where a renamed
+#: file simply is not there, which would read as "the phrase is new" and silently
+#: excuse every pin on it. Recording the rename keeps the history readable; the entry
+#: is deleted once no registered base predates the rename.
+_FORMER_PATHS = {
+    # 22 Sep 2026, twice: the `loci-` prefix was redundant inside `skills/_shared/`
+    # of the LOCI plugin, and then "contract" was dropped outright — it also names
+    # `.loci/contract.yaml`, and one word for both is what the file exists to settle.
+    "skills/_shared/house-rules.md": (
+        "skills/_shared/runtime-contract.md",
+        "skills/_shared/loci-runtime-contract.md",
+    ),
+}
+
+
+def _names_at(path: str) -> tuple[str, ...]:
+    """`path` and every name it used to have, newest first."""
+    return (path, *_FORMER_PATHS.get(path, ()))
+
+
+def _path_absent_at(commit: str, path: str) -> bool:
+    """Did `path` genuinely not exist at `commit`?
+
+    `git rev-parse commit:path` resolves the path through the TREE and reports the
+    blob's name; it never needs the blob's content. So it says "not in this commit"
+    without fetching anything, which is the whole point — a blobless or partial clone
+    can resolve a commit and still fail to READ a file that was there, and folding
+    that into "absent" would pass a pin nobody proved. Here they stay separate:
+    absent from the tree is a definite no, an unreadable blob stays "cannot tell"
+    and falls through to the failure below.
+    """
+    for name in _names_at(path):
+        rc = _git_rc("rev-parse", "--verify", "--quiet", f"{commit}:{name}")
+        if rc is None or rc == 0:
+            return False
+    return True
+
+
 def _commit_resolves(commit: str) -> bool:
     """Is `commit` an object in this clone? False also when git cannot be run —
     both are hard failures for the caller, which is why they can share an answer.
@@ -315,9 +358,12 @@ def _is_ancestor(older: str, newer: str) -> bool | None:
 # ---------------------------------------------------------------------------
 # The recipe: the coded errors, and the guard/prose coupling (T10)
 # ---------------------------------------------------------------------------
-NINE_CODES = ("not_initialized", "recipe_invalid", "recipe_tampered",
-              "recipe_stale", "compiler_missing", "compdb_absent",
-              "compdb_entry_missing", "outside_target", "arch_mismatch")
+# D39 opened the set from nine to eleven: a toolchain may live off this machine,
+# which the nine had no code for.
+CLOSED_CODES = ("not_initialized", "recipe_invalid", "recipe_tampered",
+                "recipe_stale", "compiler_missing", "compdb_absent",
+                "compdb_entry_missing", "outside_target", "arch_mismatch",
+                "exec_unavailable", "recipe_foreign_host")
 
 
 def test_every_compile_invocation_carries_require_recipe():
@@ -336,7 +382,7 @@ def test_every_compile_invocation_carries_require_recipe():
     # version matched two indentation shapes; moving Pattern A's block into a
     # ``` fence — the file's dominant style — or reflowing B3's bullet from two
     # spaces to three voided it, with the flag deleted and the suite green.
-    raw = _raw(CONTRACT)
+    raw = _raw(COMPILE_ROUTE)
     bad = []
     for m in re.finditer(r"loci build compile\b", raw):
         # Prose that merely names the verb is not an invocation; a runnable one
@@ -357,36 +403,6 @@ def test_every_compile_invocation_carries_require_recipe():
         "fewer invocations than expected — this scan may be matching nothing")
 
 
-def test_a_missing_target_line_is_not_read_as_a_diagnosis():
-    """No line in the session context proves a project is uninitialized.
-
-    Both halves of this were wrong once. The `recipe:` line was called "what says
-    the project is initialized"; the `LOCI target:` line was called proof that it
-    is not. `lib/setup-steps.sh` prints them independently: a wiped state
-    directory gives `recipe:` and NO target for a project that is initialized and
-    whose compile will never answer `not_initialized`, and an unreachable recipe
-    gives the target and neither of the other two.
-
-    What the absence of a target actually means is that you have no value to pass
-    to `--loci-target`, which takes one of exactly four and rejects anything else
-    with exit 2 and no envelope. That is a fact about this session. The diagnosis
-    belongs to the CLI.
-    """
-    body = _text(CONTRACT)
-    assert ("**No `LOCI target:` line.** You have no target, which is a fact about "
-            "this session and not a diagnosis of the project") in body, (
-        "the contract reads a missing target line as a diagnosis again")
-    for inference in (
-            "**No `LOCI target:` line.** The project is not initialized",
-            "presence is what says the project is initialized",
-            "Its presence is what says the project is initialized"):
-        assert inference not in body, (
-            f"a session-context line is being read as proof of initialization "
-            f"state: {inference!r}")
-    # …and the one reliable answer is still named.
-    assert "the only reliable answer is what a `loci` call returns" in body
-
-
 def test_the_cli_own_recipe_warnings_are_relayed():
     """Two warning classes reach a report through no other channel.
 
@@ -402,7 +418,7 @@ def test_the_cli_own_recipe_warnings_are_relayed():
     passed on prose rewritten to *"Do not relay … and never quote one verbatim"*,
     because the descriptive tail kept every token it looked for.
     """
-    prov = _section(_text(CONTRACT), "### The recipe provenance line",
+    prov = _section(_text(HOUSE_RULES), "### The recipe provenance line",
                     "## When a `loci` call refuses")
     assert "Relay the CLI's own warnings about this basis, verbatim" in prov, (
         "the relay is no longer an instruction")
@@ -431,7 +447,7 @@ def test_the_contract_does_not_spell_out_a_shell_write_to_a_guarded_file():
     assurance, and leaves one sentence holding the line. State the limit; do not
     write the command.
     """
-    body = _text(CONTRACT)
+    body = _text(HOUSE_RULES)
     for method in ("`cat >`", "`printf >`", "`sed -i`", "`tee `", "> .loci/"):
         assert method not in body, (
             f"the contract spells out {method!r} as a way round the write guard")
@@ -440,7 +456,7 @@ def test_the_contract_does_not_spell_out_a_shell_write_to_a_guarded_file():
     assert "A write that would succeed is not a write you may make." in body
 
 
-def test_the_coded_error_table_carries_all_nine_and_says_the_set_is_closed():
+def test_the_coded_error_table_carries_them_all_and_says_the_set_is_closed():
     """The nine codes replaced the fallback ladders, so they carry their weight.
 
     A code the table omits is one the model meets with no recovery and improvises
@@ -448,7 +464,7 @@ def test_the_coded_error_table_carries_all_nine_and_says_the_set_is_closed():
     being *closed* is half the contract with the CLI: `recipe_flags` refuses to
     invent a tenth precisely because no skill would branch on it.
     """
-    section = _section(_text(CONTRACT), "## When a `loci` call refuses",
+    section = _section(_text(HOUSE_RULES), "## When a `loci` call refuses",
                        "## Rust / Cargo projects")
     # The rows of THIS section, with their recovery cells. Three earlier versions
     # of this check were defeated: a whole-section `in` check stayed green with a
@@ -461,7 +477,7 @@ def test_the_coded_error_table_carries_all_nine_and_says_the_set_is_closed():
     # bound was the lead-in "Three need more than a line", so everything after it
     # went unscanned — and a tenth code with a full table row, inserted three
     # lines later, passed with `exactly **nine**` still asserted and now false.
-    raw = _raw(CONTRACT)
+    raw = _raw(HOUSE_RULES)
     start = raw.index("## When a `loci` call refuses")
     end = raw.index("\n## ", start + 10)
     rows = {}
@@ -475,7 +491,7 @@ def test_the_coded_error_table_carries_all_nine_and_says_the_set_is_closed():
         if code == "error.code":       # the header row
             continue
         rows[code] = cells[1]
-    for code in NINE_CODES:
+    for code in CLOSED_CODES:
         assert code in rows, f"the coded-error table has no row for {code}"
         recovery = rows[code]
         # A LENGTH floor is not a content floor: nine cells reading "Refer to the
@@ -488,18 +504,18 @@ def test_the_coded_error_table_carries_all_nine_and_says_the_set_is_closed():
             f"({recovery[:60]!r}). A code whose row says nothing is a code the "
             f"model improvises around.")
     # …and no tenth, anywhere in the section.
-    assert set(rows) == set(NINE_CODES), (
-        f"the table's codes are {sorted(rows)}, not the nine: "
-        f"extra {sorted(set(rows) - set(NINE_CODES))}, "
-        f"missing {sorted(set(NINE_CODES) - set(rows))}")
-    assert "exactly **nine**" in section, (
+    assert set(rows) == set(CLOSED_CODES), (
+        f"the table's codes are {sorted(rows)}, not the closed set: "
+        f"extra {sorted(set(rows) - set(CLOSED_CODES))}, "
+        f"missing {sorted(set(CLOSED_CODES) - set(rows))}")
+    assert "exactly **eleven**" in section, (
         "the table no longer says the set is closed")
     # The two rules that make the table safe to act on.
     assert "Never regenerate a compile database mid-turn" in section, (
         "the mid-turn regeneration rule is gone — a compdb regenerated between "
         "the snapshot and the post-edit compile is the recorded -52.4% defect")
     assert "surface `error.message` verbatim and stop" in section, (
-        "nothing tells the model what to do with a code outside the nine")
+        "nothing tells the model what to do with a code outside the set")
 
 
 def test_the_deleted_ladders_and_defaults_stay_deleted():
@@ -509,7 +525,7 @@ def test_the_deleted_ladders_and_defaults_stay_deleted():
     binary on its own. The recipe answers all three, so their survival would not
     be redundancy — it would be a live alternative to the coded recovery.
     """
-    body = _text(CONTRACT)
+    body = _text(HOUSE_RULES)
     for gone in ("compiler_not_found", "Cross-compilation defaults",
                  "Supported architectures (gate)"):
         assert gone not in body, f"{gone!r} is back in the shared contract"
@@ -992,13 +1008,10 @@ def test_the_injected_prose_scan_finds_the_context_block():
         assert expected in joined, (
             f"the injected-prose scan lost {expected!r} — the extractor no longer "
             f"reads the SessionStart block variables")
-    for expected in ("inactive (init: unsupported)",       # _ctx_line '…'
-                     "no recorded state on this machine",  # _ctx_line '…'
-                     "detection: multi_project"):          # _ctx_line "$(printf …)"
+    for expected in ("plugin dir:",):                      # _ctx_line "…"
         assert expected in joined, (
             f"the injected-prose scan lost {expected!r} — the extractor no longer "
-            f"reads the per-state `_ctx_line` sentences, which are where every "
-            f"state-specific instruction to the model lives")
+            f"reads `_ctx_line` arguments")
     # …and the apostrophe idiom survives, since truncating there would silently
     # halve several of these strings.
     assert "skill's own voice section" in joined, (
@@ -1020,6 +1033,20 @@ def test_the_injected_prose_scan_finds_the_context_block():
         f"the scan found {len(session)} strings in session-init.sh; it emitted at "
         f"least 15 when this floor was set. A drop means the extractor stopped "
         f"reading a construct the hook still uses")
+
+
+# The `LOCI version:` stamp `agents.txt` opens its first section with. It names no
+# file, and every release moves it, so hashing it made each release re-register a
+# section whose prose had not changed; the re-hash was forgotten often enough that
+# `main` kept arriving red on this lint. The stamp's own value is checked against
+# the manifest by `test_agents_txt_contract.py`.
+_VERSION_STAMP = re.compile(r"(LOCI version: )\d+\.\d+\.\d+\S*")
+
+
+def _section_digest(flat: str) -> str:
+    """The registry key of one whitespace-collapsed section, stamp left out."""
+    return hashlib.sha1(
+        _VERSION_STAMP.sub(r"\g<1><version>", flat).encode("utf-8")).hexdigest()[:10]
 
 
 def _guarded_sections():
@@ -1076,8 +1103,7 @@ def _guarded_sections():
             # `` yaml ``) evades both regexes on the raw form.
             if not flat or not _names_a_guarded_file(flat):
                 continue
-            digest = hashlib.sha1(flat.encode("utf-8")).hexdigest()[:10]
-            yield rel, digest, flat
+            yield rel, _section_digest(flat), flat
 
 
 # Every PARAGRAPH in shipped prose that names a write-guarded file, as of T10.
@@ -1104,26 +1130,17 @@ ALLOWED_GUARDED_MENTIONS = {
     # instruction. This one describes the recipe and routes the write through
     # `/loci:init`.
     "agents.txt": {
-        # Re-hashed by the version stamp: the chunk opens with the
-        # `LOCI version:` line, so a release bump re-hashes it. Unchanged in
-        # substance — it routes the recipe write through `/loci:init`.
-        # Re-hashed 2026-09-11 by the verdict-composition change (ADR 04/08): the
-        # section describes a guarded file and instructs no write. Re-hashed again by the
-        # merge with the version bump, which moves the `LOCI version:` line this chunk
-        # opens with, a third time by 0.2.14's bump, a fourth by 0.2.15's, a
-        # fifth by 0.2.16's (F17), a sixth by 0.2.20's (F11) and an eighth by
-        # 0.2.22's (AAD-7607). There is no seventh or eighth entry because 0.2.20
-        # (PR #300) and 0.2.21 (PR #301) each bumped the stamp and did NOT re-hash
-        # here, so `main` carried this test red from both merges until this one.
-        # Twice is a pattern: the five version sites a release edits have a SIXTH
-        # consequence, and it is this registry. Re-hashed a tenth time by 0.2.26's
-        # bump (PR #308) and an ELEVENTH by 0.2.27's (AAD-7566) — same substance each
-        # time, the stamp this chunk opens with moved. Two releases landed on 0.2.26
-        # independently and both re-hashed to the same value, which is the clearest
-        # sign yet that this registry is a consequence of the version bump and not a
-        # decision anyone makes. 0.2.29 (PR #312) bumped the stamp and again did not
-        # re-hash here, so `main` was red on arrival; this is 0.2.30's value.
-        "7252be01b9",  # LOCI: install and setup ======================= LOCI version: 0.
+        # The section opens with the `LOCI version:` stamp, so nearly every release
+        # re-hashed it, each time noting that the stamp moved and nothing else did,
+        # and releases that forgot left `main` red (#300, #301, #312, #347, #350 and
+        # #354). The find-and-replace used for version bumps also kept rewriting
+        # the release numbers in the ledger that stood here. The digest now leaves
+        # the stamp out (`_section_digest`), so a release moves nothing here; the
+        # ledger is in this file's git history.
+        # Read 2026-09-29: it describes the recipe and routes its write through
+        # `/loci:init`, and names `.loci/contract.yaml` as what LOCI drafts and the
+        # user applies. It instructs no write.
+        "045f31ba60",  # LOCI: install and setup ======================= LOCI version: 0.
     },
     "PORTAL.md": {
         "350d3af802",  # ## Getting Started 1. Create your LOCI account and open the port
@@ -1133,17 +1150,30 @@ ALLOWED_GUARDED_MENTIONS = {
         "95f7ff143c",  # ## Quick Start Sign in once per machine. Every analysis skill is
         # Re-hashed: the section now says to open the cockpit in a separate
         # terminal, because it takes over the one it runs in.
-        "e6f493718f",  # ## Cockpit `loci cockpit` is a live terminal view of this machin
+        # Re-hashed again by AAD-7656 (#349): it opens on what the cockpit is for,
+        # "what LOCI catches that your coding agent might miss". Read: it still only
+        # describes `.loci/contract.yaml` as what the contract view shows.
+        "33a2209bb4",  # ## Cockpit `loci cockpit` shows what LOCI catches that your codi
         "baa36b300c",  # ### LOCI says the project is not initialized Every measurement r
         # New section (`## Verdicts`, the two word sets). Read: it tells the
         # USER where a bound comes from — `.loci/contract.yaml`, `/loci:contract`,
         # or their own request — and says LOCI never supplies one.
         "dd719ee547",  # ## Verdicts A LOCI report closes on one of two word sets, and wh
         # Re-hashed: the table gained the setup, help and bug-report rows.
-        "93c094a2bf",  # ## Skills Guardian — human-on-the-loop. LOCI predicts, warns, an
+        # Re-hashed by AAD-7785 (2026-10-01): the Skills section gained the GitHub Copilot
+        # CLI note (description-only triggering, `/loci:<skill>`, no `$ARGUMENTS`).
+        # Read: describes which key each host reads; it instructs no write.
+        # Re-hashed by AAD-7786 (2026-10-02): the Copilot note says how the skills name
+        # tools (Claude Code's names; the `host:` line maps them) and that neither
+        # host's `-p` mode can ask. Read: it still only describes what the skills do.
+        # Re-hashed by the AAD-7786 review: the Copilot shell is `bash` or `powershell`.
+        "b9d4bf2a71",  # ## Skills Guardian — human-on-the-loop. LOCI predicts, warns, an
         # Newly guarded: the hooks table now names the two files the PreToolUse
         # guard denies, as the guard's subject. It instructs nobody to write them.
-        "7d13e63ac0",  # ## Hooks | Hook | Trigger | Action | |------|---------|--------|
+        # Re-hashed by AAD-7788: the table gained the SubagentStart row. Read: the
+        # new row names no guarded file; the two the guard denies are still only
+        # described as its subject.
+        "e19251b8f0",  # ## Hooks | Hook | Trigger | Action | |------|---------|--------|
     },
     "hooks/contract-guard.sh": {
         "700717b625",  # The build recipe (.loci/build.yaml) is written by 'loci init', n
@@ -1167,80 +1197,168 @@ ALLOWED_GUARDED_MENTIONS = {
     "hooks/draft-pending-nudge.sh": {
         "659f1cad77",  # LOCI: contract draft — $summary — but .loci/contract.yaml change
     },
-    "hooks/session-init.sh": {
-        "71e567132f",  # LOCI: the recorded state says this project is initialized, but n
-        "33f244de9f",  # LOCI: this project is not initialized — no `.loci/build.yaml` re
-    },
     "lib/setup-steps.sh": {
         "4efcb384aa",  # $d/.loci/build.yaml
     },
-    "skills/_shared/contract-rationale.md": {
+    "docs/contract-rationale.md": {
         # Re-hashed 2026-09-11 by the verdict-composition change (ADR 04/08): the
         # section describes a guarded file and instructs no write.
         "3253e74af4",  # ## Where the bounds live **One committed file per repository** (
     },
-    "skills/_shared/loci-runtime-contract.md": {
+    "skills/_shared/house-rules.md": {
+        "722a91a5df",  # ## When a `loci` call refuses: the eleven coded errors **A proje
+        "951706b357",  # ### The recipe provenance line Every **absolute** report — exec-
+        "3bf8959eec",  # ## The build recipe: what every measurement rests on `.loci/buil
+        "2ce21f47c2",  # # LOCI house rules (shared) Canonical instructions shared by the
+        # D21 (2026-09-21): the band rule was in two shared files and said "stated
+        # in no skill's prose", which seven skills break. One home now, corrected.
+        # The section above re-hashed too, because the new anchor sits in its chunk.
+        "c50f1a40d6",  # ## The Contract Envelope is input only `.loci/contract.yaml` hol
+        # Re-hashed again by D38: the third source, a directly observed structural
+        # hazard, is deleted. Two sources now, which is what this section already
+        # claimed in its own opening line while listing three.
+        # Re-hashed 22 Sep by todo [086]: --signals is accepted with a contract as
+        # well as without one, because naming a signal asks for a measurement and
+        # never for a bound. Still describes and forbids; instructs no write.
+        "a3e6be6869",  # ## A measurement inherits a verdict from a bound, never from a b
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        # Re-hashed 22 Sep: the section gained the lost-envelope recovery route
+        # (`analyse show` carries `data.run`) and a line saying a piped metered call
+        # still bills. Read: it describes the envelope and forbids a parser; it
+        # instructs no write.
+        "d32f8a8ea9",  # ## Output: the JSON envelope Every `loci` command prints **one J
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044: the four values are read out of a printed
         # `<project-context>`, not out of a `jq`.
-        "e91da82af5",  # ### The recipe provenance line Every **absolute** report — exec-
-        "8dfaa97ed2",  # # LOCI runtime contract (shared) Canonical instructions shared b
-        "bb5200ba42",  # ## The build recipe: what every measurement rests on `.loci/buil
-        "e7ada32c42",  # ## The Contract Envelope is input only `.loci/contract.yaml` hol
+        # Re-hashed 22 Sep by the compile-route split (todo [082]): the sections
+        # around it moved out, and the two Step 0 blocks link Pattern A in its new
+        # file instead of naming it. Read: each still describes or relays.
         # NEW 2026-09-11. The section names `.loci/contract.yaml` as one of the
         # three sources a measured word may come from, and says its judgement
         # payloads are rendered. It describes the file and instructs no write.
-        "b186d9b953",  # ## A measurement inherits a verdict from a bound, never from a b
     },
     "skills/bug-report/SKILL.md": {
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
+        # Re-hashed by AAD-7789 (2026-10-02): check 9 says that under GitHub Copilot
+        # CLI the detail column carries item 17's per-event hook counts. Read: the
+        # row reads hooks.json and instructs no write.
+        "15cfd43c1a",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
         # Re-hashed by todo 044: check 9 reads hooks.json rather than parsing it
         # with a `jq`.
-        "5881df9a00",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
     },
     "skills/contract/SKILL.md": {
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        # Re-hashed by AAD-7786 (2026-10-02): the review gate asks with "the question
+        # tool" (host-neutral; `AskUserQuestion` under Claude Code, `ask_user` under
+        # GitHub Copilot CLI). Read: it shows the draft and stops; the user applies.
+        # Re-hashed again the same day: the Claude-only option `preview` is gone and the
+        # gate says what to do with nobody to answer (print mode on either host): give
+        # the hand-over line and stop. Read: the user still applies; no write.
+        "d569333452",  # ## Step 4: Review gate Show each drafted entry in full — the sen
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
+        "a182118ee0",  # # LOCI Contract Envelope `.loci/contract.yaml` holds the bounds 
         # Re-hashed 2026-09-11 by the verdict-composition change (ADR 04/08): the
         # section describes a guarded file and instructs no write.
-        "4182850ad2",  # --- name: contract description: > Author and inspect this reposi
-        "4481633380",  # ## Step 4 — Review gate Show each drafted entry in full — the se
+        # Re-hashed by AAD-7785 (2026-10-01): the trigger clause moved from `when_to_use`
+        # into `description` (GitHub Copilot CLI shows the model `description` only).
+        # Read: the frontmatter names the file this skill authors; it instructs no write.
+        "1da2605d95",  # --- name: contract description: > Author and inspect this reposi
         # Re-hashed by todo 044: the envelope discipline drops `jq`.
         # Re-hashed 2026-09-11 by the verdict-composition change (ADR 04/08): the
         # section describes a guarded file and instructs no write.
-        "97fc1dc32d",  # # LOCI Contract Envelope `.loci/contract.yaml` holds the bounds 
     },
     "skills/exec-trace/SKILL.md": {
+        "efa6f15d21",  # ### Artifact provenance (mandatory) Emit the `Artifact:` line on
+        # Re-hashed again the same day: the section gained the `error`-key case and
+        # named `via`, both of which the two leaf-verb reports already carried and
+        # this one did not. Still describes and relays; instructs no write.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
         # Re-hashed 2026-09-11 by the verdict-composition change (ADR 04/08): the
         # section describes a guarded file and instructs no write.
-        "4d9cb43911",  # ## Step 0: which shape the request has Read `<loci_target>`, `<p
+        # Re-hashed 22 Sep by D8/D22: the worst path gets a row where the USER asked
+        # for it, not only where an entry bounds it. Still describes and relays.
+        # Re-hashed 22 Sep by todo [086]: --fabricate is gone and exec-trace names
+        # its signals on --signals like every other caller.
         # Re-hashed by todo 044: the four provenance values come off a printed
         # `<project-context>` instead of a `jq @tsv`.
-        "08cd2bd660",  # ### Artifact provenance (mandatory) Emit the `Artifact:` line on
     },
     "skills/help/SKILL.md": {
-        "5d0d1b8de6",  # ### When the project is not initialized Only when the `LOCI:` li
+        "34f60adc00",  # ### When the project is not initialized When `loci project` answ
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        # Re-hashed by AAD-7656 (#349): the trends and cockpit lines reworded. Read:
+        # it names `.loci/build.yaml` and `.loci/contract.yaml` as what /loci:init
+        # and /loci:contract write; it instructs no write.
+        # Re-hashed 2026-09-29 by the checkpoint words (GOOD / ADJUST PLAN / STOP,
+        # OK / CAUTION / FLAG) added under the verdict legend. Read: no write.
+        "ba0d7032f3",  # ## Step 2: Show Available Skills Always show the full skill list
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed: the listing gained a `## Live view` entry for `loci cockpit`,
         # then the note that it needs a separate terminal.
         # Re-hashed 2026-09-11 by the verdict-composition change (ADR 04/08): the
         # section describes a guarded file and instructs no write.
-        "2049d871c8",  # ## Step 2: Show Available Skills Always show the full skill list
         # Re-hashed by todo 044: `jq` is no longer a host tool this relays about.
-        "0181231ce5",  # ## Step 0: Diagnose Environment Read the LOCI session context fr
     },
     "skills/init/SKILL.md": {
-        "c3816a5ad8",  # --- name: init description: > Record how this project builds — o
+        # Re-hashed by AAD-7785 (2026-10-01): the trigger phrases moved from `when_to_use`
+        # into `description` (GitHub Copilot CLI shows the model `description` only).
+        # Read: names `.loci/build.yaml` as what the skill records; it instructs no write.
+        "594acdb0d5",  # --- name: init argument-hint: "[project path]" description: > Re
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        "15dc6a9a7b",  # # LOCI Init `.loci/build.yaml` records how this checkout builds 
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044: the envelope discipline drops `jq`, and Step 0
         # probes two host tools rather than three.
-        "8aa6632050",  # # LOCI Init `.loci/build.yaml` records how this checkout builds 
     },
     "skills/init/recovery.md": {
-        "7ba2e2ab8c",  # ## `arch_mismatch` and `outside_target`: read which one it is **
+        "5819910140",  # ## `arch_mismatch` and `outside_target`: read which one it is **
     },
     "skills/loci-post-edit/SKILL.md": {
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # Re-hashed by AAD-7554: Step 1 names `data.added_functions` and drops its
+        # "first-edit measurement" note. Read: it still only relays and describes.
+        # Re-hashed by AAD-7678: Step 1 names `data.compiled_out[]`, whose `reason`
+        # is relayed. Read: it still only relays and describes.
+        "d6303abd2b",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # Re-hashed for #347 (AAD-7618), which added the worst path's `recomputed`
+        # basis and `before_untimed` here without re-hashing. Read: the one guarded
+        # mention still relays a `contract.yaml` refusal; nothing asks for a write.
+        # Re-hashed 2026-09-29: a `≥` figure the change did not cause is carried.
+        # Read: names the contract as input only; no write.
+        "c0d52e8c18",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044 (the target is read out of the context file, not
         # by "the contract's own `jq`") and by F06 round 2, which made this step
         # name `.loci/contract.yaml`: a malformed one raises with no `error.code`
         # and exits `2`, the number a breached `severity: fail` bound uses, so a
         # bare `$?` here would report a YAML typo as a breach. It describes that
         # failure mode and instructs no write.
-        "ef0c5a1a7d",  # ## Step 0: Check session context Follow **Step 0 — Pattern A** i
+        # Re-hashed 22 Sep by the compile-route split (todo [082]): the sections
+        # around it moved out, and the two Step 0 blocks link Pattern A in its new
+        # file instead of naming it. Read: each still describes or relays.
         # Re-hashed: `energy_uws` is now absent from a path the contract does not
         # bound for energy, so the section says so and the Energy row goes with it.
         # It reads a field off the envelope and instructs no write.
@@ -1249,22 +1367,37 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed again the same day: a `none` envelope now says the conclusion
         # table is still drawn and its rows are the model's to compose. Same
         # guarded file, still described and never written.
-        "7fa1f4a08d",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
         # NEW 2026-09-11. Step 1 gained the `--signals` block, which names
         # `.loci/contract.yaml` only to say what to pass when the file is ABSENT.
         # A read of absence, not a write.
-        "505e677419",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
     },
     "skills/loci-preflight/SKILL.md": {
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        # Re-hashed 22 Sep by the compile-route split (todo [082]): the sections
+        # around it moved out, and the two Step 0 blocks link Pattern A in its new
+        # file instead of naming it. Read: each still describes or relays.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # Split 24 Sep: an orphan ``` fence in preflight had been swallowing
+        # Step 3 into Step 1 as one section. Removing it parts them, so the
+        # one registered digest becomes two.
+        "6344b86489",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
+        # Re-hashed 2026-09-29: a `≥` figure the change did not cause is carried.
+        # Read: names the contract as input only; no write.
+        "6d173f8d59",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044, on the same change as post-edit's.
-        "31fb6a4b34",  # ## Step 0: Check session context **Authentication is on-demand.*
         # Re-hashed by todo 048 (the `prepare` invocation dropped `--context`,
         # which the CLI no longer takes), by todo 044 (the envelope is printed
         # and its fields listed, rather than piped through seven `jq`s), and by
         # F06, whose addition is the `data.requests[]` field list.
         # Re-hashed 2026-09-11 by the verdict-composition change (ADR 04/08): the
         # section describes a guarded file and instructs no write.
-        "48751028bd",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
         # NEW mention, from F06 review round 2 — the same `.ok`-first fix as
         # post-edit's above, describing the failure mode and instructing no write.
         # Re-hashed on the same change as post-edit's: `energy_uws` is present only
@@ -1277,9 +1410,19 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed again the same day: a `none` envelope now says the conclusion
         # table is still drawn and its rows are the model's to compose. Same
         # guarded file, still described and never written.
-        "3c6d5bebee",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
     },
     "skills/memory-report/SKILL.md": {
+        "e3e5b1b4a3",  # ## Step 1: one call ``` loci analyse memory --turn "<turn-id>" -
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        "d7c65c79b4",  # ## Artifact provenance (mandatory) Emit the `Artifact:` line onc
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by F06: this section gained what exit `2` means, the
         # judgement payloads the envelope carries, and the assembled `data.rows`.
         # It now names TWO guarded files, not one, and both were read:
@@ -1301,11 +1444,17 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed again the same day: a `none` envelope now says the conclusion
         # table is still drawn and its rows are the model's to compose. Same two
         # guarded files, still described and never written.
-        "74ead52909",  # ## Step 1 — one call ``` loci analyse memory --turn "<turn-id>" 
-        "9448c78b0d",  # ## Artifact provenance (mandatory) Emit the `Artifact:` line onc
     },
     "skills/stack-depth/SKILL.md": {
-        "20ea33bc34",  # ### Artifact provenance (mandatory) Emit two lines from `data.ar
+        # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
+        # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
+        # describes a guarded file, forbids a write to it, or reads it back —
+        # none instructs a write.
+        # AAD-7735: re-hashed by the `data.detail.resolved` line, which names the key
+        # a root is reported under. Read: it describes an output field.
+        "736eac55f7",  # ## Step 1: one call ``` loci analyse stack --turn "<turn-id>" --
+        "165b8cd8ea",  # ### Artifact provenance (mandatory) Emit two lines from `data.ar
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # New mention, added by F06's review round: the `.ok`-first rule names
         # `.loci/contract.yaml` because a malformed one fails to load with a
         # usage error, which is ALSO exit 2 — the ambiguity that would otherwise
@@ -1319,11 +1468,21 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed again the same day: a `none` envelope now says the conclusion
         # table is still drawn and its rows are the model's to compose. Same
         # guarded file, still described and never written.
-        "1207c2d05f",  # ## Step 1 — one call ``` loci analyse stack --turn "<turn-id>" -
     },
     "usage-examples.md": {
         "d79cfc0484",  # ### 0. Initialization — Recording How the Project Builds **Trigg
     },
+    # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
+    "skills/_shared/verdicts.md": {
+        "bd2ff9b4cd",  # ### No contract: the agent fills `STATUS` `data.contract` is `no
+    },
+    # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
+    # Empty since the skills rewrite (2026-09-21): D39 moved the two container
+    # codes into the shared contract's table, and the rows that went with them
+    # were this file's only guarded-file mention. AAD-7674's re-hash of this
+    # section (`fc5b17fc95`) went with them — it registered a table that no
+    # longer names a guarded file.
+    "skills/init/container-toolchain.md": set(),
 }
 
 #: The size of the reviewed set, enforced rather than narrated. The docstring used
@@ -1358,7 +1517,22 @@ ALLOWED_GUARDED_MENTIONS = {
 # 43 -> 44 on 2026-09-12 (F16): `contract-guard.sh` now declares the three files
 # route 1 walks in one variable, and this screen reads every line-start
 # assignment. It is a list of names, not a sentence, and it instructs nothing.
-_REVIEWED_SECTIONS = 45
+# 45 -> 47 on 2026-09-17 (AAD-7641): the container-toolchain reference's
+# codes table names `.loci/build.yaml` to say a bind mount makes the host's recipe
+# visible inside the container (its recovery is `/loci:init` there); agents.txt
+# re-hashed with the 0.2.31 stamp; help, bug-report and the init skill re-hashed
+# for the container lines; and nine sections that three earlier releases changed
+# without re-hashing (AAD-7595's `unit` field, 0.2.29, 0.2.30) are registered now
+# — each was read, and each still only describes a guarded file or relays a code.
+# 47 -> 48 on 24 Sep: removing preflight's orphan ``` fence parted Step 1 from
+# Step 3, which it had been swallowing into one section. Same prose, one more
+# slice of it.
+# 48 -> 43 (AAD-7531): session-init's two per-state `LOCI:` sentences went with
+# the blocks that printed them, and three skill sections stopped naming a guarded
+# file once their project facts came from `loci project`.
+# 43 -> 42 (AAD-7531): exec-trace's Step 0 stopped naming the recipe once `prepare`
+# selected the binary itself.
+_REVIEWED_SECTIONS = 42
 
 
 def test_every_mention_of_a_guarded_file_is_registered():
@@ -1406,6 +1580,26 @@ def test_every_mention_of_a_guarded_file_is_registered():
         f"the reviewed set is {total} sections, recorded as {_REVIEWED_SECTIONS}. "
         f"That is not a failure by itself — it means the set grew or shrank. Read "
         f"what changed, then move the number.")
+
+
+def test_a_release_moves_no_registered_digest():
+    """A version bump is not a change to anything this registry reviews.
+
+    `agents.txt` opens a guarded section with the `LOCI version:` stamp. Hashed
+    with the stamp in, every release re-registered that section while its prose
+    stood still, and the releases that forgot left the lint above red on `main`.
+    The prose around the stamp must still count, or this would be a hole."""
+    stamped = [flat for rel, _digest, flat in _guarded_sections()
+               if rel == "agents.txt" and "LOCI version: " in flat]
+    assert len(stamped) == 1, "the stamp is no longer in one guarded section"
+    flat = stamped[0]
+    bumped = _VERSION_STAMP.sub(r"\g<1>99.0.0", flat)
+    assert bumped != flat, "the stamp did not match `_VERSION_STAMP`"
+    assert _section_digest(bumped) == _section_digest(flat), (
+        "a version bump moved the section's digest")
+    assert "/loci:init" in flat
+    assert (_section_digest(flat.replace("/loci:init", "/loci:setup", 1))
+            != _section_digest(flat)), "an edit beside the stamp moved nothing"
 
 
 # Sections in the two skills T11 cleared of the compiler ladder that still name a
@@ -1464,17 +1658,55 @@ COMPILER_DISCOVERY_FILES = ("skills/loci-post-edit/SKILL.md",
 
 COMPILER_DISCOVERY_SECTIONS = {
     "skills/bug-report/SKILL.md": {
-        "52319695cb",  # ### B. Results Not Evaluated or Not Valid If a skill ran but pro
+        # AAD-7771 (2026-09-30): the turn-record recipe counts through `$(( ))`
+        # because BSD `wc -l` pads. Read: `command -v loci` is the CLI, not a
+        # compiler; the section relays and describes, and hunts for nothing.
+        # Re-hashed by AAD-7786 (2026-10-02): host-neutral wording — the H1 says "a
+        # future session" and "restart the coding agent", Step 1 records the HOST
+        # version (`claude --version`, or `copilot --version` when the `host:` line
+        # names Copilot) and "the model". Read: versions recorded, no compiler hunt.
+        # Re-hashed by the AAD-7786 review: step 1 records host AND version from the
+        # `host:` line when present, else Claude Code via `claude --version`; the model
+        # examples admit the host's own name. Read: versions recorded, no compiler hunt.
+        # Re-hashed by AAD-7789 (2026-10-02): the host records. Step 1 gains item 17
+        # (GitHub Copilot CLI's session transcript — hook runs, failures, denials,
+        # the model; the plugin registry row beside the running copy) and loses the
+        # jq / mtime / CLI-version rationales; the H1's plugin-dir fallback says the
+        # variable is the hooks', not the shell's; check 9 carries the counts; B is
+        # shorter (the backend URL sentence, the debug-mode aside); C sends a
+        # reinstall to /loci:setup instead of naming two wrong package names; Step 5
+        # gains the `host records` Raw Data block. Read: versions and transcripts
+        # recorded, refusals relayed, no compiler hunt anywhere.
+        "432a4719b3",  # ## Step 1: Collect environment snapshot Run these in parallel wh
+        "3cae2eda61",  # # LOCI Bug Report **Shared house rules.** Read `<plugin-dir>/ski
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
+        # Re-hashed again by AAD-7789 (2026-10-02); see the note above the Step 1 hash.
+        "10bbe48d86",  # ### C. loci CLI installed and healthy? The analysis stack lives 
+        "15cfd43c1a",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
+        # Re-hashed by AAD-7786: the report's table rows read Host / Model, and the
+        # closing line says "a new session". Read: a template; no compiler hunt.
+        # Re-hashed again by AAD-7789 (2026-10-02); see the note above the Step 1 hash.
+        "8ea86a0bcd",  # ## Step 5: Write report file Determine the output filename: ``` 
+        # Re-hashed 22 Sep (todo [082]): the file gained a shared-contract block,
+        # and section B's `elf diff` link now points at `compile-route.md`. Read:
+        # both still relay a coded refusal and name no compiler of their own.
+        # Re-hashed 22 Sep, twice: `loci-runtime-contract.md` -> `runtime-contract.md`
+        # -> `house-rules.md`. The H1 carries the path, so the digest moved with it.
+        # The two comments here were swapped until now — this digest is the H1 and
+        # `a790f22644` above is section B, not the other way round.
         # The 10-point checklist. `command -v loci` is the *loci CLI* on PATH,
         # not a compiler, and check 3 says out loud that the session no longer
         # scans PATH for one. Re-hashed by todo 027: the architecture check went
         # with the `architecture` field, so the list renumbered.
         # Re-hashed by todo 044: check 9 reads hooks.json rather than parsing it
         # with a `jq`.
-        "5881df9a00",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
-        "2a3861d92a",  # ### C. loci CLI installed and healthy? The analysis stack lives 
-        "dcea30f873",  # # LOCI Bug Report Generate a forensic diagnostic report when LOC
-        "b548354984",  # ## Step 5: Write report file Determine the output filename: ``` 
+        # Re-hashed 22 Sep (todo [082]): the file gained a shared-contract block,
+        # and section B's `elf diff` link now points at `compile-route.md`. Read:
+        # both still relay a coded refusal and name no compiler of their own.
+        # Re-hashed by AAD-7786: "the model" for "Claude" in the diagnosis prompts,
+        # and "plan mode" for "`/plan` mode". Read: still relays; no compiler hunt.
+        # Re-hashed again by AAD-7789 (2026-10-02); see the note above the Step 1 hash.
+        "ea9c8ae954",  # ### B. Results Not Evaluated or Not Valid If a skill ran but pro
         # T15 added a Go toolchain probe (`go version`, `tinygo version`, and
         # the go/tinygo version-range skew that reads as a build failure). Read:
         # it records versions and names failure shapes; it does not send the
@@ -1483,11 +1715,22 @@ COMPILER_DISCOVERY_SECTIONS = {
         # one code — still a thing recorded, not a thing hunted.
         # Re-hashed by todo 044: the plugin version and the Go block come off a
         # read file rather than a `jq`.
-        "688fdde03a",  # ## Step 1: Collect environment snapshot Run these in parallel wh
     },
     "skills/control-flow/SKILL.md": set(),
     "skills/exec-trace/SKILL.md": set(),
     "skills/loci-post-edit/SKILL.md": {
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # Re-hashed by AAD-7554: Step 1 names `data.added_functions` and drops its
+        # "first-edit measurement" note. Read: it still only relays and describes.
+        # Re-hashed by AAD-7678: Step 1 names `data.compiled_out[]`, whose `reason`
+        # is relayed. Read: it still only relays and describes.
+        "d6303abd2b",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
+        # Re-hashed by the skills rewrite (2026-09-21): stage 4 pulled the field
+        # catalogue out and the fold-back put it back, and the preamble collapsed to
+        # the shared contract's own index. Read: the step still relays a coded refusal
+        # and names no compiler of its own.
         # Re-hashed by the T14 work. Both codes appear as names to RELAY: the
         # section's point is that `compiler_not_found` proves no recipe governed
         # the compile, so its message goes out whole rather than being acted on.
@@ -1505,10 +1748,19 @@ COMPILER_DISCOVERY_SECTIONS = {
         # STOPS instead of invoking it. That rewords the section without touching
         # its subject — `compiler_not_found` is still only relayed, and the new
         # sentences forbid an action rather than licensing a hunt.
-        "505e677419",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
-        "51c8769231",  # ## Say once when the basis is qualified Post-edit reports a *del
     },
     "skills/loci-preflight/SKILL.md": {
+        # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
+        # Re-hashed by the skills rewrite (2026-09-21): the preamble collapsed to a
+        # citation list once the shared contract gained its own index, and the field
+        # catalogue was pulled out and folded back. Read: the step relays a coded
+        # refusal and names no compiler of its own.
+        # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
+        # section text carries the path, so the digest moved with it; nothing else did.
+        # Split 24 Sep: an orphan ``` fence in preflight had been swallowing
+        # Step 3 into Step 1 as one section. Removing it parts them, so the
+        # one registered digest becomes two.
+        "6344b86489",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
         # Re-hashed by the T14 work, by todo 048 (which dropped `--context`) and
         # again by todo 044; the same relay rule as post-edit's, plus "not one of
         # them has you looking for a compiler" in the same section. F06's
@@ -1517,7 +1769,6 @@ COMPILER_DISCOVERY_SECTIONS = {
         # block, which names a signal palette and no compiler.
         # and sends nobody looking for one. Re-hashed again by the opt-in init
         # policy, for the reason recorded on post-edit's entry above.
-        "48751028bd",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
     },
     "skills/memory-report/SKILL.md": set(),
     "skills/stack-depth/SKILL.md": set(),
@@ -1573,70 +1824,52 @@ def test_no_new_section_in_the_slimmed_skills_talks_about_finding_a_compiler():
 # a heading of its own. Screening the BODY is open-ended; noticing a new SECTION
 # is not.
 CONTRACT_HEADINGS = (
-    "# LOCI runtime contract (shared)",
-    "## Session context placeholders",
-    "### Reporting versions to the user",
-    "## The turn id: one convention, every skill",
-    "## Prerequisites: `uv` (checked, never installed)",
-    # New: the three `loci` commands that may be put in front of the user
-    # (`login`, `cockpit`, `contract accept`), and the rule that every other verb
-    # is the model's to run or a slash command's to own. Not a deleted section
-    # returning — it is about what reaches the report, where the tool boundary
-    # below is about which binary the model may reach for.
-    "## The three `loci` commands a user ever sees",
-    "## Tool boundary: `loci elf` only",
-    "## Output: the JSON envelope",
-    "## The Contract Envelope is input only",
-    # Was `## One fact, one row: the entry decides the status`. `6b8b643`
-    # ("Remove default budgets from skill verdicts") replaced it with `##
-    # Measurements do not inherit a verdict`; `cfd4deb` ("Two verdict
-    # vocabularies") renamed that to what is here. Read: it is not a deleted
-    # section returning — it restores the three sources that reach a measured
-    # word and forbids a band of the skill's own, which is the opposite of the
-    # precedence rule the old heading carried.
-    "## A measurement inherits a verdict from a bound, never from a band",
-    "## Your verdicts are `flagged` / `cleared`, never a measured word",
-    "### Why a regression entry was not judged",
+    '# LOCI house rules (shared)',
+    '## What is in this file',
+    '## Resolving the project',
+    '### Reporting versions to the user',
+    '## The turn id: one convention, every skill',
+    '## Prerequisites: `uv` (checked, never installed)',
+    '## The three `loci` commands a user ever sees',
+    '## Tool boundary: `loci elf` only',
+    '## Output: the JSON envelope',
+    '## The Contract Envelope is input only',
+    '## A measurement inherits a verdict from a bound, never from a band',
+    '## Your verdicts are `flagged` / `cleared`, never a measured word',
+    '### Why a regression entry was not judged',
     "### The run line's `state`",
-    # Was `## Every row says where its bound came from` — the `Basis` column.
-    # `6b8b643` replaced it with `## Measurement rows have no bound basis`,
-    # `cfd4deb` renamed that to `## Conclusion rows: no `Basis` column, and mixed
-    # vocabularies in one table`, and 2026-09-11 renamed it again for the column
-    # split. Same section throughout, and the `Basis` column is still gone — what
-    # changed is that the identity is now two columns, `ENTRY` and `FUNCTION`.
     "## Conclusion rows: five columns, the cockpit's two among them",
-    "## Structural invariants: which measurement answers which signal",
-    "## Path cost is not yours",
-    # New: candidate ids (`p1`) and loop ids (`L1`) are counters for `--select`
-    # and never reach the report, which names a path or a loop by its source
-    # range — and always carries the loop's trip count, which is the assumption
-    # the figure rests on. The rule lived inline in post-edit and control-flow
-    # and drifted; this is the one copy.
-    "## Naming a path or a loop in the report",
-    # Was `## When there is no contract`, deleted by `6b8b643`. Its own rule —
-    # report as you otherwise would, against the skill's built-in thresholds —
-    # died with those thresholds; what replaced it says the CLI's bounds are
-    # inputs and that absent bounds are not a prompt for setup guidance.
-    "## Bounds returned by the CLI",
-    "## The build recipe: what every measurement rests on",
-    "### The recipe provenance line",
-    "## When a `loci` call refuses: the nine coded errors",
-    # Todo 022, new: `LOCI_FAIL_FAST` switches every recovery on that page off.
-    # Read: it is not a deleted section returning under another name — it adds no
-    # recovery, no band and no bound, it removes the ones above it for one mode.
-    "### Fast-fail mode",
-    "## Rust / Cargo projects",
-    # T15: Go's unit is the linked binary rather than a translation unit, which
-    # changes the artifact kind, the measurability column and what an absent
-    # symbol means. Read: it is not one of the three deleted sections returning
-    # under another name — it names no architecture gate, no cross-compilation
-    # defaults table and no `compiler_not_found` ladder.
-    "## Go / TinyGo projects",
-    "## Step 0 — Pattern A: compile the source",
-    "## When there is no Before: `provenance[].withheld`",
-    "## Measuring a header edit",
-    "## Diffing the pair: what `elf diff` answers with",
-    "## What the differ does not answer: footprint and frames",
+    '## Structural invariants: which measurement answers which signal',
+    '## Naming a path or a loop in the report',
+    '## Bounds returned by the CLI',
+    '## The artifact a run measures: selection, freshness, and the `Artifact:` line',
+    '### Selection: named, then recorded, then ranked',
+    '### Freshness is a filter, and it runs after the ranking',
+    '### The `Artifact:` line',
+    '## The build recipe: what every measurement rests on',
+    '### The recipe provenance line',
+    '#### The caveat half, for a skill that prints no full line',
+    '## When a `loci` call refuses: the eleven coded errors',
+    '### Fast-fail mode',
+    '## Rust / Cargo projects',
+    '## Go / TinyGo projects',
+)
+
+#: The same roster for the compile route, which carries the same risk: a section
+#: re-added there is as unreviewed as one re-added in the contract, and the file
+#: was created on 22 Sep by moving six of them out (todo [082]).
+COMPILE_ROUTE_HEADINGS = (
+    '# The compile route (shared)',
+    '## Path cost is not yours',
+    '## Step 0: Pattern A — compile the source',
+    '## When there is no Before: `provenance[].withheld`',
+    '## Measuring a header edit',
+    '## Diffing the pair: what `elf diff` answers with',
+    # 22 Sep (todo [087]): `prepare` carries `removed_functions` and
+    # `orphaned_entries`, so the deletion question is answered from its envelope and
+    # post-edit's quiet branch stopped running a second `elf diff` for it.
+    '## A function this edit deleted',
+    '## What the differ does not answer: footprint and frames',
 )
 
 
@@ -1660,13 +1893,25 @@ def test_the_contract_has_exactly_the_sections_it_is_supposed_to():
     # a jq example is not a section.
     found = []
     in_fence = False
-    for line in _raw(CONTRACT).splitlines():
+    for line in _raw(HOUSE_RULES).splitlines():
         if line.startswith("```"):
             in_fence = not in_fence
             continue
         if not in_fence and re.match(r"^#{1,6} ", line):
             found.append(line)
     found = tuple(found)
+    route, fence = [], False
+    for line in _raw(COMPILE_ROUTE).splitlines():
+        if line.startswith("```"):
+            fence = not fence
+            continue
+        if not fence and re.match(r"^#{1,6} ", line):
+            route.append(line)
+    assert tuple(route) == COMPILE_ROUTE_HEADINGS, (
+        "the compile route's section list changed.\n  added:   "
+        + (", ".join(repr(h) for h in route if h not in COMPILE_ROUTE_HEADINGS) or "none")
+        + "\n  removed: "
+        + (", ".join(repr(h) for h in COMPILE_ROUTE_HEADINGS if h not in route) or "none"))
     assert found == CONTRACT_HEADINGS, (
         "the contract's section list changed.\n  added:   "
         + (", ".join(repr(h) for h in found if h not in CONTRACT_HEADINGS) or "none")
@@ -1712,14 +1957,14 @@ def test_the_rust_knobs_route_through_the_sanctioned_verb():
     # include all 4.7 KB of it. Both assertions below are substring checks, so
     # they stayed green over the superset — the slice simply stopped isolating
     # what it is named after.
-    rust = _section(_text(CONTRACT), "## Rust / Cargo projects",
+    rust = _section(_text(HOUSE_RULES), "## Rust / Cargo projects",
                     "## Go / TinyGo projects")
     assert "loci init set rust.features" in rust, (
         "the Rust features passage no longer names the sanctioned verb")
     # The WHOLE sentence: a prefix match stayed green on "Confirm the values
     # with the user *if you are unsure of them; otherwise just record them*",
     # which makes the only consent there is optional.
-    assert "Confirm the\n  values with the user, then record them:" in _raw(CONTRACT), (
+    assert "Confirm the\n  values with the user, then record them:" in _raw(HOUSE_RULES), (
         "the consent step is gone or was made conditional — `set` does not mark "
         "a recipe confirmed, so the question before it is the only consent there "
         "is")
@@ -1741,7 +1986,7 @@ def test_the_version_skew_path_hands_the_pin_to_the_user_and_says_so_once():
     the guard does not stop a shell write, so a `!` line here would be a working
     bypass carrying the plugin's own blessing.
     """
-    recipe = _section(_text(CONTRACT),
+    recipe = _section(_text(HOUSE_RULES),
                       "## The build recipe: what every measurement rests on",
                       "## When a `loci` call refuses")
     assert "invalid choice" in recipe and "exit 2" in recipe, (
@@ -1866,7 +2111,7 @@ def test_deleted_contract_sections_are_referenced_only_where_recorded():
         f"DELETED_SECTIONS: {sorted(set(DELETED_SECTIONS) - set(KNOWN_DANGLING))} "
         f"— every deleted section keeps a key, empty when the debt is paid, "
         f"because the key is what fails if the reference returns.")
-    body = _text(CONTRACT)
+    body = _text(HOUSE_RULES)
     for name in DELETED_SECTIONS:
         assert name not in body, (
             f"{name!r} is back in the shared contract — the recipe owns this, "
@@ -1889,7 +2134,7 @@ def test_deleted_contract_sections_are_referenced_only_where_recorded():
         # anchors nobody can generate.
         slug = re.sub(r"[^a-z0-9\s_-]", "", name.lower()).replace(" ", "-")
         found = {_rel(p) for p in _referring_files()
-                 if name in _text(p) or f"loci-runtime-contract.md#{slug}" in _text(p)}
+                 if name in _text(p) or f"house-rules.md#{slug}" in _text(p)}
         if found != recorded:
             problems.append(
                 f"{name!r}: found {sorted(found)}, recorded {sorted(recorded)}. "
@@ -1939,7 +2184,7 @@ def test_the_compiler_ladder_lives_nowhere_new():
     the only recovery a pre-recipe CLI leaves. What this pins is that the set does
     not GROW, and that the shared contract is not where the ladder comes back.
     """
-    assert "compiler_not_found" not in _text(CONTRACT), (
+    assert "compiler_not_found" not in _text(HOUSE_RULES), (
         "the shared contract names `compiler_not_found` again — the recipe path "
         "answers `compiler_missing`, whose recovery is `/loci:init --refresh`")
     found = {_rel(p) for p in _referring_files() if "compiler_not_found" in _text(p)}
@@ -2053,7 +2298,7 @@ def test_html_comments_cannot_hide_a_gutted_rule():
     # since T11 the two skills it slimmed. NOT all shipped prose: widening it there
     # flagged two `<!-- TODO: insert screenshot -->` lines in
     # `authorization-flow/AuthorizationFlow.md`, which pin nothing and hide nothing.
-    for path in [CONTRACT,
+    for path in [HOUSE_RULES,
                  *(SKILLS / n / "SKILL.md" for n in PATTERN_B_SKILLS),
                  SKILLS / "loci-post-edit" / "SKILL.md",
                  SKILLS / "loci-preflight" / "SKILL.md"]:
@@ -2128,14 +2373,13 @@ _PINNED_BY_BASE: dict[str, dict[str, list[str]]] = {
     # added here — a change made today adds its own block, and appending here
     # would claim a novelty this block's window is far too wide to prove.
     "fcdc0d2": {
-        "skills/_shared/loci-runtime-contract.md": [
+        "skills/_shared/house-rules.md": [
             # `Freshness is a filter, not a tiebreak` and `loci_artifacts` were
             # here until the recipe removed the candidate list they described.
             # Their protection moved, not vanished — see
             # `test_b2_does_not_exempt_the_recorded_artifact_from_the_gate` and
             # `test_pattern_b_takes_the_artifact_from_the_recipe`, whose own
             # phrases are registered below in their place.
-            "exactly **nine**",
             "Never regenerate a compile database mid-turn",
             "read, never inferred",
             # Round-1 review additions. Each is asserted by a test above, and
@@ -2144,8 +2388,6 @@ _PINNED_BY_BASE: dict[str, dict[str, list[str]]] = {
             # stop") already occurred twice at `fcdc0d2` and is deliberately NOT
             # registered: it is safe only because its assertion is
             # section-scoped, and that is a different guarantee from this one.
-            "--require-recipe",
-            "No `LOCI target:` line",
             "does **not** match shell writes",
             "A write that would succeed is not a write you may make.",
             "tell **them**",
@@ -2219,7 +2461,20 @@ _PINNED_BY_BASE: dict[str, dict[str, list[str]]] = {
     # run passed all 60 tests in that file. Registering the sentence the change
     # introduced is what caught it.
     "ef046a3": {
-        "skills/_shared/loci-runtime-contract.md": [
+        # `compile-route.md` did not exist at this base — it was created on 22 Sep by
+        # moving six sections out of the house rules (todo [082]) — so every
+        # phrase in it is new in this window by construction. These two were pinned
+        # under `fcdc0d2` against the contract and travelled with their sections; the
+        # ratchet itself said they "belong under a later base", and this is it.
+        "skills/_shared/compile-route.md": [
+            "--require-recipe",
+        ],
+        "skills/_shared/house-rules.md": [
+            # Retired from `fcdc0d2` and re-pinned here in its new wording. D39
+            # opened the set from nine to eleven — `exec_unavailable` and
+            # `recipe_foreign_host` — so the old number no longer ships. What is
+            # pinned is unchanged: that the table says the set is CLOSED.
+            "exactly **eleven**",
             # In the file every judging skill loads.
             "`data.contract` is a string",
             "An entry decided it only when `entry_key` is set",
@@ -2314,8 +2569,16 @@ _DECLARED_PINS: dict[str, int] = {
     # sentence saying it judges nothing is retired and the rule that replaced
     # it is registered under the open block. The total is unchanged again,
     # which is the case `_PINS_LOW_WATER` cannot see and these counts can.
-    "fcdc0d2": 17,
-    "ef046a3": 32,
+    # 17 -> 16 on 2026-09-21 (the skills rewrite), and 32 -> 33: `exactly
+    # **nine**` left this closed block for the open one, reworded to `eleven` by
+    # D39. The same move as the two above, and the total is unchanged again.
+    # 16 -> 14 on 2026-09-22, and 33 -> 35: `--require-recipe` and `No `LOCI target:`
+    # line` moved with the compile route into its own file (todo [082]). Same phrases,
+    # a later base — the new file did not exist at `fcdc0d2`, so the ratchet itself
+    # refused them there. The total is unchanged, the same shape as the three moves
+    # above.
+    "fcdc0d2": 14,
+    "ef046a3": 34,  # AAD-7531: `No \`LOCI target:\` line` went with the line
 }
 
 # Every block but the newest is CLOSED, and a closed block's content is fixed by
@@ -2348,7 +2611,27 @@ _CLOSED_BLOCK_DIGESTS: dict[str, str] = {
     # and a pin cannot be re-attested against a window whose history holds a
     # sentence the skill has since contradicted. The rule that replaced it is
     # registered under `ef046a3`; nothing was added here.
-    "fcdc0d2": "fc7338c5a2b567a3",
+    #
+    # Re-digested 2026-09-21 (the skills rewrite), for a third REMOVAL: D39 opened
+    # the coded-error set from nine to eleven, so `exactly **nine**` no longer
+    # ships. The reworded pin is registered under `ef046a3`; nothing was added here.
+    #
+    # Re-digested 2026-09-22 for a REMOVAL, the fourth: the compile route became its
+    # own file (todo [082]) and took `--require-recipe` and `No `LOCI target:` line`
+    # with it. They cannot stay pinned here — the ratchet refused them itself, because
+    # the new file did not exist at this base, so the window `(fcdc0d2, ef046a3]` never
+    # contained them. Re-pinned under `ef046a3`, where the file is genuinely new;
+    # nothing was added here.
+    #
+    # Re-digested again the same day, for a RENAME and nothing else:
+    # `loci-runtime-contract.md` became `runtime-contract.md`, so the key changed
+    # and every pinned phrase under it did not.
+    #
+    # And once more, for the second half of that rename: `runtime-contract.md`
+    # became `house-rules.md`, because "contract" also names `.loci/contract.yaml`
+    # and one word for both is what that file exists to settle. The key changed;
+    # no pinned phrase under it did.
+    "fcdc0d2": "37ff864b60f40e2a",
 }
 
 # The low-water mark. The per-block counts catch ONE pin dropped from a block;
@@ -2359,7 +2642,8 @@ _CLOSED_BLOCK_DIGESTS: dict[str, str] = {
 # one sits underneath one. 49 pins on 2026-09-09, when the bases became
 # per-change; it only goes up. Lowering it is how "these pins were retired
 # deliberately" gets said in a diff, where review can see it.
-_PINS_LOW_WATER = 49
+# 49 -> 48 (AAD-7531): the `No `LOCI target:` line` pin, with the line.
+_PINS_LOW_WATER = 48
 
 # A base is a commit sha, written out. Round 1's review registered a block against
 # `HEAD~209` and it was accepted: a relative or symbolic revision resolves to a
@@ -2511,8 +2795,26 @@ def _check_pinned_phrases(pinned_by_base: dict[str, dict[str, list[str]]],
         # belongs under a later base.
         nxt = order[i + 1] if i + 1 < len(order) else None
         for rel, phrases in pinned_by_base[base].items():
-            at_base = body(base, rel)
-            at_next = None if nxt is None else body(nxt, rel)
+            def _read(commit: str) -> str | None:
+                for name in _names_at(rel):
+                    got = body(commit, name)
+                    if got is not None:
+                        return got
+                return None
+
+            at_base = _read(base)
+            at_next = None if nxt is None else _read(nxt)
+            # A file that did not EXIST at a base is the strongest "absent" there is,
+            # and folding it into "cannot read" made every phrase in a newly added file
+            # unpinnable for ever — a hole that recurs on every new file, and the one
+            # `compile-route.md` fell into on 22 Sep (todo [082]). The discriminator is
+            # the TREE: `_path_absent_at` asks whether the path was in the commit at
+            # all, without fetching the blob, so a shallow or blobless clone that
+            # cannot read a file that WAS there still falls through to the failure.
+            if at_base is None and _path_absent_at(base, rel):
+                at_base = ""
+            if nxt is not None and at_next is None and _path_absent_at(nxt, rel):
+                at_next = ""
             if at_base is None or (nxt is not None and at_next is None):
                 # Not a skip, for the reason above. Collected and failed at the
                 # end, so one missing path cannot mask the rest either.
@@ -2611,9 +2913,14 @@ class _FakeHistory:
 
     def __init__(self, revs: list[str], contents: dict[str, dict[str, str]],
                  now: dict[str, str], *, unanswerable: bool = False,
-                 ancestors: dict[str, set[str]] | None = None):
+                 ancestors: dict[str, set[str]] | None = None,
+                 unreadable: dict[str, set[str]] | None = None):
         self.revs, self.contents, self.now = revs, contents, now
         self.unanswerable, self.ancestors = unanswerable, ancestors
+        # Paths that ARE in the commit and still cannot be read — a blobless or
+        # partial clone. Absent from the tree is a different answer, and since
+        # 22 Sep the ratchet reads that one as "absent" rather than failing.
+        self.unreadable = unreadable or {}
 
     def _is_anc(self, older: str, newer: str) -> bool:
         if self.ancestors is not None:
@@ -2623,7 +2930,17 @@ class _FakeHistory:
 
     def rc(self, *args: str) -> int | None:
         if args[0] == "rev-parse":
-            return 0 if args[-1].split("^")[0] in self.revs else 1
+            spec = args[-1]
+            if ":" in spec:
+                # `rev:path` — the tree probe. In the tree when the rev has the
+                # file, or when it is listed unreadable: an unfetchable blob is
+                # still IN the commit, which is the distinction that matters.
+                rev, _, path = spec.partition(":")
+                if rev not in self.revs:
+                    return 128
+                return 0 if (path in self.contents.get(rev, {})
+                             or path in self.unreadable.get(rev, set())) else 1
+            return 0 if spec.split("^")[0] in self.revs else 1
         if args[0] == "merge-base":
             if self.unanswerable:
                 return 128
@@ -2722,16 +3039,37 @@ def test_ratchet_fails_rather_than_skips_on_an_unresolvable_base(monkeypatch):
 def test_ratchet_fails_rather_than_skips_on_an_unreadable_path(monkeypatch):
     """An unreadable PATH is the other half of the same rule.
 
-    Distinct from an unresolvable commit: the base resolves, the file cannot be
-    read there. This is the branch whose history is recorded on `_git_show` —
-    letting it skip made the guard vacuous once already.
+    Distinct from an unresolvable commit: the base resolves, the file IS in it, and
+    the blob still cannot be read — a blobless or partial clone. This is the branch
+    whose history is recorded on `_git_show`; letting it skip made the guard vacuous
+    once already.
+
+    Narrowed 2026-09-22: a path that was never IN the commit is no longer this case
+    — see the test below. The discriminator is the tree, not the read.
     """
     _FakeHistory([_A, _B], {_A: {}, _B: {_F: "old text new"}},
-                 {_F: "old text new newer"}).install(monkeypatch)
+                 {_F: "old text new newer"},
+                 unreadable={_A: {_F}}).install(monkeypatch)
     pinned = {_A: {_F: ["new"]}, _B: {_F: ["newer"]}}
     with pytest.raises(AssertionError, match="cannot read"):
         _check_pinned_phrases(pinned, {_A: 1, _B: 1},
                               {_A: _pin_digest(pinned[_A])}, 2)
+
+
+def test_a_file_that_did_not_exist_at_the_base_is_absent_not_unreadable(monkeypatch):
+    """A new file's phrases are new by construction, and the ratchet now says so.
+
+    Folding "not in the commit" into "cannot read" made every phrase in a file added
+    after a base unpinnable for ever — the hole `compile-route.md` fell into when the
+    compile route moved out of the house rules (todo [082]). The probe reads the
+    TREE (`git rev-parse <rev>:<path>`), so it never fetches a blob and the case above
+    still fails.
+    """
+    _FakeHistory([_A, _B], {_A: {}, _B: {_F: "old text new"}},
+                 {_F: "old text new newer"}).install(monkeypatch)
+    pinned = {_A: {_F: ["new"]}, _B: {_F: ["newer"]}}
+    assert _check_pinned_phrases(pinned, {_A: 1, _B: 1},
+                                 {_A: _pin_digest(pinned[_A])}, 2) == 2
 
 
 def test_ratchet_fails_rather_than_skips_when_git_cannot_answer(monkeypatch):
@@ -2900,8 +3238,13 @@ def test_every_pattern_b_skill_must_name_the_artifact_it_measured(skill):
 #: `memory-report` make one `loci analyse` call and read the same block off the
 #: verb's envelope (`data.artifact.recipe`) — pinned separately, because a rule
 #: about reading the context file is unsatisfiable against a JSON block.
-ABSOLUTE_REPORTS = ("exec-trace",)
-VERB_OWNED_ABSOLUTE_REPORTS = ("stack-depth", "memory-report")
+# D9 (2026-09-21) moved exec-trace across: `prepare` selects its artifact the same
+# way the other two verbs do, and the context file and the envelope disagree after a
+# mid-session init, so the envelope is the source for all three. Nothing is left in
+# `ABSOLUTE_REPORTS`; the parametrized test below therefore runs on nothing and is
+# kept only so re-adding a context-file reader has somewhere to land.
+ABSOLUTE_REPORTS = ()
+VERB_OWNED_ABSOLUTE_REPORTS = ("exec-trace", "stack-depth", "memory-report")
 
 
 @pytest.mark.parametrize("skill", ABSOLUTE_REPORTS)
@@ -2967,14 +3310,17 @@ def test_every_verb_owned_report_renders_the_recipe_line_from_the_envelope(skill
         f"{skill} shows the line but points at nothing that governs it")
     for needed, why in (
         (".artifact.recipe", "the envelope key the values come from"),
-        ("No recipe governs this project", "the sentence printed when the block is "
-                                           "absent or its values are null"),
         ("`via`", "`named` qualifies the line the way B2 case 1 does — the user's "
                   "binary has nothing vouching for its flags"),
+        ("No recipe governs this project", "the sentence printed when the block is "
+                                           "absent or its values are null"),
         ("`error`", "a recipe that exists but refused to load is a code to print, "
                     "not a line to fabricate"),
-        ("`warnings`", "the relay is the only channel that reports an unvouched-for "
-                       "recipe, so it must not be gated on the line printing"),
+        # Backtick-suffixed, so the qualified spellings count: exec-trace names
+        # `recipe.warnings` and `flag_source_v2.warnings` separately, because only
+        # the second means the flags were the user's pin.
+        ('warnings`', "the relay is the only channel that reports an unvouched-for "
+                      "recipe, so it must not be gated on the line printing"),
     ):
         assert needed in sec, (
             f"{skill}'s provenance section no longer carries {needed!r} — {why}")
@@ -3166,8 +3512,9 @@ def test_the_lower_bound_qualifier_survives_into_the_recorded_verdict():
         "the footer no longer says why the qualifier has to be written out")
     assert "the verb records the verdict it computed" in footer
 
-    fold = _section(body, "### Fold-back to parent (escalation mode)",
-                    "### Expand when...")
+    # Ends the file since 23 Sep: the footer has one form, so there is no
+    # "Expand when..." to bound the slice on.
+    fold = _section(body, "### Fold-back to parent (escalation mode)", None)
     assert ("stack: ≥<worst_case_depth> B [(≥<usage_pct>% of <bound> B)] — "
             "CAUTION, lower bound: <cause>") in fold, (
         "the escalation fold-back drops the qualifier, so a parent skill's Stack "
@@ -3246,21 +3593,6 @@ def test_the_scan_stays_deleted():
     assert "--force-scan" not in body, "the gate bypass is back"
     assert "command -v" not in body, (
         "detect-project.sh probes PATH again; the gate reads files, not machines")
-
-    writer = _uncommented(
-        (PLUGIN_ROOT / "lib" / "setup-steps.sh").read_text(encoding="utf-8"))
-    m = re.search(r"^_LOCI_SCAN_KEYS='(\[[^']*\])'", writer, re.M)
-    assert m, "_LOCI_SCAN_KEYS is not where the writer keeps it"
-    assert set(json.loads(m.group(1))) == {"detection_status", "subproject_roots"}, (
-        f"the writer owns scan keys the gate does not emit: {m.group(1)}")
-    # The gate's emit is read by NAME now (`lib/loci_json.sh`, no jq), so the
-    # slice is the block between loading the detector's output and the `fi` that
-    # closes it — everything the writer asks the detector for.
-    read = re.search(r'loci_json_load "\$PROJECT_INFO"(.*?)\n    fi\n', writer, re.S)
-    assert read, "could not find the PROJECT_INFO read"
-    for key in ("compiler", "build_system", "elf_files", "loci_target"):
-        assert key not in read.group(1), (
-            f"setup-steps.sh reads `{key}` off the detector's emit again")
 
 
 
@@ -3350,7 +3682,7 @@ def test_the_contract_declares_every_language_gated_section_this_lint_knows():
     entry is caught by `test_the_contract_has_exactly_the_sections_it_is_supposed_to`
     plus a reviewer reading it.
     """
-    body = _raw(CONTRACT)
+    body = _raw(HOUSE_RULES)
     for heading in LANGUAGE_GATED_SECTIONS:
         assert heading in body, (
             f"{heading} is registered as language-gated but is not in the "
@@ -3487,37 +3819,3 @@ def test_the_arming_gate_knows_every_root_build_system_the_cli_does():
         f"the nested walk does not look for {missing_nested}, so a repo whose build "
         f"lives one level down under one of those is initialized by the CLI and "
         f"disarmed by the session.")
-
-
-
-
-def test_the_carried_keys_are_all_keys_the_cli_actually_writes():
-    """Derived from `init.context_fields`, not from a second hand-kept list.
-
-    `_LOCI_CLI_KEYS` decides what session-init copies out of the recipe root's
-    keyed file into a subdirectory's, and `_LOCI_RECIPE_KEYS` decides what it
-    deletes when no recipe governs. A name in either that the CLI does not write
-    is a key nothing can ever put back, and a key the CLI writes that neither set
-    names is one a subdirectory session silently loses — which is how
-    `architecture`, `elf_files` and `build_dirs` outlived their last reader in
-    both repos at once (todo 027).
-    """
-    src = _cli_source_dir()
-    if src is None:
-        pytest.skip("loci-cli checkout not available")
-
-    body = re.search(r"^def context_fields\(.*?(?=^def )",
-                     (src / "init.py").read_text(encoding="utf-8"), re.M | re.S)
-    assert body, "could not find `context_fields` in the CLI"
-    written = set(re.findall(r'"([a-z_]+)":', _uncommented(body.group(0)))) \
-        | set(re.findall(r'fields\["([a-z_]+)"\]', body.group(0)))
-    assert len(written) > 10, sorted(written)
-
-    writer = (PLUGIN_ROOT / "lib" / "setup-steps.sh").read_text(encoding="utf-8")
-    for name in ("_LOCI_CLI_KEYS", "_LOCI_RECIPE_KEYS"):
-        m = re.search(rf"^{name}='(\[[^']*\])'", writer, re.M)
-        assert m, f"{name} is not where the writer keeps it"
-        stale = sorted(set(json.loads(m.group(1))) - written)
-        assert not stale, (
-            f"{name} names {stale}, which `loci init` does not write — "
-            f"session-init carries or deletes a key nothing can restore")

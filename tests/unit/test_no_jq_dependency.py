@@ -105,7 +105,7 @@ def test_there_are_skill_bodies_to_check():
     """Non-vacuous, on the same reasoning as the hook glob above: the six documents
     phase 2 cleared are the ones a drifting glob would stop matching."""
     names = {_rel(p) for p in _model_facing()}
-    assert {"skills/_shared/loci-runtime-contract.md",
+    assert {"skills/_shared/house-rules.md",
             "skills/loci-post-edit/SKILL.md",
             "skills/loci-preflight/SKILL.md",
             "skills/exec-trace/SKILL.md",
@@ -177,8 +177,8 @@ def test_a_skill_naming_a_field_says_the_field_is_read_off_the_print(path):
     text = path.read_text(encoding="utf-8")
     if not _ENVELOPE_FIELD.search(text):
         return
-    assert _READ_IT_OFF_THE_PRINT.search(text) or "loci-runtime-contract" in text, (
+    assert _READ_IT_OFF_THE_PRINT.search(text) or "house-rules" in text, (
         f"{_rel(path)} names an envelope field but never says it is read off the "
         f"printed output. A field with no rule is an invitation to parse: say "
         f"\"let it print\" as `contract`, `init` and `trends` do, or load "
-        f"skills/_shared/loci-runtime-contract.md, which says it for the other eight")
+        f"skills/_shared/house-rules.md, which says it for the other eight")

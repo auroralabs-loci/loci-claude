@@ -54,7 +54,15 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(_find_bash() is None, reason="bash required")
+from tests.fixtures.copilot_payloads import current as _host
+
+# Every test runs under both hosts (AAD-7790). Under Copilot the payload
+# carries no `prompt_id` — the hook resolves the turn from the session's
+# `turn-<session_id>` record — and an Edit's or a Write's `tool_input` is in
+# Copilot's names, which the adapter respells before the extension gate reads
+# the path; `_run` produces that shape beside the Claude one, from the same dict.
+pytestmark = [pytest.mark.skipif(_find_bash() is None, reason="bash required"),
+              pytest.mark.usefixtures("host")]
 
 
 def _to_bash_path(p: Path) -> str:
@@ -141,12 +149,22 @@ def _run(home: Path, payload: dict, *, stub: str, expect_zero: bool = True,
         "HOME": _to_bash_path(home),
         "CLAUDE_PROJECT_DIR": _to_bash_path(home),
     }
+    # The host's own exports go under `env_extra`, so a test that blanks
+    # `CLAUDE_PROJECT_DIR` blanks it under both hosts.
+    host = _host()
+    env.update(host.env(project=_to_bash_path(home)))
     if env_extra:
         env.update(env_extra)
+    payload = host.respell(payload)
+    # No `LOCI_STATE_DIR` here, so the record the hook resolves a Copilot turn
+    # from goes where the hook's ladder lands: `$HOME/.loci/state`.
+    host.seed(home / ".loci" / "state")
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(HOOK)],
         input=json.dumps(payload), capture_output=True, text=True, timeout=30,
-        env=env,
+        # Claude Code starts the hook where this process runs (as before);
+        # Copilot starts it in the plugin root.
+        env=env, cwd=host.cwd(None),
     )
     if expect_zero:
         assert proc.returncode == 0, (
@@ -181,13 +199,6 @@ _SNAPSHOT_REFUSES = (
     '  exit 1\n'
     "fi\n" + _OK
 )
-# Snapshot succeeds but drops the target hint it was given.
-_TARGET_IGNORED = (
-    'echo \'{"ok":true,"data":{"report":"","snapshotted":true,'
-    '"loci_target_ignored":"--loci-target sparc is not a LOCI target; ignored"}}\''
-)
-
-
 _PROMPT_ID = "b52ae369-e1ba-4823-9c6e-3d51b9e0166e"
 
 
@@ -208,51 +219,6 @@ def _edit(path: str, *, prompt_id: str | None = _PROMPT_ID, agent: str | None = 
     return payload
 
 
-def _writer_key(project_root: Path) -> str:
-    """The state-file key `session-init.sh` would produce for this project.
-
-    Computed by calling the plugin's OWN `hash_cwd` exactly as that writer calls it
-    — no argument, from inside the project directory, i.e. off the process's cwd and
-    the Git Bash `/c/...` spelling.
-
-    The hook under test calls the same function with the payload's NATIVE `C:\\...`
-    path instead. That both land on one file is the property being tested, and it is
-    why the key is not hardcoded here: a fixture that named the file itself would
-    pass whatever spelling the hook happened to use."""
-    script = (
-        'PLUGIN_DIR="$1"; STATE_DIR="$2"; export LOCI_STATE_DIR="$STATE_DIR"; '
-        '. "$PLUGIN_DIR/lib/setup-steps.sh" || exit 1; cd "$3" || exit 1; hash_cwd'
-    )
-    proc = subprocess.run(
-        [_find_bash(), "-c", script, "bash",
-         _to_bash_path(PLUGIN_ROOT), "/tmp/unused", _to_bash_path(project_root)],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert proc.returncode == 0, f"hash_cwd failed: {proc.stderr!r}"
-    key = proc.stdout.strip()
-    assert key, f"hash_cwd produced no key: {proc.stdout!r} {proc.stderr!r}"
-    return key
-
-
-def _context(home: Path, project_root: Path, loci_target: str = "armv7e-m") -> Path:
-    """A keyed project-context file, as `session-init.sh` writes it.
-
-    `project_root` inside the document is stored the way that writer stores it —
-    `$(pwd)` from Git Bash, i.e. the `/c/...` spelling. The hook no longer reads that
-    field to find the file (it names the file directly), but it stays accurate so the
-    fixture keeps describing a real state file rather than a convenient one."""
-    state = home / ".loci" / "state"
-    state.mkdir(parents=True, exist_ok=True)
-    ctx = state / f"project-context-{_writer_key(project_root)}.json"
-    ctx.write_text(json.dumps({
-        "detection_status": "ok",
-        "project_root": _to_bash_path(project_root),
-        "loci_target": loci_target,
-        "compiler": "arm-none-eabi-gcc",
-    }), encoding="utf-8")
-    return ctx
-
-
 # ── the regression ───────────────────────────────────────────────────────────
 
 def test_the_turn_id_is_passed_to_the_snapshot(tmp_path):
@@ -260,7 +226,7 @@ def test_the_turn_id_is_passed_to_the_snapshot(tmp_path):
     second edit overwrites the baseline with the first edit's output."""
     r = _run(tmp_path, _edit("/p/blink.c"), stub=_OK)
     assert r.snapshots, f"a snapshot must be attempted; calls={r.calls!r}"
-    assert r.turn_of(0) == _PROMPT_ID, f"got {r.snapshots[0]!r}"
+    assert r.turn_of(0) == _host().turn(_PROMPT_ID), f"got {r.snapshots[0]!r}"
 
 
 def test_an_edit_inside_a_subagent_uses_the_parent_turn(tmp_path):
@@ -269,7 +235,7 @@ def test_an_edit_inside_a_subagent_uses_the_parent_turn(tmp_path):
     baseline, which is what a per-turn baseline wants — a subagent fan-out must not
     fragment it."""
     r = _run(tmp_path, _edit("/p/blink.c", agent="a3b74c248f211b1f1"), stub=_OK)
-    assert r.turn_of(0) == _PROMPT_ID
+    assert r.turn_of(0) == _host().turn(_PROMPT_ID)
 
 
 def test_two_edits_of_one_turn_send_the_same_turn_id(tmp_path):
@@ -277,7 +243,7 @@ def test_two_edits_of_one_turn_send_the_same_turn_id(tmp_path):
     is the SAME id both times — a fresh id per edit would defeat it entirely."""
     first = _run(tmp_path, _edit("/p/blink.c"), stub=_OK)
     second = _run(tmp_path, _edit("/p/blink.c"), stub=_OK)
-    assert first.turn_of(0) == second.turn_of(0) == _PROMPT_ID
+    assert first.turn_of(0) == second.turn_of(0) == _host().turn(_PROMPT_ID)
 
 
 # ── one call, and say when it fails ────────────────────────────────────────
@@ -289,7 +255,7 @@ def test_a_usage_error_is_not_retried(tmp_path):
     lockstep, so exit 2 is a broken contract and there is nothing to degrade to."""
     r = _run(tmp_path, _edit("/p/blink.c"), stub=_USAGE_ERROR)
     assert len(r.snapshots) == 1, f"no retry may fire; snapshots={r.snapshots!r}"
-    assert r.turn_of(0) == _PROMPT_ID
+    assert r.turn_of(0) == _host().turn(_PROMPT_ID)
 
 
 def test_a_failed_snapshot_says_the_turn_has_no_baseline(tmp_path):
@@ -307,31 +273,6 @@ def test_a_coded_refusal_is_relayed_from_the_stdout_envelope(tmp_path):
     r = _run(tmp_path, _edit("/p/blink.c"), stub=_SNAPSHOT_REFUSES)
     ctx = json.loads(r.out)["hookSpecificOutput"]["additionalContext"]
     assert "the recipe moved" in ctx, ctx
-
-
-def test_a_dropped_target_hint_is_surfaced(tmp_path):
-    """`build snapshot` drops an unrecognised `--loci-target` rather than exiting 2 —
-    which keeps the baseline, and is only honest if the drop is reported. The CLI has
-    always said so in the envelope; the hook used to throw the envelope away."""
-    r = _run(tmp_path, _edit("/p/blink.c"), stub=_TARGET_IGNORED)
-    ctx = json.loads(r.out)["hookSpecificOutput"]["additionalContext"]
-    assert "not a LOCI target" in ctx, ctx
-
-
-def test_the_state_dir_override_is_honoured(tmp_path):
-    """`ensure-loci-cli.sh` and `session-init.sh` both export `LOCI_STATE_DIR`, and
-    the context file this hook reads is the one THEY wrote. Resolving it differently
-    here would read an empty directory and silently drop the target on every install
-    that overrides it."""
-    proj = tmp_path / "proj"
-    elsewhere = tmp_path / "elsewhere"
-    proj.mkdir()
-    elsewhere.mkdir()
-    ctx = _context(tmp_path, proj, "tc399")
-    shutil.move(str(ctx), str(elsewhere / ctx.name))
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_OK,
-             env_extra={"LOCI_STATE_DIR": _to_bash_path(elsewhere)})
-    assert opt(r.snapshots[0], "--loci-target") == "tc399"
 
 
 def test_a_payload_with_no_prompt_id_still_snapshots(tmp_path):
@@ -367,7 +308,7 @@ def test_no_failure_mode_produces_a_second_snapshot(tmp_path, stub, label):
         f"{label} (exit from `{stub}`) must not produce a second snapshot; "
         f"snapshots={r.snapshots!r}"
     )
-    assert r.turn_of(0) == _PROMPT_ID
+    assert r.turn_of(0) == _host().turn(_PROMPT_ID)
 
 
 @pytest.mark.parametrize("stub", ["echo 'not json'", "echo ''"])
@@ -391,7 +332,7 @@ def test_a_write_payload_is_snapshotted_too(tmp_path):
         "tool_input": {"file_path": "/p/newfile.c", "content": "int g(void){return 1;}"},
     }, stub=_OK)
     assert r.snapshots, f"calls={r.calls!r}"
-    assert r.turn_of(0) == _PROMPT_ID
+    assert r.turn_of(0) == _host().turn(_PROMPT_ID)
 
 
 # ── scope ───────────────────────────────────────────────────────────────────
@@ -434,12 +375,18 @@ def test_the_pre_scan_still_runs(tmp_path):
 
 
 @pytest.mark.parametrize("path", ["/p/.claude/plans/draft.c", "/p/.claude/settings.json.c",
-                                  "/p/.claude/settings.local.json.rs"])
+                                  "/p/.claude/settings.local.json.rs",
+                                  "/home/u/.copilot/session-state/5c8187c0-862b/draft.c",
+                                  r"C:\Users\u\.copilot\session-state\5c8187c0-862b\files\rb.c"])
 def test_a_plan_or_settings_file_is_skipped(tmp_path, path):
     """The skip `post-edit-hook.sh` has had since phase 04, and this one did not. The
     two hooks are a pair: a file one acts on while the other ignores it is a state
     neither was designed for — the pre-edit side would capture a baseline and stamp
-    the turn for a file the post-edit side then refuses to measure."""
+    the turn for a file the post-edit side then refuses to measure.
+
+    The last two are GitHub Copilot CLI's plan mode (AAD-7787): `plan.md` and any
+    other planning artifact live in `~/.copilot/session-state/<session>/`, spelled
+    as a Windows path on Windows, and a source-named draft there is a plan file."""
     r = _run(tmp_path, _edit(path), stub=_OK)
     assert r.calls == [], f"{path} must be filtered in the hook; got {r.calls!r}"
 
@@ -490,57 +437,6 @@ def test_no_cwd_in_the_payload_omits_the_flag_rather_than_inventing_one(tmp_path
     r = _run(tmp_path, payload, stub=_OK,
              env_extra={"CLAUDE_PROJECT_DIR": ""})
     assert opt(r.snapshots[0], "--project-root") is None, r.snapshots[0]
-
-
-# ── which target's object gets frozen ───────────────────────────────────────
-
-def test_the_recorded_loci_target_is_passed(tmp_path):
-    """Without it `_canonical_object` ranks every target directory. That keeps a
-    turn's baseline stable but cannot know which target this session builds, so on a
-    project built for two the baseline can land beside the object the next compile
-    does not write and the report degrades to absolute-only."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    _context(tmp_path, proj, "armv7e-m")
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
-    assert opt(r.snapshots[0], "--loci-target") == "armv7e-m"
-
-
-@pytest.mark.parametrize("recorded", ["unknown", "null", ""])
-def test_an_unresolved_target_is_not_passed(tmp_path, recorded):
-    """`--loci-target` is argparse `choices`-constrained, so a value detection never
-    resolved is a USAGE error — and the retry drops `--turn` along with it, trading
-    the turn's whole first-write-wins guarantee for nothing."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    _context(tmp_path, proj, recorded)
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
-    assert opt(r.snapshots[0], "--loci-target") is None, r.snapshots[0]
-    assert r.turn_of(0) == _PROMPT_ID, "the turn id must survive regardless"
-
-
-def test_another_projects_context_is_not_read(tmp_path):
-    """The state directory holds one file per project. Keying on the recorded
-    `project_root` rather than on "the first file that parses" is what stops a
-    sibling project's target being stamped onto this one's baseline."""
-    proj = tmp_path / "proj"
-    other = tmp_path / "other"
-    proj.mkdir()
-    other.mkdir()
-    _context(tmp_path, other, "tc399")
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
-    assert opt(r.snapshots[0], "--loci-target") is None, r.snapshots[0]
-
-
-def test_no_context_file_at_all_still_snapshots(tmp_path):
-    """session-init may never have run — a plugin installed mid-session, or a
-    `claude --continue` that missed the `startup` matcher. The target is an
-    improvement, never a precondition."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
-    assert len(r.snapshots) == 1
-    assert r.turn_of(0) == _PROMPT_ID
 
 
 # ── the pre-scan says what it looked at ─────────────────────────────────────
@@ -611,86 +507,42 @@ def test_the_project_root_is_sent_in_the_joined_form(tmp_path):
     assert r"--project-root=C:\proj" in call, call
 
 
-def test_the_turn_and_target_are_sent_in_the_joined_form(tmp_path):
-    """Same property, same reason, for the two flags whose values this hook does not
-    control at all: `prompt_id` is undocumented, and the target comes from another
-    repo's detector."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    _context(tmp_path, proj, "armv6-m")
-    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
+def test_the_turn_is_sent_in_the_joined_form(tmp_path):
+    """Same property, same reason: `prompt_id` is undocumented, so this hook does not
+    control its value."""
+    r = _run(tmp_path, _edit("/p/blink.c"), stub=_OK)
     call = r.snapshots[0]
-    assert "--turn" not in call and "--loci-target" not in call, call
-    assert f"--turn={_PROMPT_ID}" in call and "--loci-target=armv6-m" in call, call
+    assert "--turn" not in call, call
+    assert f"--turn={_host().turn(_PROMPT_ID)}" in call, call
 
 
-def test_the_context_file_is_the_only_one_opened(tmp_path):
-    """The lookup names ONE file. It used to pass every `project-context-*.json` to a
-    single `jq` and loop over the results, which was wrong twice: the `IFS=$(printf
-    '\t')` prefix on the `read` re-forked a command substitution per iteration (6.4 s
-    at 500 files, against this hook's 8 s budget), and the glob hit the Windows 32 KB
-    argv limit at about 200 files and silently returned nothing. Both scaled with a
-    directory that only grows.
+def test_no_target_is_sent(tmp_path):
+    """`build snapshot` takes the recipe's target itself."""
+    r = _run(tmp_path, _edit("/p/blink.c", cwd=str(tmp_path)), stub=_OK)
+    assert opt(r.snapshots[0], "--loci-target") is None, r.snapshots[0]
 
-    Pinned by cost rather than by inspection: 400 decoy contexts must not slow the
-    hook down, and one of them holding a different target must not be read.
 
-    Measured as a SLOPE, not against a wall-clock constant. The earlier form
-    asserted `elapsed < 8` at 400 decoys, and on a slow enough machine that
-    measures the hook's fixed startup instead of the property it names: probed
-    here, 0 decoys already cost 9.75 s while 400 cost 8.25 s — flat in the file
-    count, and red anyway. A guard that fails where the behaviour it guards is
-    provably correct is not a guard, and one whose reading is dominated by a
-    constant it does not control cannot see the cliff arrive either. What the
-    scanning version actually did was scale with a directory that only ever
-    grows, so scaling is what is measured: the same hook, an empty state
-    directory against a full one, on this machine, in this run.
-    """
-    import time
+# ── AAD-7531: the project that governs the FILE is the root ─────────────────
 
-    def _timed(name: str, decoys: int) -> tuple[float, str]:
-        """Best-of-two elapsed for one hook run, plus the target it resolved.
+def _governed_stub(governed, project_root="") -> str:
+    data = {"report": "", "snapshotted": True,
+            "governed": governed, "project_root": project_root}
+    return "echo '" + json.dumps({"ok": True, "data": data}) + "'"
 
-        Best-of-two rather than a single reading because the noise here is whole
-        seconds (9.75 / 11.92 / 8.25 across one probe) and the signal being
-        separated from it is the difference between two runs. A minimum is the
-        cheapest estimator that is not dragged upward by one scheduling stall.
-        """
-        root = tmp_path / name
-        root.mkdir()
-        proj = root / "proj"
-        proj.mkdir()
-        _context(root, proj, "armv6-m")
-        state = root / ".loci" / "state"
-        for i in range(decoys):
-            (state / f"project-context-{i:012x}.json").write_text(
-                json.dumps({"project_root": f"/nowhere/{i}",
-                            "loci_target": "tc399"}),
-                encoding="utf-8")
-        best = None
-        target = None
-        for _ in range(2):
-            start = time.monotonic()
-            r = _run(root, _edit("/p/blink.c", cwd=str(proj)), stub=_OK)
-            elapsed = time.monotonic() - start
-            best = elapsed if best is None else min(best, elapsed)
-            target = opt(r.snapshots[0], "--loci-target")
-        return best, target
 
-    empty_cost, empty_target = _timed("empty", 0)
-    full_cost, full_target = _timed("full", 400)
+def test_the_governing_project_is_the_root_not_the_sessions_cwd(tmp_path):
+    r = _run(tmp_path, _edit("/p/blink.c", cwd=r"C:\some\session"),
+             stub=_governed_stub(True, "C:/proj/fw"))
+    assert opt(r.snapshots[0], "--project-root") == "C:/proj/fw"
 
-    # The correctness half, unchanged and still the primary guard: the decoys all
-    # carry `tc399`, so reading any of them shows up here whatever the timing did.
-    assert empty_target == "armv6-m", empty_target
-    assert full_target == "armv6-m", full_target
 
-    # The cost half. A direct lookup pays the same whether the directory holds 0
-    # files or 400; the scan forked per entry, so its cost rose with the count.
-    # 4 s is generous against the ~1 s spread of a best-of-two and well under the
-    # 6.4 s the scan added at 500 files — still a cliff detector, not a benchmark.
-    overhead = full_cost - empty_cost
-    assert overhead < 4.0, (
-        f"400 context files added {overhead:.1f}s to the hook "
-        f"({empty_cost:.1f}s empty vs {full_cost:.1f}s full) — the lookup is "
-        f"scaling with the directory again")
+def test_an_edit_no_recipe_governs_takes_no_snapshot(tmp_path):
+    r = _run(tmp_path, _edit("/p/blink.c", cwd=r"C:\proj"),
+             stub=_governed_stub(False))
+    assert r.snapshots == [], f"an ungoverned edit was snapshotted: {r.calls!r}"
+
+
+def test_governance_it_cannot_read_keeps_the_old_root(tmp_path):
+    r = _run(tmp_path, _edit("/p/blink.c", cwd=r"C:\proj\firmware"),
+             stub=_governed_stub(None))
+    assert opt(r.snapshots[0], "--project-root") == r"C:\proj\firmware"

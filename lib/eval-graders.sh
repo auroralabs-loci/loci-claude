@@ -120,8 +120,8 @@ grade_bash() {
   #                 BLOCKED ...". The skill invoked but COULD NOT analyze
   #                 (missing/empty .o, unresolved flags, artifacts unavailable).
   #                 This is NOT a completed analysis and carries no verdict.
-  #   HAS_VERDICT — a genuine verdict LINE: "Execution fit: **PASS|CAUTION|
-  #                 FAIL**". Requires the verdict token right after "fit:", so a
+  #   HAS_VERDICT — a genuine verdict LINE: "Execution fit: **GOOD|ADJUST
+  #                 PLAN|STOP**". Requires the verdict token right after "fit:", so a
   #                 sentence merely containing "execution fit" does not match.
   #
   # A clean PASS for should_trigger=true needs a real header AND a real verdict.
@@ -131,11 +131,11 @@ grade_bash() {
   echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:' && HAS_HEADER=true
   echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:[[:space:]]*(stopped|blocked)' && IS_BLOCKED=true
   # Two verdict vocabularies since 2026-09-03 (`_shared/verdicts.md`): a contract
-  # bound JUDGES — `**PASS|CAUTION|FAIL**` — and with no bound the skill ARGUES —
+  # bound JUDGES — `**GOOD|ADJUST PLAN|STOP**` — and with no bound the skill ARGUES —
   # `⚑ flagged —` / `○ cleared —`. Both are the real verdict line; the glyph is
   # matched as "not a letter or digit" so the check does not depend on the
   # terminal's UTF-8 handling.
-  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*(\**[[:space:]]*(pass|caution|fail)\b|[^[:alnum:]]*(flagged|cleared)\b)' && HAS_VERDICT=true
+  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*(\**[[:space:]]*(good|adjust[[:space:]]+plan|stop)\b|[^[:alnum:]]*(flagged|cleared)\b)' && HAS_VERDICT=true
 
   if [[ "$SHOULD_TRIGGER" == "true" ]]; then
     if $IS_BLOCKED; then
@@ -145,7 +145,7 @@ grade_bash() {
       echo "FAIL|skill did not invoke — no '## Preflight:' header (prose mentions don't count)"; return
     fi
     if ! $HAS_VERDICT; then
-      echo "FAIL|invoked but produced no real 'Execution fit: PASS|CAUTION|FAIL' verdict line"; return
+      echo "FAIL|invoked but produced no real 'Execution fit: GOOD|ADJUST PLAN|STOP' verdict line"; return
     fi
     local RF; if RF=$(_init_flow_failure "$RESPONSE"); then echo "$RF"; return; fi
     echo "PASS|preflight invoked and completed — header + Execution fit verdict present"
@@ -192,7 +192,7 @@ grade_bash_post_edit() {
   # obsolete "Happy path / Worst path / ### Control Flow" prose the skill no
   # longer emits. The skill now renders a Gate conclusion table headed
   # "## Post-Edit: <fn>" with Performance/Energy rows (Before/After +(±%) in the
-  # Note) and a "Verdict: **PASS|CAUTION|FAIL**" footer line, plus a one-line
+  # Note) and a "Verdict: **OK|CAUTION|FLAG**" footer line, plus a one-line
   # "<icon> LOCI post-edit · …" footer. CFG no longer surfaces as its own
   # section — it feeds the Note column (e.g. "new hot-path block bb_0x1ea").
   # Three structural states are told apart:
@@ -200,14 +200,16 @@ grade_bash_post_edit() {
   #   HAS_HEADER   — a real markdown header "## Post-Edit:" at line start, OR the
   #                  "LOCI post-edit" footer line. Proof the report was emitted;
   #                  prose like "I'll run the post-edit analysis" does NOT count.
-  #   HAS_VERDICT  — a real verdict LINE "Verdict: **PASS|CAUTION|FAIL**", OR the
+  #   HAS_VERDICT  — a real verdict LINE "Verdict: **OK|CAUTION|FLAG**", OR the
   #                  footer scalar "… LOCI post-edit ·".
   #   HAS_DIFF     — a "%" appears (the ±X% timing/energy diff in the Note column
   #                  or the footer "(-17%, …)"). Required ONLY when a baseline
   #                  exists (a pre-edit .o.prev).
   #   NO_BASELINE  — the report states it has no pre-edit baseline (SKILL.md emits
-  #                  "(no pre-edit artifact — …)" / "no preflight baseline" and
-  #                  reports absolute values only, so there is no % diff to assert).
+  #                  "(no pre-edit baseline — …)" and a "(no baseline)" heading
+  #                  since AAD-7554, "(no pre-edit artifact — …)" before it, and
+  #                  "no preflight baseline"; absolute values only, so there is no
+  #                  % diff to assert).
 #   NO_CHANGE    — the report states the compiled functions did not change. Since
 #                  phase 11 that is a real answer with its own shape (an empty
 #                  changed-function list gates the metered half and Step 2a
@@ -215,15 +217,15 @@ grade_bash_post_edit() {
 #                  measurement and must not be graded as one.
   local HAS_HEADER=false HAS_VERDICT=false HAS_DIFF=false NO_BASELINE=false NO_CHANGE=false
   echo "$RESPONSE" | grep -qiE '(^[[:space:]]*#{2,}[[:space:]]*post-edit|loci[[:space:]]+post-edit)' && HAS_HEADER=true
-  # Both vocabularies (see grade_bash): a judged `**PASS|CAUTION|FAIL**` or an
+  # Both vocabularies (see grade_bash): a judged `**OK|CAUTION|FLAG**` or an
   # argued `⚑ flagged` / `○ cleared`.
-  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*verdict:[[:space:]]*(\**[[:space:]]*(pass|caution|fail)\b|[^[:alnum:]]*(flagged|cleared)\b)|loci[[:space:]]+post-edit[[:space:]]*·)' && HAS_VERDICT=true
+  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*verdict:[[:space:]]*(\**[[:space:]]*(ok|caution|flag)\b|[^[:alnum:]]*(flagged|cleared)\b)|loci[[:space:]]+post-edit[[:space:]]*·)' && HAS_VERDICT=true
   # A SIGNED percentage next to a digit, not a bare `%`. The old test matched any
   # `%` anywhere in the transcript — a `printf("%d")` in the quoted diff, a
   # "100% of the callees", or the model saying "I'm 90% sure" all satisfied it,
   # so "the report carries a Before→After delta" was pinned by nothing.
   echo "$RESPONSE" | grep -qE '[+-][0-9]+(\.[0-9]+)?[[:space:]]*%|[0-9](\.[0-9]+)?[[:space:]]*%[[:space:]]*(faster|slower|more|less)' && HAS_DIFF=true
-  echo "$RESPONSE" | grep -qiE 'no pre-edit artifact|no preflight baseline|first[ -]?edit measurement|first measurement|absolute values only' && NO_BASELINE=true
+  echo "$RESPONSE" | grep -qiE 'no pre-edit (artifact|baseline)|\(no baseline\)|no preflight baseline|first[ -]?edit measurement|first measurement|absolute values only' && NO_BASELINE=true
   echo "$RESPONSE" | grep -qiE 'no (net )?change|unchanged|identical|0 changed functions|no functions? changed|nothing changed' && NO_CHANGE=true
 
   if [[ "$SHOULD_TRIGGER" == "true" ]]; then
@@ -231,7 +233,7 @@ grade_bash_post_edit() {
       echo "FAIL|skill did not invoke — no '## Post-Edit:' header or 'LOCI post-edit' footer (prose mentions don't count)"; return
     fi
     if ! $HAS_VERDICT; then
-      echo "FAIL|invoked but produced no 'Verdict: PASS|CAUTION|FAIL' line or footer scalar"; return
+      echo "FAIL|invoked but produced no 'Verdict: OK|CAUTION|FLAG' line or footer scalar"; return
     fi
     local RF; if RF=$(_init_flow_failure "$RESPONSE"); then echo "$RF"; return; fi
     # Checked BEFORE the no-baseline pass below, and that order is the whole
@@ -266,6 +268,16 @@ grade_bash_post_edit() {
       # SAYING so — silence still fails.
       echo "PASS|post-edit invoked and reported the object's functions unchanged (no delta to show)"; return
     fi
+    # AAD-7554: every heading `(NEW)` is a report on functions the pre-edit object
+    # does not hold, so there is no delta to show. A `(NEW)` beside a modified
+    # function does not qualify: the modified one still owes its % diff.
+    # `|| true`: a count of 0 exits 1, and the callers run under `set -e`.
+    local HEADS NEW_HEADS
+    HEADS=$(echo "$RESPONSE" | grep -ciE '^[[:space:]]*#{2,}[[:space:]]*post-edit:' || true)
+    NEW_HEADS=$(echo "$RESPONSE" | grep -ciE '^[[:space:]]*#{2,}[[:space:]]*post-edit:.*\(new\)[[:space:]]*$' || true)
+    if ! $HAS_DIFF && [[ "$HEADS" -gt 0 && "$HEADS" -eq "$NEW_HEADS" ]]; then
+      echo "PASS|post-edit invoked on new functions only — nothing in the pre-edit object to compare"; return
+    fi
     if ! $HAS_DIFF; then
       echo "FAIL|baseline run but no signed % diff present in the report"; return
     fi
@@ -283,9 +295,9 @@ grade_bash_post_edit() {
 #   (loci-preflight in plan mode → resume+edit → loci-post-edit). Graded on the
 #   JOINED transcript of BOTH turns. A clean PASS needs all four:
 #     • preflight ran    — a real '## Preflight:' header (line-start, not prose)
-#     • preflight verdict — an 'Execution fit: PASS|CAUTION|FAIL' line
+#     • preflight verdict — an 'Execution fit: GOOD|ADJUST PLAN|STOP' line
 #     • post-edit ran    — a real '## Post-Edit' header OR the 'LOCI post-edit' footer
-#     • post-edit verdict — a 'Verdict: PASS|CAUTION|FAIL' line OR the footer scalar
+#     • post-edit verdict — a 'Verdict: OK|CAUTION|FLAG' line OR the footer scalar
 #   Numbers are NOT asserted — the model writes the code, so timing/energy values
 #   are non-deterministic. This grades that the WHOLE pipeline fired and emitted
 #   well-formed reports, which is the behavior under test.
@@ -297,11 +309,11 @@ grade_bash_combined() {
   local HAS_PE_HEADER=false HAS_PE_VERDICT=false
 
   echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:' && HAS_PF_HEADER=true
-  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*(\**[[:space:]]*(pass|caution|fail)\b|[^[:alnum:]]*(flagged|cleared)\b)' && HAS_PF_VERDICT=true
+  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*(\**[[:space:]]*(good|adjust[[:space:]]+plan|stop)\b|[^[:alnum:]]*(flagged|cleared)\b)' && HAS_PF_VERDICT=true
   # Post-edit presence: a markdown header OR the LOCI post-edit footer line.
   echo "$RESPONSE" | grep -qiE '(^[[:space:]]*#{2,}[[:space:]]*post-edit|loci[[:space:]]+post-edit)' && HAS_PE_HEADER=true
-  # Post-edit verdict: the body 'Verdict: **PASS|CAUTION|FAIL**' line OR the footer scalar.
-  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*verdict:[[:space:]]*(\**[[:space:]]*(pass|caution|fail)\b|[^[:alnum:]]*(flagged|cleared)\b)|loci[[:space:]]+post-edit[[:space:]]*·)' && HAS_PE_VERDICT=true
+  # Post-edit verdict: the body 'Verdict: **OK|CAUTION|FLAG**' line OR the footer scalar.
+  echo "$RESPONSE" | grep -qiE '(^[[:space:]]*verdict:[[:space:]]*(\**[[:space:]]*(ok|caution|flag)\b|[^[:alnum:]]*(flagged|cleared)\b)|loci[[:space:]]+post-edit[[:space:]]*·)' && HAS_PE_VERDICT=true
 
   local MISSING=""
   $HAS_PF_HEADER  || MISSING="$MISSING preflight-header"

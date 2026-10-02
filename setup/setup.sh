@@ -2,9 +2,9 @@
 # LOCI Plugin — setup / repair entry point. Orders the steps and reports; the
 # step logic lives in lib/setup-steps.sh and hooks/ensure-loci-cli.sh.
 #
-# The SessionStart hook owns project detection every session. Setup writes
-# project-context state only as a guarded fallback (plugin installed mid-session,
-# before any SessionStart ran the detector), and only after install.
+# Nothing here detects a project or writes project context (AAD-7531): step 7
+# asks `loci project` about the directory setup was run in, and the keyed
+# context is `loci init`'s to write.
 
 set -euo pipefail
 
@@ -15,8 +15,8 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# MUST match session-init.sh / ensure-loci-cli.sh so the detection guard below
-# checks the same keyed file session-init writes.
+# MUST match session-init.sh / ensure-loci-cli.sh so the install status read
+# below is the `loci-cli-status.json` those scripts write.
 STATE_DIR="${LOCI_STATE_DIR:-${HOME:-}/.loci/state}"
 mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR="${PLUGIN_DIR}/state"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
@@ -69,52 +69,7 @@ echo -n "Setting permissions... "
 fix_exec_bits
 echo -e "${GREEN}OK${NC}"
 
-# 5. Project detection. Skip only when a healthy context exists; re-detect when
-# missing or a prior detection failed, so setup repairs instead of rubber-stamping.
-echo -n "Detecting project... "
-_hash=$(hash_cwd)
-_ctx="${STATE_DIR}/project-context-${_hash}.json"
-_status="missing"
-# Default "" and not "ok": three of the four session states never write
-# `detection_status` (the CLI owns it once a recipe governs), so reading its
-# absence as a healthy detection made setup skip the repair it exists to do,
-# on exactly the files that needed it.
-if [ -f "$_ctx" ]; then
-  loci_json_load "$(<"$_ctx")"
-  _status=$(loci_json_get detection_status) || _status=""
-fi
-if [ "$_status" = "ok" ]; then
-  echo -e "${GREEN}OK (already detected this session)${NC}"
-elif detect_and_write_context; then
-  echo -e "${GREEN}OK${NC}"
-  # Only what is known. Three `unknown`s under a green OK read as a broken
-  # detection; in the inactive and uninitialized states they are not unknown,
-  # they are not applicable, and the line below says which.
-  [ "${_CTX_COMPILER:-unknown}" = unknown ] || echo "  Compiler:   ${_CTX_COMPILER}"
-  case "${_CTX_BUILD:-unknown}" in unknown|none) ;; *) echo "  Build:      ${_CTX_BUILD}" ;; esac
-  [ "${_CTX_TARGET:-unknown}" = unknown ]   || echo "  Target:     ${_CTX_TARGET}"
-  # Say which of the four states this is. Setup used to print three `unknown`s
-  # for a directory LOCI will not analyze and leave the reader to guess whether
-  # that was a detection failure or a deliberate refusal.
-  case "${_CTX_STATE:-}" in
-    initialized)          echo "  Recipe:     ${_CTX_RECIPE:-.loci/build.yaml}" ;;
-    initialized_degraded)
-      if [ -n "${_CTX_RECIPE:-}" ]; then
-        echo "  Recipe:     ${_CTX_RECIPE} — no recorded state yet; the first analysis rebuilds it"
-      else
-        echo "  Recipe:     recorded state says this project is initialized, but no .loci/build.yaml was found from here"
-      fi ;;
-    armed)                echo "  Recipe:     none yet — run /loci:init (or let the first analysis initialize it)" ;;
-    inactive_status)      echo "  LOCI:       inactive (init: ${_CTX_STATUS:-recorded}) — /loci:init is what changes it" ;;
-    inactive_multi)       echo "  LOCI:       inactive — this directory holds several independent projects" ;;
-    inactive_none)        echo "  LOCI:       inactive — no build file declares a build here" ;;
-    inactive_failed)      echo "  LOCI:       inactive — project detection could not run here; /loci:bug-report collects why" ;;
-  esac
-else
-  echo -e "${YELLOW}detection failed${NC}"
-fi
-
-# 6. Validate hooks.json — with whatever parser the host has.
+# 5. Validate hooks.json — with whatever parser the host has.
 #
 # This step runs before the CLI is guaranteed to exist, so it cannot ask `loci`,
 # and `jq` is no longer a prerequisite. So: jq if the host has one, else a
@@ -144,7 +99,7 @@ else
   echo -e "${YELLOW}skipped (no jq or python on this host)${NC}"
 fi
 
-# 7. Register hooks with Claude Code. As a plugin, Claude Code reads hooks.json
+# 6. Register hooks with Claude Code. As a plugin, Claude Code reads hooks.json
 # directly — skip when running from the plugin cache (the ../../.. heuristic
 # would resolve to a wrong path there).
 echo -n "Registering hooks... "
@@ -155,6 +110,10 @@ elif [ -z "$JQ" ]; then
   # is a JSON transform this script cannot do on its own. Named, not silent: the
   # user is told which file to edit rather than left with hooks that never fire.
   echo -e "${YELLOW}skipped (needs jq; add hooks/hooks.json to .claude/settings.json by hand)${NC}"
+elif [[ "${PLUGIN_DIR}" == *"'"* ]]; then
+  # The rewrite below puts this path inside the launcher's single quotes
+  # (AAD-7780), where a quote would end the literal early. Named, not silent.
+  echo -e "${YELLOW}skipped (plugin dir contains a single quote; add hooks/hooks.json to .claude/settings.json by hand)${NC}"
 else
   PROJECT_ROOT="$(cd "${PLUGIN_DIR}/../../.." 2>/dev/null && pwd || echo "")"
   # Skip if PROJECT_ROOT is empty, a filesystem root, or not writable
@@ -164,7 +123,7 @@ else
     SETTINGS_FILE="${PROJECT_ROOT}/.claude/settings.json"
     mkdir -p "${PROJECT_ROOT}/.claude"
 
-    if [ -f "$SETTINGS_FILE" ] && grep -q "capture-action.sh" "$SETTINGS_FILE" 2>/dev/null; then
+    if [ -f "$SETTINGS_FILE" ] && grep -q "exec bash.*hooks/session-init.sh" "$SETTINGS_FILE" 2>/dev/null; then
       echo -e "${GREEN}already registered${NC}"
     else
       # Expand ${CLAUDE_PLUGIN_ROOT} to the absolute plugin dir.
@@ -198,12 +157,26 @@ else
   fi
 fi
 
+# 7. The project setup was run in, if any — asked of the CLI, not detected.
+if command -v loci >/dev/null 2>&1; then
+  loci_json_load "$(loci project 2>/dev/null)"
+  _proj_root=$(loci_json_get project_root) || _proj_root=""
+  if [ -n "$_proj_root" ]; then
+    if [ "$(loci_json_get init_status)" = unsupported ]; then
+      echo "  Project:    ${_proj_root} — its target is not one LOCI supports"
+    elif [ "$(loci_json_get code)" = not_initialized ]; then
+      echo "  Project:    ${_proj_root} — not initialized; run /loci:init ${_proj_root}"
+    elif [ -z "$(loci_json_get code)" ]; then
+      echo "  Project:    ${_proj_root} — ready (target $(loci_json_get loci_target))"
+    fi
+  fi
+fi
+
 echo ""
 echo -e "${GREEN}Setup complete!${NC}"
 echo ""
-echo "The plugin will automatically:"
-echo "  - Detect your project's compiler, build system, and target arch"
-echo "  - Pre-scan C/C++/Rust edits and prompt execution-aware analysis"
+echo "In a project /loci:init has set up, the plugin will automatically:"
+echo "  - Pre-scan C/C++/Rust/Go edits and prompt execution-aware analysis"
 echo "  - Analyze ELF binaries locally via the loci CLI (timing, energy,"
 echo "    stack depth, memory, symbols, assembly, diff)"
 echo "  - Inject performance/regression findings into Claude's context"

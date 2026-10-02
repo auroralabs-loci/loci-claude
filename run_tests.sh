@@ -12,6 +12,15 @@
 # First run creates a Python 3.12 venv and installs loci-service-asmslicer
 # (the `loci.service.asmslicer` slicer) plus its transitive deps from PyPI.
 # Subsequent runs reuse the cached venv (see the .loci-test-ready marker).
+#
+# There is no hosted CI for this suite: AAD-7772 ran it once as a GitHub
+# Actions matrix (ubuntu, windows, macOS under bash 5 and stock 3.2) and the
+# matrix was withdrawn over cost. It is proven by hand instead, on Windows
+# (Git Bash), WSL (bash 5 and a bash 3.2 built from source) and a stock Mac,
+# from a fresh clone with only `uv` on PATH; the tests that read the host (a
+# `claude` on PATH, a privileged account, a slow machine) stub, skip or
+# budget so such a clone is green. `bash run_tests.sh`: the file is tracked
+# without the executable bit, and a Linux or macOS checkout refuses `./`.
 
 set -euo pipefail
 

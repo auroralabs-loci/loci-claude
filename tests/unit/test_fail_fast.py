@@ -43,7 +43,20 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
+from tests.fixtures.copilot_payloads import current as _host
+
 pytestmark = pytest.mark.skipif(_find_bash() is None, reason="bash required")
+
+#: The tests that run under BOTH hosts (AAD-7790). Not the module: the on/off
+#: byte comparison and the session-init block cost a third of this file and
+#: say nothing a host changes, so only the tests where the notice, the halt or
+#: the attribution reaches a host are doubled, as `[claude]` / `[copilot]`.
+#: Under Copilot the payload is respelled (no `prompt_id` — the turn is the
+#: seeded `turn-<session_id>` record — and an Edit's keys in Copilot's names),
+#: the hook starts in the plugin root, and the notice rides where Copilot reads
+#: it: the top-level `additionalContext` beside the nested one, and for a Stop
+#: hook a record for the next prompt instead of a message nobody sees.
+both_hosts = pytest.mark.usefixtures("host")
 
 
 def _to_bash_path(p: Path) -> str:
@@ -135,13 +148,23 @@ def _run(hook: str, payload: dict, tmp_path: Path, *, fail_fast: bool,
     if dev:
         env["LOCI_ENV"] = "dev"
 
+    host = _host()
+    payload = host.respell(payload)
+    env.update(host.env(project=_to_bash_path(cwd or tmp_path)))
+    host.seed(state)
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(HOOKS / hook)],
         input=json.dumps(payload),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=60, env=env, cwd=str(cwd or tmp_path),
+        timeout=60, env=env, cwd=host.cwd(cwd or tmp_path),
     )
     return Run(proc, state, argv_log)
+
+
+def _stop_records(state: Path) -> list[Path]:
+    """What a Stop hook left for the session's next prompt under Copilot
+    (`lib/loci_host.sh`, `loci_host_carry_add`): one file per writer."""
+    return sorted(state.glob(f"turn-{SESSION_ID}.nudge-*"))
 
 
 def _project(tmp_path: Path) -> Path:
@@ -201,6 +224,7 @@ _IDS = [c[0].removesuffix(".sh") for c in CASES]
 
 # ── on: the failure is loud, and nothing routes around it ───────────────────
 
+@both_hosts
 @pytest.mark.parametrize("hook,build,channel,command", CASES, ids=_IDS)
 def test_a_failing_loci_call_is_surfaced_verbatim(hook, build, channel, command,
                                                   tmp_path):
@@ -222,7 +246,27 @@ def test_a_failing_loci_call_is_surfaced_verbatim(hook, build, channel, command,
         f"{hook} reported the failure without instructing a halt — a hook "
         f"cannot halt anything by its exit code:\n{text}")
 
+    # Where the host reads it (AAD-7783): Copilot drops the nested object and
+    # injects only a top-level `additionalContext`, so the notice goes through
+    # the shared writers and rides there too; its Stop reply reaches nobody,
+    # so a Stop notice is recorded for the session's next prompt instead.
+    host = _host()
+    doc = json.loads(run.stdout)
+    if channel == "additionalContext":
+        assert host.context(doc) == text, (
+            f"{hook}'s notice is not where {host} reads it:\n{run.stdout}")
+        if host.copilot:
+            assert doc.get("additionalContext") == text
+    elif host.copilot:
+        assert "additionalContext" not in doc, (
+            f"a Stop reply has no context field under Copilot:\n{run.stdout}")
+        records = _stop_records(run.state)
+        assert records, f"{hook} recorded no Stop notice for the next prompt"
+        assert any("LOCI fast-fail is on" in r.read_text(encoding="utf-8")
+                   for r in records), [r.name for r in records]
 
+
+@both_hosts
 @pytest.mark.parametrize("hook,build,channel,command", CASES, ids=_IDS)
 def test_the_failure_is_attributable_to_a_session_without_dev_mode(
         hook, build, channel, command, tmp_path):
@@ -239,6 +283,7 @@ def test_the_failure_is_attributable_to_a_session_without_dev_mode(
             f"the fail-fast line cannot be attributed to a session:\n{ln}")
 
 
+@both_hosts
 def test_the_pre_edit_snapshot_is_not_attempted_after_a_failed_scan(tmp_path):
     """The halt is a halt: the second `loci` call of the pair never runs."""
     root = _project(tmp_path)
@@ -251,6 +296,7 @@ def test_the_pre_edit_snapshot_is_not_attempted_after_a_failed_scan(tmp_path):
         "still being printed")
 
 
+@both_hosts
 def test_the_post_edit_reminder_is_not_emitted_behind_a_halt(tmp_path):
     """Off, exit 2 reports the edit as measurable and reminds anyway. On, a
     reminder over a broken CLI is the papering-over itself."""
@@ -262,28 +308,35 @@ def test_the_post_edit_reminder_is_not_emitted_behind_a_halt(tmp_path):
     assert "out of step" not in text, f"the exit-2 fallback survived:\n{text}"
 
 
+@both_hosts
 def test_the_edge_hooks_start_no_install_when_loci_is_absent(tmp_path):
     """`loci` missing is answered with a background install — a repair, which
     the mode forbids. It is reported instead."""
     root = _project(tmp_path)
+    host = _host()
     for hook, event in (("pre-edit-hook.sh", "PreToolUse"),
                         ("post-edit-hook.sh", "PostToolUse")):
         home = tmp_path / hook / "fakehome"
         state = tmp_path / hook / "state"
         for d in (home, state):
             d.mkdir(parents=True, exist_ok=True)
+        payload = host.respell(_c_edit(root))
+        host.seed(state)
         proc = subprocess.run(
             [_find_bash(), _to_bash_path(HOOKS / hook)],
-            input=json.dumps(_c_edit(root)),
+            input=json.dumps(payload),
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=60, cwd=str(root),
+            timeout=60, cwd=host.cwd(root),
             env={"PATH": "/usr/bin:/bin", "HOME": _to_bash_path(home),
                  "LOCI_STATE_DIR": _to_bash_path(state),
                  "CLAUDE_PROJECT_DIR": _to_bash_path(root),
-                 "LOCI_FAIL_FAST": "1"},
+                 "LOCI_FAIL_FAST": "1",
+                 **host.env(project=_to_bash_path(root))},
         )
         assert proc.returncode == 0, proc.stderr
-        text = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+        doc = json.loads(proc.stdout)
+        text = doc["hookSpecificOutput"]["additionalContext"]
+        assert host.context(doc) == text, doc
         assert "loci is not on PATH" in text, text
         assert "No background install was started" in text, text
         assert not (state / "loci-cli-status.json").exists(), (
@@ -312,6 +365,7 @@ def test_a_successful_call_prints_the_same_bytes_either_way(
     assert "fast-fail" not in on.stdout
 
 
+@both_hosts
 @pytest.mark.parametrize("hook,build,channel,command", CASES, ids=_IDS)
 def test_a_failing_call_keeps_todays_recovery_when_the_switch_is_off(
         hook, build, channel, command, tmp_path):
@@ -328,6 +382,7 @@ def test_a_failing_call_keeps_todays_recovery_when_the_switch_is_off(
         f"{hook} wrote a log outside dev mode with the switch off:\n{run.log}")
 
 
+@both_hosts
 def test_the_pre_edit_recovery_still_runs_with_the_switch_off(tmp_path):
     """The recovery the halt replaces, pinned: the scan fails, the snapshot is
     still attempted, and the notice still says the pre-scan was lost."""
@@ -340,6 +395,7 @@ def test_the_pre_edit_recovery_still_runs_with_the_switch_off(tmp_path):
     assert "No static pre-scan for this edit" in run.stdout
 
 
+@both_hosts
 def test_the_thin_hooks_still_pass_the_cli_output_through_with_the_switch_off(
         tmp_path):
     """These four print what the verb prints. Off, a failing verb's own envelope
@@ -417,40 +473,15 @@ def test_the_session_block_carries_the_rule_only_while_the_switch_is_on(tmp_path
         f"{_FAIL_FAST_LINE_ALLOWANCE} B allowance")
 
 
-#: A `loci` whose `hook project-context` refuses. Session start is the one place
-#: fast-fail keeps a fallback — the identity keys the shell already knows — so
-#: what is asserted here is that the failure is REPORTED, not that the state
-#: file is abandoned.
-_CONTEXT_STUB = """#!/usr/bin/env bash
-cat >/dev/null 2>&1
-case "$*" in
-    "hook project-context"*)
-        printf 'loci: project-context crashed: KeyError\\n' >&2
-        exit 5 ;;
-esac
-exit 1
-"""
+def test_session_start_asks_the_cli_nothing_about_a_project(tmp_path):
+    """AAD-7531 AC 4: a directory declaring a build used to be armed and written."""
+    calls = tmp_path / "calls.log"
+    stub = ("#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> "{_to_bash_path(calls)}"\n'
+            "cat >/dev/null 2>&1\nexit 1\n")
+    _session_init(tmp_path, fail_fast=True, stub=stub)
 
-
-def test_a_failed_project_context_refresh_is_reported_at_session_start(tmp_path):
-    on, on_log = _session_init(
-        tmp_path / "on", fail_fast=True, stub=_CONTEXT_STUB,
-        payload={"session_id": SESSION_ID, "hook_event_name": "SessionStart"})
-    off, _ = _session_init(tmp_path / "off", fail_fast=False, stub=_CONTEXT_STUB)
-
-    assert "`loci hook project-context` failed with exit 5" in on, (
-        "the session-start refresh failed and the session says nothing:\n" + on)
-    assert "project-context crashed: KeyError" in on, (
-        "the note drops the reason:\n" + on)
-    for phrase in ("fast-fail", "failed with exit 5", "KeyError"):
-        assert phrase in on
-        assert phrase not in off, (
-            f"the switch is off and the block still says {phrase!r}:\n" + off)
-
-    # The 021 pairing: the ERROR line names the session that hit it, so two
-    # sessions running at once can be told apart by a reader of the log.
-    errors = [ln for ln in on_log.splitlines() if "fail-fast:" in ln]
-    assert errors, on_log
-    assert any(f"[session={SESSION_ID}]" in ln for ln in errors), (
-        "the session-start fail-fast lines cannot be attributed to a session:\n"
-        + on_log)
+    made = calls.read_text(encoding="utf-8").splitlines() if calls.is_file() else []
+    assert not [c for c in made if c.startswith("hook project-context")], made
+    state = tmp_path / "home" / ".loci" / "state"
+    assert not list(state.glob("project-context-*.json"))

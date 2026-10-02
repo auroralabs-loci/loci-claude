@@ -18,6 +18,9 @@
 #   ./run_evals.sh --ble-root "C:\Playground\BLE" --model opus           # pin the model under test
 #   ./run_evals.sh --ble-root "C:\Playground\BLE" --dry-run              # print the argv, run nothing
 #   LOCI_TEST_BLE_ROOT="C:\Playground\BLE" ./run_evals.sh               # env var
+#   LOCI_EVAL_HOST=copilot ./run_evals.sh --ble-root "C:\Playground\BLE" # the agent is GitHub
+#                                                    # Copilot CLI, not claude -p (AAD-7791)
+#   ./run_evals.sh --ble-root "C:\Playground\BLE" --host copilot --model gpt-5.6-sol
 #
 # Each eval is run via `claude -p --model <--model, default sonnet>` with the
 # skill's SKILL.md injected as a system prompt.  A second `claude -p --model
@@ -25,6 +28,53 @@
 # expectations in evals.json.  BOTH are pinned: an unpinned run inherits
 # whatever the operator's default model happens to be, which makes its result
 # unattributable after the fact.
+#
+# ── Two hosts (AAD-7791) ────────────────────────────────────────────────────
+#
+# `--host copilot` (or `LOCI_EVAL_HOST=copilot`) runs the SAME evals, fixtures,
+# graders and report through GitHub Copilot CLI, so a skill can be measured on
+# the second host the plugin serves — and on a GPT model, which Copilot offers
+# and Claude Code does not. `claude` stays the default and its command lines are
+# untouched: every Copilot argument is built on its own branch, and the dry-run
+# argv of a Claude run is byte-identical to what it was before the host split.
+#
+# What maps to what, and why:
+#   * the prompt is PIPED on both hosts. `copilot -p "<text>"` puts the prompt
+#     on the command line, which Windows caps at 32,767 characters; a stdin
+#     prompt has no cap, and Copilot reads one.
+#   * `--permission-mode plan` → `--plan`. Copilot's plan mode is a real
+#     read-only mode (repo writes are blocked until the plan is approved), the
+#     `[[PLAN]]` prefix is what the preflight skill's Copilot clause gates on,
+#     and the turn ends when the plan is saved; the two-turn flow's second turn
+#     resumes that session with `--mode interactive`, the counterpart of
+#     Claude's `--permission-mode acceptEdits` on the resume.
+#   * `--disallowedTools Edit Write MultiEdit NotebookEdit` → `--deny-tool
+#     write`. Copilot's `write` KIND covers every file-writing tool — `edit`,
+#     `create` and GPT's `apply_patch` — where a name list would miss one, and
+#     a `--deny-tool` rule outranks `--allow-all-tools` by design.
+#   * `--dangerously-skip-permissions` → `--allow-all-tools --allow-all-paths`.
+#     Copilot additionally confines file access to the working directory, and
+#     a measuring skill reads outside it (`~/.loci/state`, the staged fixtures
+#     under eval-results/, the plugin's own skills/); a path prompt in `-p`
+#     mode is a silent denial.
+#   * `--append-system-prompt-file` → nothing: Copilot has no system-prompt
+#     flag, so the single-turn flow sends the same text as a preamble on the
+#     prompt, before an `--- EVAL PROMPT ---` marker. The plugin is loaded
+#     either way (`--plugin-dir`, as on Claude).
+#   * `--output-format stream-json` → `--output-format json`, Copilot's JSONL.
+#     Its schema is undocumented; `lib/eval-metrics.sh` names the events the
+#     readers rest on and the probe they were taken from.
+#   * `--mcp-config`: not passed. The plugin's MCP config, where it declares
+#     one, loads with the plugin.
+#   * `--installed-plugin`: refused on the copilot host — it reads Claude's
+#     plugin cache, which says nothing about what Copilot loaded.
+#   * `--bare` (ANTHROPIC_API_KEY): Claude-only; a copilot run ignores the key.
+#   * `COPILOT_AUTO_UPDATE=false` is exported so a run never pauses on an
+#     update; auth is Copilot's own (`copilot login`, or `COPILOT_GITHUB_TOKEN`
+#     / `GH_TOKEN` in the environment).
+# Model ids differ per host: Copilot spells them `claude-sonnet-5`,
+# `gpt-5.6-sol`, … (`copilot help config`), so the pinned defaults follow the
+# host. `--model` / `--grader-model` / `LOCI_EVAL_MODEL` override as before.
 #
 # Results are written to eval-results/<timestamp>/, one `*_metrics.json` per
 # eval (model, usage, num_turns, total_cost_usd, wall clock, which plugin
@@ -72,6 +122,38 @@
 
 set -euo pipefail
 
+# GNU `timeout` is not on stock macOS (no coreutils; `gtimeout` only with them).
+# A harness that called it exited 127 before `claude` started and reported
+# every eval as "empty response" (AAD-7771, on the mac-mini). Without either
+# binary the bound is a bash watchdog with the same TERM-then-KILL shape and
+# the same exit 124, because a turn with NO bound is a run that never ends: a
+# `claude` waiting on a login prompt held one for 17 minutes there. Not perl's
+# `alarm`: on the mac-mini a perl whose ALRM handler ran during `waitpid` took
+# minutes to notice a child that had exited (measured 290 s for a `sleep 3`).
+# Same argument order as `timeout`: seconds, then the command. The `<&0` is an
+# EXPLICIT redirection, which is what keeps the caller's stdin (the prompt)
+# for a background command — non-interactive bash gives one /dev/null
+# otherwise. bash reports the killed job on stderr ("Terminated"); the turn's
+# stderr is captured to a file, and the note says what happened.
+with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=10 "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout --kill-after=10 "$@"
+  else
+    local _t="$1" _pid _wd _rc=0 _start=$SECONDS
+    shift
+    "$@" <&0 &
+    _pid=$!
+    ( sleep "$_t"; kill -TERM "$_pid" 2>/dev/null; sleep 10; kill -KILL "$_pid" 2>/dev/null ) 2>/dev/null &
+    _wd=$!
+    wait "$_pid" || _rc=$?
+    if kill -0 "$_wd" 2>/dev/null; then kill "$_wd" 2>/dev/null; wait "$_wd" 2>/dev/null || :; fi
+    if [ "$_rc" -ge 128 ] && [ $((SECONDS - _start)) -ge "$_t" ]; then _rc=124; fi
+    return "$_rc"
+  fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ---------------------------------------------------------------------------
@@ -85,11 +167,17 @@ VERBOSE=false
 MAX_JOBS=4
 EVAL_TIMEOUT=600   # seconds per claude -p call
 GRADE_TIMEOUT=120  # seconds per grader call
+# Which CLI runs the agent (and the grader): `claude` or `copilot`. See the
+# header's "Two hosts" section. Resolved to HOST_BIN below, after the flags.
+EVAL_HOST="${LOCI_EVAL_HOST:-claude}"
 # Both halves are pinned. Only the GRADER used to be, so every recorded result
 # was silently attributed to whatever `claude` defaulted to on the machine that
 # ran it — two runs of the same suite were not comparable and neither said so.
-MODEL="${LOCI_EVAL_MODEL:-sonnet}"
-GRADER_MODEL="${LOCI_EVAL_GRADER_MODEL:-sonnet}"
+# The pinned default depends on the host (`sonnet` is a Claude Code alias; the
+# same model is `claude-sonnet-5` to Copilot), so it is filled in once the host
+# is known. The sentinel keeps an EXPLICIT empty `--model ""` refusable.
+MODEL="${LOCI_EVAL_MODEL:-__host_default__}"
+GRADER_MODEL="${LOCI_EVAL_GRADER_MODEL:-__host_default__}"
 DRY_RUN=false
 # false ⇒ the working tree answers, loaded with --plugin-dir (the default; see
 # the header). true ⇒ the installed marketplace plugin answers and the skew
@@ -102,6 +190,13 @@ INSTALLED_PLUGIN_MODE=false
 # the two-turn flow's first turn has used since it shipped. Applied to
 # plan-mode evals ONLY — an edit-flow eval exists precisely to make an edit.
 PLAN_MODE_DENY=(--disallowedTools Edit Write MultiEdit NotebookEdit)
+# The copilot host's spelling of the same rule: `--deny-tool` takes permission
+# KINDS (`copilot help permissions`), and `write` is "tools that create and
+# modify files, except shell tool invocations" — `edit`, `create`, and the
+# `apply_patch` the GPT models edit with. Denial rules "always take precedence
+# over allow rules, even --allow-all-tools". Variadic like Claude's, so it goes
+# LAST on the command line.
+COPILOT_PLAN_DENY=(--deny-tool write)
 
 # Well-known BLE artifacts (relative to BLE_ROOT)
 BLE_BASIC_BLE="examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/freertos/ticlang/basic_ble.out"
@@ -126,6 +221,8 @@ while [[ $# -gt 0 ]]; do
     --model=*)    MODEL="${1#*=}"; shift ;;
     --grader-model)   GRADER_MODEL="$2"; shift 2 ;;
     --grader-model=*) GRADER_MODEL="${1#*=}"; shift ;;
+    --host)       EVAL_HOST="$2"; shift 2 ;;
+    --host=*)     EVAL_HOST="${1#*=}"; shift ;;
     --dry-run)    DRY_RUN=true; shift ;;
     --installed-plugin) INSTALLED_PLUGIN_MODE=true; shift ;;
     --sequential) MAX_JOBS=1; shift ;;
@@ -145,8 +242,32 @@ done
 # ---------------------------------------------------------------------------
 # Validate
 # ---------------------------------------------------------------------------
-if ! command -v claude >/dev/null 2>&1; then
-  echo "ERROR: 'claude' CLI not found on PATH."
+# The host first: everything below that names a binary or a default model
+# reads it. `LOCI_EVAL_HOST` is exported for `lib/eval-metrics.sh`, whose
+# transcript readers are host-aware and run in the same shell.
+case "$EVAL_HOST" in
+  claude)
+    HOST_BIN=claude
+    HOST_DEFAULT_MODEL=sonnet
+    ;;
+  copilot)
+    HOST_BIN=copilot
+    HOST_DEFAULT_MODEL=claude-sonnet-5
+    # A run must never stop on Copilot's update prompt. The documented CI
+    # switch; `--no-auto-update` is the flag form of the same thing.
+    export COPILOT_AUTO_UPDATE=false
+    ;;
+  *)
+    echo "ERROR: unknown host '$EVAL_HOST' — --host / LOCI_EVAL_HOST takes 'claude' or 'copilot'."
+    exit 1
+    ;;
+esac
+export LOCI_EVAL_HOST="$EVAL_HOST"
+[[ "$MODEL" == "__host_default__" ]] && MODEL="$HOST_DEFAULT_MODEL"
+[[ "$GRADER_MODEL" == "__host_default__" ]] && GRADER_MODEL="$HOST_DEFAULT_MODEL"
+
+if ! command -v "$HOST_BIN" >/dev/null 2>&1; then
+  echo "ERROR: '$HOST_BIN' CLI not found on PATH (host: $EVAL_HOST)."
   exit 1
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -158,6 +279,29 @@ if [[ -z "$MODEL" || -z "$GRADER_MODEL" ]]; then
   echo "ERROR: --model and --grader-model cannot be empty."
   exit 1
 fi
+if [[ "$EVAL_HOST" == "copilot" && "$INSTALLED_PLUGIN_MODE" == "true" ]]; then
+  # The QA mode reads `~/.claude/plugins/installed_plugins.json` and hunts
+  # `~/.claude/plugins/cache/loci` — Claude Code's registry, which cannot say
+  # what a Copilot session loaded. Copilot's own registry (`copilot plugin
+  # list`) is not wired here; `--plugin-dir` is the one load path on this host.
+  echo "ERROR: --installed-plugin is not supported on the copilot host — it reads Claude Code's plugin cache. Drop the flag: the working tree is loaded with --plugin-dir."
+  exit 1
+fi
+
+# host_path <path> — a path as the host binary must see it. Copilot is a
+# native Windows executable, and a `/c/…` directory handed to `--plugin-dir`
+# is not loaded ("no plugin.json found in C:\c\…") when MSYS path conversion
+# is off, which `MSYS_NO_PATHCONV=1` in a caller's environment makes it. The
+# `C:/…` spelling is right under both settings. Claude's paths are passed as
+# they always were.
+host_path() {
+  [[ -n "${1:-}" ]] || return 0
+  if [[ "$EVAL_HOST" == "copilot" ]] && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
 
 if [[ -z "$BLE_ROOT" ]]; then
   echo "ERROR: BLE root not configured."
@@ -173,9 +317,10 @@ fi
 BLE_ROOT="$(cd "$BLE_ROOT" && pwd)"
 
 echo "BLE root: $BLE_ROOT"
+echo "Host:     $EVAL_HOST ($HOST_BIN)"
 echo "Model:    $MODEL (grader: $GRADER_MODEL)"
 if $DRY_RUN; then
-  echo "DRY RUN:  resolving each eval's argv only — no claude call, nothing billed."
+  echo "DRY RUN:  resolving each eval's argv only — no $HOST_BIN call, nothing billed."
 fi
 
 # Check for the primary test ELF
@@ -235,7 +380,13 @@ MCP_CONFIG=""
 # released server — the same class of quiet mis-attribution the skew guard
 # exists for. `--installed-plugin` reads the installed copy, as it always did.
 PLUGIN_MCP_JSON=""
-if ! $INSTALLED_PLUGIN_MODE; then
+if [[ "$EVAL_HOST" == "copilot" ]]; then
+  # Nothing to pass: Copilot takes `--additional-mcp-config`, but the block
+  # this code would hand it is the EMPTY one described below, and the plugin's
+  # own MCP declaration — where it has one — loads with `--plugin-dir`. The
+  # vestigial search is skipped rather than translated.
+  echo "MCP: not passed on the copilot host — the plugin's own MCP config, if any, loads with --plugin-dir."
+elif ! $INSTALLED_PLUGIN_MODE; then
   # The first tree file that EXISTS wins — not the first that declares a server.
   # Requiring a non-empty `mcpServers` looked stricter and was the bug: no tree
   # file has one today, so the loop never fired and the installed cache always
@@ -251,12 +402,16 @@ if ! $INSTALLED_PLUGIN_MODE; then
     fi
   done
 fi
-[[ -n "$PLUGIN_MCP_JSON" ]] || PLUGIN_MCP_JSON="$(find ~/.claude/plugins/cache/loci -name .mcp.json 2>/dev/null | sort -V | tail -1 || true)"
-[[ -z "$PLUGIN_MCP_JSON" ]] && PLUGIN_MCP_JSON="$(find ~/.claude/plugins/cache/loci -name marketplace.json 2>/dev/null | sort -V | tail -1 || true)"
-[[ -z "$PLUGIN_MCP_JSON" ]] && PLUGIN_MCP_JSON="$(find ~/.claude/plugins/cache/loci -name plugin.json 2>/dev/null | sort -V | tail -1 || true)"
-true    # the `[[ ]] &&` above returns 1 when the first find succeeded; do not let
-        # that be this block's exit status.
-if [[ -z "${ANTHROPIC_API_KEY:-}" && -n "$PLUGIN_MCP_JSON" ]]; then
+if [[ "$EVAL_HOST" != "copilot" ]]; then
+  [[ -n "$PLUGIN_MCP_JSON" ]] || PLUGIN_MCP_JSON="$(find ~/.claude/plugins/cache/loci -name .mcp.json 2>/dev/null | sort -V | tail -1 || true)"
+  [[ -z "$PLUGIN_MCP_JSON" ]] && PLUGIN_MCP_JSON="$(find ~/.claude/plugins/cache/loci -name marketplace.json 2>/dev/null | sort -V | tail -1 || true)"
+  [[ -z "$PLUGIN_MCP_JSON" ]] && PLUGIN_MCP_JSON="$(find ~/.claude/plugins/cache/loci -name plugin.json 2>/dev/null | sort -V | tail -1 || true)"
+  true    # the `[[ ]] &&` above returns 1 when the first find succeeded; do not let
+          # that be this block's exit status.
+fi
+if [[ "$EVAL_HOST" == "copilot" ]]; then
+  :       # announced above; MCP_CONFIG stays empty
+elif [[ -z "${ANTHROPIC_API_KEY:-}" && -n "$PLUGIN_MCP_JSON" ]]; then
   # Browser OAuth: reuse the plugin's MCP config (no Bearer token needed —
   # Claude's OAuth session authenticates with the MCP server directly).
   MCP_CONFIG="$RESULTS_DIR/.mcp-config.json"
@@ -499,11 +654,9 @@ fi
 # jq could not read the transcript, which puts the grader on its text fallback.
 # ---------------------------------------------------------------------------
 tool_calls_of() {
-  jq -rs '[ .[] | select(.type == "assistant") | .message.content[]?
-            | select(.type == "tool_use")
-            | .name + ": " + ((.input.command // .input.file_path // .input.pattern // "")
-                              | tostring | gsub("\n"; " ; ") | .[0:400]) ]
-          | if length > 0 then join("\n") else "(none)" end' "$@" 2>/dev/null || true
+  # Host-aware since AAD-7791: `lib/eval-metrics.sh` holds the jq this ran
+  # inline (unchanged for Claude) and its Copilot counterpart.
+  transcript_tool_calls "(none)" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -688,16 +841,25 @@ if $INSTALLED_PLUGIN_MODE; then
     PLUGIN_BANNER="$PLUGIN_BANNER  [LOCI_EVALS_ALLOW_PLUGIN_SKEW=1 — running them anyway]"
   fi
 else
-  PLUGIN_ARGS=(--plugin-dir "$SCRIPT_DIR")
+  PLUGIN_ARGS=(--plugin-dir "$(host_path "$SCRIPT_DIR")")
   PLUGIN_UNDER_TEST="plugin-dir:${_tree_desc}"
-  PLUGIN_BANNER="Working tree under test: $SCRIPT_DIR @ ${_tree_desc}, loaded with --plugin-dir${INSTALLED_PLUGIN_SHA:+ — which displaces the installed copy ${INSTALLED_PLUGIN_SHA:0:7}}. Every flow runs THIS tree and no eval is skipped for skew; pass --installed-plugin for a QA run against the plugin users have."
+  if [[ "$EVAL_HOST" == "copilot" ]]; then
+    # Claude's installed copy is not in a Copilot session, so nothing is
+    # displaced, and there is no QA mode to point at.
+    PLUGIN_BANNER="Working tree under test: $SCRIPT_DIR @ ${_tree_desc}, loaded into GitHub Copilot CLI with --plugin-dir. Every flow runs THIS tree and no eval is skipped for skew."
+  else
+    PLUGIN_BANNER="Working tree under test: $SCRIPT_DIR @ ${_tree_desc}, loaded with --plugin-dir${INSTALLED_PLUGIN_SHA:+ — which displaces the installed copy ${INSTALLED_PLUGIN_SHA:0:7}}. Every flow runs THIS tree and no eval is skipped for skew; pass --installed-plugin for a QA run against the plugin users have."
+  fi
 fi
 # `--bare` and `--plugin-dir` are mutually exclusive by design: `claude --help`
 # lists `--plugin-dir` among the things `--bare` skips, alongside hooks. The
 # single-turn flow is the only one that ever passes `--bare`, and only when
 # ANTHROPIC_API_KEY is set — so say which way each flow goes rather than
 # implying one answer covers all three.
-if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+if [[ "$EVAL_HOST" == "copilot" ]]; then
+  PLUGIN_BANNER="$PLUGIN_BANNER
+  note: host copilot — the plugin above is live in EVERY flow (Copilot has no --bare${ANTHROPIC_API_KEY:+, and ANTHROPIC_API_KEY is ignored}); single-turn evals additionally get this tree's SKILL.md as a preamble on the prompt, since Copilot has no system-prompt flag."
+elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   PLUGIN_BANNER="$PLUGIN_BANNER
   note: ANTHROPIC_API_KEY is set, so single-turn evals run --bare — NO plugin and NO hooks, only this tree's SKILL.md injected as a system prompt; their metrics record \`bare:no-plugin\` rather than the line above. The edit and two-turn flows never pass --bare and are unaffected."
 else
@@ -714,6 +876,7 @@ REPORT="$RESULTS_DIR/report.md"
 cat > "$REPORT" <<EOF
 # Eval Report — $TIMESTAMP
 
+- Host: \`$EVAL_HOST\` (\`$HOST_BIN\`)
 - Model under test: \`$MODEL\`  ·  grader: \`$GRADER_MODEL\`
 - Per-eval cost and usage: \`*_metrics.json\` beside each transcript.
 
@@ -730,15 +893,26 @@ echo ""
 # ---------------------------------------------------------------------------
 # Build session context that evals expect to be present
 # ---------------------------------------------------------------------------
-SESSION_CONTEXT="BLE project root: $BLE_ROOT
-Primary test ELF: $BLE_ELF
-plugin dir: $SCRIPT_DIR"
+# The roots as the MODEL must see them (AAD-7791). The harness works in the
+# shell's spelling (`/c/Playground/BLE` under Git Bash) and keeps it for every
+# `cd`, `cp` and `diff` below; Claude Code's Bash tool reads that spelling too.
+# Copilot's shell tool on Windows is PowerShell, where `/c/…` is not a path,
+# and its path guard resolves `/c/…` as `C:\c\…` — so every path that reaches
+# the model (the session context here, the prompt placeholders further down,
+# the EXPECTED/EXPECTATIONS text the grader compares against) is handed over
+# in the host's spelling. On the Claude host these are the same strings.
+MODEL_BLE_ROOT=$(host_path "$BLE_ROOT")
+MODEL_STALE_ROOT=$(host_path "$STALE_ROOT")
+MODEL_FRESH_BLE_ROOT=$(host_path "$FRESH_BLE_ROOT")
+SESSION_CONTEXT="BLE project root: $MODEL_BLE_ROOT
+Primary test ELF: $(host_path "$BLE_ELF")
+plugin dir: $(host_path "$SCRIPT_DIR")"
 # The recipe line the session block of an initialized project carries (T14).
 if [[ -f "$BLE_RECIPE" ]]; then
   _ble_target=$(sed -n '/^target:/{s/^target:[[:space:]]*//;p;q;}' "$BLE_RECIPE" | tr -d '\r')
   SESSION_CONTEXT="$SESSION_CONTEXT
 LOCI target: ${_ble_target:-unknown}
-recipe: $BLE_RECIPE"
+recipe: $(host_path "$BLE_RECIPE")"
 fi
 if [[ -n "$STALE_ROOT" ]]; then
   # The stale-artifact evals need a resolved LOCI target the way a real session
@@ -756,10 +930,10 @@ if [[ -n "$STALE_ROOT" ]]; then
   # generate a context file for this fixture), and the skills read the target off
   # the `LOCI target:` line exactly as before.
   SESSION_CONTEXT="$SESSION_CONTEXT
-Stale-artifact fixture root: $STALE_ROOT
+Stale-artifact fixture root: $MODEL_STALE_ROOT
   Compiler: arm-none-eabi-gcc, Build: make
   LOCI target: armv6-m
-  recipe: $STALE_ROOT/.loci/build.yaml"
+  recipe: $MODEL_STALE_ROOT/.loci/build.yaml"
 fi
 
 # ---------------------------------------------------------------------------
@@ -784,7 +958,7 @@ print_error_detail() {
 
   case "$STAGE" in
     claude-exec)
-      echo "    Observed: claude CLI exited with code $EXIT_CODE"
+      echo "    Observed: $HOST_BIN CLI exited with code $EXIT_CODE"
       if [[ -n "$STDERR_F" && -s "$STDERR_F" ]]; then
         echo "    Stderr (first 5 lines):"
         head -5 "$STDERR_F" | sed 's/^/      /'
@@ -794,11 +968,11 @@ print_error_detail() {
       echo "    Likely causes:"
       echo "      • Auth failure or expired API key"
       echo "      • Token / rate-limit exhaustion"
-      echo "      • Network or DNS error reaching Anthropic API"
+      echo "      • Network or DNS error reaching the $([[ "$EVAL_HOST" == copilot ]] && echo "GitHub Copilot" || echo "Anthropic") API"
       echo "      • MCP server unreachable (config: ${MCP_CFG:-unknown})"
-      echo "      • Claude CLI bug or version mismatch"
+      echo "      • $HOST_BIN CLI bug or version mismatch"
       echo "    Next steps:"
-      echo "      1. Run 'claude -p \"hello\"' manually to verify auth"
+      echo "      1. Run '$HOST_BIN -p \"hello\"' manually to verify auth"
       if [[ -n "$STDERR_F" && -s "$STDERR_F" ]]; then
         echo "      2. Inspect full stderr: cat $STDERR_F"
       fi
@@ -817,17 +991,17 @@ print_error_detail() {
       echo "      3. Try a minimal prompt to isolate the hang"
       ;;
     empty-response)
-      echo "    Observed: claude exited 0 but produced no output"
+      echo "    Observed: $HOST_BIN exited 0 but produced no output"
       echo "    Likely causes:"
       echo "      • Prompt triggered a content refusal with no text output"
       echo "      • System prompt conflict suppressing all output"
-      echo "      • Claude CLI piping issue swallowing stdout"
+      echo "      • $HOST_BIN CLI piping issue swallowing stdout"
       echo "    Next steps:"
-      echo "      1. Run the prompt manually: claude -p \"<prompt>\" to see raw output"
+      echo "      1. Run the prompt manually: $HOST_BIN -p \"<prompt>\" to see raw output"
       echo "      2. Simplify the system prompt and retry"
       ;;
     grade)
-      echo "    Observed: grader claude call failed (exit $EXIT_CODE)"
+      echo "    Observed: grader $HOST_BIN call failed (exit $EXIT_CODE)"
       if [[ -n "$STDERR_F" && -s "$STDERR_F" ]]; then
         echo "    Stderr (first 5 lines):"
         head -5 "$STDERR_F" | sed 's/^/      /'
@@ -878,11 +1052,12 @@ dry_run_report() {
   local TAG="$1" FLOW="$2" OUT="$3" LOG="$4" VERDICT="$5"; shift 5
   {
     echo "flow:  $FLOW"
+    echo "host:  $EVAL_HOST"
     echo "model: $MODEL"
-    echo "argv:  claude $*"
+    echo "argv:  $HOST_BIN $*"
   } > "$OUT"
-  echo "[dry-run] $TAG ($FLOW) → claude $*" >> "$LOG"
-  echo "DRY_RUN|argv resolved, claude never called ($FLOW, --model $MODEL)" > "$VERDICT"
+  echo "[dry-run] $TAG ($FLOW) → $HOST_BIN $*" >> "$LOG"
+  echo "DRY_RUN|argv resolved, $HOST_BIN never called ($FLOW, --model $MODEL)" > "$VERDICT"
 }
 
 run_one_eval() {
@@ -1108,15 +1283,28 @@ run_one_eval() {
     # NON-bare: plugin + hooks must load. stream-json carries every turn.
     # `--plugin-dir` makes that plugin THIS tree unless --installed-plugin was
     # passed; --bare is never used here, so the flag is always live.
-    local C_ARGS=(-p --model "$MODEL" --dangerously-skip-permissions --output-format stream-json --verbose)
-    C_ARGS+=(${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"})
-    [[ -n "$MCP_CONFIG" ]] && C_ARGS+=(--mcp-config "$MCP_CONFIG")
+    # Per host (AAD-7791): the Claude branch is the argv this flow has always
+    # built; the Copilot branch is its mapping, documented in the header.
+    # PLAN_TURN is appended to turn 1 and RESUME_TURN to turn 2.
+    local C_ARGS=() PLAN_TURN=() RESUME_TURN=()
+    if [[ "$EVAL_HOST" == "copilot" ]]; then
+      C_ARGS=(--model "$MODEL" --allow-all-tools --allow-all-paths --output-format json)
+      C_ARGS+=(${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"})
+      C_ARGS+=(--log-level all --log-dir "$(host_path "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_copilot-logs")")
+      PLAN_TURN=(--plan "${COPILOT_PLAN_DENY[@]}")
+      RESUME_TURN=(--mode interactive)
+    else
+      C_ARGS=(-p --model "$MODEL" --dangerously-skip-permissions --output-format stream-json --verbose)
+      C_ARGS+=(${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"})
+      [[ -n "$MCP_CONFIG" ]] && C_ARGS+=(--mcp-config "$MCP_CONFIG")
+      PLAN_TURN=(--permission-mode plan "${PLAN_MODE_DENY[@]}")
+      RESUME_TURN=(--permission-mode acceptEdits)
+    fi
 
     if $DRY_RUN; then
       dry_run_report "$TAG" two-turn \
         "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_dryrun.txt" \
-        "$LOG_FILE" "$VERDICT_FILE" "${C_ARGS[@]}" --permission-mode plan \
-        "${PLAN_MODE_DENY[@]}"
+        "$LOG_FILE" "$VERDICT_FILE" "${C_ARGS[@]}" "${PLAN_TURN[@]}"
       echo "${PROG_PFX} DONE     ${TAG}  DRY_RUN" >> "$PROGRESS_LOG"
       return
     fi
@@ -1133,15 +1321,14 @@ run_one_eval() {
     echo "${PROG_PFX} RUNNING  ${TAG}  [turn1/plan]" >> "$PROGRESS_LOG"
     local T1_EXIT=0 T1_START T1_END
     T1_START=$(date +%s)
-    ( cd "$BLE_ROOT" && echo "$PROMPT" | timeout --kill-after=10 "$EVAL_TIMEOUT" \
-        claude "${C_ARGS[@]}" --permission-mode plan \
-        "${PLAN_MODE_DENY[@]}" ) >"$T1_JSON" 2>"$STDERR_FILE" || T1_EXIT=$?
+    ( cd "$BLE_ROOT" && echo "$PROMPT" | with_timeout "$EVAL_TIMEOUT" \
+        "$HOST_BIN" "${C_ARGS[@]}" "${PLAN_TURN[@]}" ) >"$T1_JSON" 2>"$STDERR_FILE" || T1_EXIT=$?
     T1_END=$(date +%s)
     log_eval "turn1 exit $T1_EXIT after $((T1_END - T1_START))s"
 
     local SID R1=""
-    SID=$(jq -rs '[.[]|select(.type=="system" and .subtype=="init")|.session_id]|last // empty' "$T1_JSON" 2>/dev/null || true)
-    R1=$(jq -rs '[.[]|select(.type=="assistant")|.message.content[]?|select(.type=="text")|.text]|join("\n")' "$T1_JSON" 2>/dev/null || true)
+    SID=$(transcript_session_id "$T1_JSON")
+    R1=$(transcript_text "$T1_JSON")
     log_eval "turn1 session_id: ${SID:-<none>}, response ${#R1} chars"
 
     # Guard: plan mode must NOT have written anything — and if it did, that is
@@ -1180,11 +1367,11 @@ run_one_eval() {
       echo "${PROG_PFX} RUNNING  ${TAG}  [turn2/edit]" >> "$PROGRESS_LOG"
       local T2_START T2_END
       T2_START=$(date +%s)
-      ( cd "$BLE_ROOT" && echo "$APPROVE_PROMPT" | timeout --kill-after=10 "$EVAL_TIMEOUT" \
-          claude "${C_ARGS[@]}" --resume "$SID" --permission-mode acceptEdits ) >"$T2_JSON" 2>>"$STDERR_FILE" || T2_EXIT=$?
+      ( cd "$BLE_ROOT" && echo "$APPROVE_PROMPT" | with_timeout "$EVAL_TIMEOUT" \
+          "$HOST_BIN" "${C_ARGS[@]}" --resume "$SID" "${RESUME_TURN[@]}" ) >"$T2_JSON" 2>>"$STDERR_FILE" || T2_EXIT=$?
       T2_END=$(date +%s)
-      R2=$(jq -rs '[.[]|select(.type=="assistant")|.message.content[]?|select(.type=="text")|.text]|join("\n")' "$T2_JSON" 2>/dev/null || true)
-      T2_TOOLS=$(jq -rs '[.[]|select(.type=="assistant")|.message.content[]?|select(.type=="tool_use")|.name]|unique|join(", ")' "$T2_JSON" 2>/dev/null || true)
+      R2=$(transcript_text "$T2_JSON")
+      T2_TOOLS=$(transcript_tool_names "$T2_JSON")
       log_eval "turn2 exit $T2_EXIT after $((T2_END - T2_START))s, response ${#R2} chars"
       log_eval "turn2 tools: ${T2_TOOLS:-<none>}"
     else
@@ -1286,14 +1473,24 @@ $R2"
     # and the auto-run rule fires post-edit. stream-json carries every turn.
     # `--plugin-dir` makes those THIS tree's hooks unless --installed-plugin was
     # passed — which is the whole reason this flow can now run on a branch.
-    local C_ARGS=(-p --model "$MODEL" --dangerously-skip-permissions --output-format stream-json --verbose)
-    C_ARGS+=(${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"})
-    [[ -n "$MCP_CONFIG" ]] && C_ARGS+=(--mcp-config "$MCP_CONFIG")
+    # Per host (AAD-7791), as in the two-turn flow. Copilot needs no
+    # acceptEdits counterpart: `--allow-all-tools` already lets the edit land.
+    local C_ARGS=() EDIT_TURN=()
+    if [[ "$EVAL_HOST" == "copilot" ]]; then
+      C_ARGS=(--model "$MODEL" --allow-all-tools --allow-all-paths --output-format json)
+      C_ARGS+=(${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"})
+      C_ARGS+=(--log-level all --log-dir "$(host_path "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_copilot-logs")")
+    else
+      C_ARGS=(-p --model "$MODEL" --dangerously-skip-permissions --output-format stream-json --verbose)
+      C_ARGS+=(${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"})
+      [[ -n "$MCP_CONFIG" ]] && C_ARGS+=(--mcp-config "$MCP_CONFIG")
+      EDIT_TURN=(--permission-mode acceptEdits)
+    fi
 
     if $DRY_RUN; then
       dry_run_report "$TAG" edit \
         "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_dryrun.txt" \
-        "$LOG_FILE" "$VERDICT_FILE" "${C_ARGS[@]}" --permission-mode acceptEdits
+        "$LOG_FILE" "$VERDICT_FILE" "${C_ARGS[@]}" ${EDIT_TURN[@]+"${EDIT_TURN[@]}"}
       echo "${PROG_PFX} DONE     ${TAG}  DRY_RUN" >> "$PROGRESS_LOG"
       return
     fi
@@ -1302,14 +1499,14 @@ $R2"
     echo "${PROG_PFX} RUNNING  ${TAG}  [edit]" >> "$PROGRESS_LOG"
     local E_EXIT=0 E_START E_END
     E_START=$(date +%s)
-    ( cd "$BLE_ROOT" && echo "$PROMPT" | timeout --kill-after=10 "$EVAL_TIMEOUT" \
-        claude "${C_ARGS[@]}" --permission-mode acceptEdits ) >"$JSON_FILE" 2>"$STDERR_FILE" || E_EXIT=$?
+    ( cd "$BLE_ROOT" && echo "$PROMPT" | with_timeout "$EVAL_TIMEOUT" \
+        "$HOST_BIN" "${C_ARGS[@]}" ${EDIT_TURN[@]+"${EDIT_TURN[@]}"} ) >"$JSON_FILE" 2>"$STDERR_FILE" || E_EXIT=$?
     E_END=$(date +%s)
     log_eval "edit turn exit $E_EXIT after $((E_END - E_START))s"
 
     local RESPONSE E_TOOLS
-    RESPONSE=$(jq -rs '[.[]|select(.type=="assistant")|.message.content[]?|select(.type=="text")|.text]|join("\n")' "$JSON_FILE" 2>/dev/null || true)
-    E_TOOLS=$(jq -rs '[.[]|select(.type=="assistant")|.message.content[]?|select(.type=="tool_use")|.name]|unique|join(", ")' "$JSON_FILE" 2>/dev/null || true)
+    RESPONSE=$(transcript_text "$JSON_FILE")
+    E_TOOLS=$(transcript_tool_names "$JSON_FILE")
     log_eval "edit turn tools: ${E_TOOLS:-<none>}, response ${#RESPONSE} chars"
 
     # The whole point is "post-edit fires AFTER a change" — confirm an edit
@@ -1363,7 +1560,43 @@ $R2"
   # --bare skips hooks/plugins so eval measures the skill, not setup overhead.
   # NOTE: --bare disables OAuth/keychain auth — only use it when ANTHROPIC_API_KEY
   # is set (API billing). With browser-based OAuth, omit --bare so auth works.
-  local CLAUDE_ARGS=(-p --model "$MODEL" --dangerously-skip-permissions)
+  # Per host (AAD-7791). The Claude branch below is the argv this flow has
+  # always built, line for line; the Copilot branch is its mapping (see the
+  # header). PROMPT_SENT is what reaches the model: the prompt itself, or on
+  # Copilot — which has no system-prompt flag — the SKILL.md system prompt as a
+  # preamble on it.
+  local CLAUDE_ARGS=() PROMPT_SENT="$PROMPT"
+  local FLOW_PLUGIN="$PLUGIN_UNDER_TEST"
+  local JSON_FILE="$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_full.json"
+  if [[ "$EVAL_HOST" == "copilot" ]]; then
+    CLAUDE_ARGS=(--model "$MODEL" --allow-all-tools --allow-all-paths)
+    if $PLAN_MODE; then
+      # Copilot's plan mode: the `[[PLAN]]` prefix the preflight skill's
+      # Copilot clause gates on, and a real write block until approval.
+      CLAUDE_ARGS+=(--plan)
+    fi
+    CLAUDE_ARGS+=(${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"})
+    CLAUDE_ARGS+=(--output-format json --log-level all \
+                  --log-dir "$(host_path "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_copilot-logs")")
+    if [[ -n "$SYSTEM_PROMPT" ]]; then
+      # Recorded under the same name as Claude's system-prompt file, so a
+      # reader of eval-results/ finds the text the model was given in one
+      # place on both hosts. It travels on stdin, so Windows' 32,767-char
+      # command-line cap (the reason Claude gets a FILE) does not apply.
+      local SYSPROMPT_FILE="$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_sysprompt.txt"
+      printf '%s' "$SYSTEM_PROMPT" > "$SYSPROMPT_FILE"
+      PROMPT_SENT="$SYSTEM_PROMPT"$'\n\n'"--- EVAL PROMPT ---"$'\n'"$PROMPT"
+    fi
+    # …and the exact text piped to the model, since on this host it is not
+    # the eval's prompt alone. Written in the dry run too, where it is the
+    # only record of the composition.
+    printf '%s' "$PROMPT_SENT" > "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_prompt_sent.txt"
+    # LAST, for the same reason as Claude's deny list: variadic.
+    if $PLAN_MODE; then
+      CLAUDE_ARGS+=("${COPILOT_PLAN_DENY[@]}")
+    fi
+  else
+  CLAUDE_ARGS=(-p --model "$MODEL" --dangerously-skip-permissions)
   if $PLAN_MODE; then
     # Headless equivalent of typing /plan in an interactive session — puts the
     # run in plan mode so the preflight skill's "MANDATORY in /plan mode" gate
@@ -1373,7 +1606,6 @@ $R2"
   # `--bare` skips plugins entirely — `--plugin-dir` included, per `claude
   # --help` — so the two are exclusive and the metrics must not claim a plugin
   # answered when none did. FLOW_PLUGIN is what this call actually loaded.
-  local FLOW_PLUGIN="$PLUGIN_UNDER_TEST"
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     CLAUDE_ARGS+=(--bare)
     FLOW_PLUGIN="bare:no-plugin"
@@ -1411,7 +1643,6 @@ $R2"
   # per line), which the `-s`-slurped queries below grade correctly. stream-json
   # REQUIRES --verbose, so it's always on here (gated $VERBOSE only adds the
   # stderr debug echo).
-  local JSON_FILE="$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_full.json"
   CLAUDE_ARGS+=(--output-format stream-json --verbose)
 
   # LAST, and only for plan mode. `--disallowedTools` takes a variadic list, so
@@ -1419,6 +1650,7 @@ $R2"
   # same position the two-turn flow's first turn has always used.
   if $PLAN_MODE; then
     CLAUDE_ARGS+=("${PLAN_MODE_DENY[@]}")
+  fi
   fi
 
   if $DRY_RUN; then
@@ -1429,7 +1661,7 @@ $R2"
     return
   fi
 
-  log_eval "Executing: timeout ${EVAL_TIMEOUT}s claude ${CLAUDE_ARGS[*]:0:6} ..."
+  log_eval "Executing: timeout ${EVAL_TIMEOUT}s $HOST_BIN ${CLAUDE_ARGS[*]:0:6} ..."
   echo "${PROG_PFX} RUNNING  ${TAG}" >> "$PROGRESS_LOG"
 
   # The session opens IN the project the eval is about. session-init arms on the
@@ -1440,7 +1672,9 @@ $R2"
   # The stale-fixture evals run from their staged tree, every other eval from
   # BLE_ROOT — the directory the edit and two-turn flows already use.
   local EVAL_CWD="$BLE_ROOT"
-  if [[ -n "$STALE_ROOT" && "$PROMPT" == *"$STALE_ROOT"* ]]; then EVAL_CWD="$STALE_ROOT"; fi
+  # The prompt carries the MODEL's spelling of the root (MODEL_STALE_ROOT),
+  # the cwd the harness's own.
+  if [[ -n "$STALE_ROOT" && "$PROMPT" == *"$MODEL_STALE_ROOT"* ]]; then EVAL_CWD="$STALE_ROOT"; fi
   log_eval "cwd: $EVAL_CWD"
 
   # A single-turn eval that names a file gets the same explicit backup the edit
@@ -1474,12 +1708,12 @@ $R2"
   local CLAUDE_EXIT=0
   local T_START T_END T_ELAPSED
   T_START=$(date +%s)
-  ( cd "$EVAL_CWD" && echo "$PROMPT" | timeout --kill-after=10 "$EVAL_TIMEOUT" claude "${CLAUDE_ARGS[@]}" ) \
+  ( cd "$EVAL_CWD" && echo "$PROMPT_SENT" | with_timeout "$EVAL_TIMEOUT" "$HOST_BIN" "${CLAUDE_ARGS[@]}" ) \
     >"$RESPONSE_FILE" 2>"$STDERR_FILE" || CLAUDE_EXIT=$?
   T_END=$(date +%s)
   T_ELAPSED=$((T_END - T_START))
 
-  log_eval "claude exited with code $CLAUDE_EXIT after ${T_ELAPSED}s"
+  log_eval "$HOST_BIN exited with code $CLAUDE_EXIT after ${T_ELAPSED}s"
 
   # ── Hermetic, HERE — before the timeout, non-zero-exit and empty-response
   #    returns below, all three of which used to leave the fixture dirty.
@@ -1531,17 +1765,16 @@ $R2"
     # and then keep narrating; the final-turn `.result` alone would miss it.
     # Joining all assistant text mirrors what a user sees in an interactive
     # session. Fall back to `.result` only if no assistant text was captured.
-    RESPONSE=$(jq -rs '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | join("\n")' "$JSON_FILE" 2>/dev/null || true)
+    # Host-aware readers (lib/eval-metrics.sh); the Claude branches are the jq
+    # that ran here before the host split.
+    RESPONSE=$(transcript_text "$JSON_FILE")
     if [[ -z "$RESPONSE" ]]; then
-      RESPONSE=$(jq -rs '[.[] | select(.type == "result") | .result // empty] | last // empty' "$JSON_FILE" 2>/dev/null || true)
+      RESPONSE=$(transcript_result_text "$JSON_FILE")
     fi
 
     # Log tool usage from assistant messages
     local tool_summary
-    tool_summary=$(jq -rs '
-      [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") | .name] |
-      if length > 0 then "Tools (" + (length | tostring) + "): " + (. | join(", ")) else empty end
-    ' "$JSON_FILE" 2>/dev/null || true)
+    tool_summary=$(transcript_tool_summary "$JSON_FILE")
     if [[ -n "$tool_summary" ]]; then
       log_eval "$tool_summary"
     fi
@@ -1551,6 +1784,14 @@ $R2"
     # grader only ever saw assistant text — so a model that merely narrated "the ELF
     # looks older, I'll relink" passed, while one that ran the gate silently failed.
     # Bash commands and file paths are what those assertions are actually about.
+    # The Copilot branch folds a multi-line command to one line (` ; `), as
+    # `tool_calls_of` always has for the two-turn grader; the Claude program
+    # below is kept verbatim and does not, so a multi-line Bash command renders
+    # differently per host here. Accepted: the Claude text must not move.
+    if [[ "$EVAL_HOST" == "copilot" ]]; then
+      TOOL_CALLS=$(transcript_tool_calls "(no tool calls)" "$JSON_FILE")
+      [[ -n "$TOOL_CALLS" ]] || TOOL_CALLS="(tool calls unavailable)"
+    else
     TOOL_CALLS=$(jq -rs '
       [ .[] | select(.type == "assistant") | .message.content[]?
         | select(.type == "tool_use")
@@ -1559,13 +1800,11 @@ $R2"
       | if length > 0 then join("
 ") else "(no tool calls)" end
     ' "$JSON_FILE" 2>/dev/null || echo "(tool calls unavailable)")
+    fi
 
     # Log cost/usage from result event
     local usage_info
-    usage_info=$(jq -rs '
-      .[] | select(.type == "result") |
-      "Turns: \(.num_turns // "?"), Cost: $\(.total_cost_usd // "?"), Duration: \((.duration_ms // 0) / 1000 | floor)s, Stop: \(.stop_reason // "?")"
-    ' "$JSON_FILE" 2>/dev/null || true)
+    usage_info=$(transcript_usage_line "$JSON_FILE")
     if [[ -n "$usage_info" ]]; then
       log_eval "$usage_info"
     fi
@@ -1604,7 +1843,7 @@ $R2"
       log_eval "--- end stderr ---"
     fi
   else
-    log_eval "Stderr: (empty — claude produced no diagnostic output)"
+    log_eval "Stderr: (empty — $HOST_BIN produced no diagnostic output)"
   fi
 
   if [[ $CLAUDE_EXIT -ne 0 ]]; then
@@ -1622,16 +1861,16 @@ $R2"
         "eval exceeded ${EVAL_TIMEOUT}s (killed after ${T_ELAPSED}s, partial: ${partial_bytes}B)" \
         "ERROR (timeout ${T_ELAPSED}s)"
     else
-      log_eval "ERROR: claude exited with code $CLAUDE_EXIT"
+      log_eval "ERROR: $HOST_BIN exited with code $CLAUDE_EXIT"
       print_error_detail "claude-exec" "$CLAUDE_EXIT" "$STDERR_FILE" "$TAG" "$MCP_CONFIG" "$RESPONSE_FILE" >> "$LOG_FILE" 2>&1
-      write_verdict "ERROR" "claude exited with code $CLAUDE_EXIT" \
+      write_verdict "ERROR" "$HOST_BIN exited with code $CLAUDE_EXIT" \
         "ERROR (exit ${CLAUDE_EXIT})"
     fi
     return
   fi
 
   if [[ -z "$RESPONSE" ]]; then
-    log_eval "ERROR: claude exited 0 but returned empty response"
+    log_eval "ERROR: $HOST_BIN exited 0 but returned empty response"
     print_error_detail "empty-response" "0" "" "$TAG" "$MCP_CONFIG" "$RESPONSE_FILE" >> "$LOG_FILE" 2>&1
     write_verdict "ERROR" "empty response despite exit code 0" "ERROR (empty response)"
     return
@@ -1703,12 +1942,18 @@ REASON: <one-line summary>"
 
     local GRADE_STDERR_FILE="$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_grade_stderr.txt"
     local GRADE GRADE_EXIT=0
-    local GRADER_BARE_FLAG=()
-    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-      GRADER_BARE_FLAG=(--bare)
+    # The grader runs on the configured host too (AAD-7791): `claude -p
+    # [--bare]` as always, or `copilot -s` — "output only the agent response
+    # (no stats)", the plain text the VERDICT:/REASON: parse below reads. The
+    # prompt is piped on both.
+    local GRADER_HOST_FLAGS=(-p)
+    if [[ "$EVAL_HOST" == "copilot" ]]; then
+      GRADER_HOST_FLAGS=(-s)
+    elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+      GRADER_HOST_FLAGS+=(--bare)
     fi
     T_START=$(date +%s)
-    GRADE=$(echo "$GRADE_PROMPT" | timeout --kill-after=10 "$GRADE_TIMEOUT" claude -p ${GRADER_BARE_FLAG[@]+"${GRADER_BARE_FLAG[@]}"} --model "$GRADER_MODEL" 2>"$GRADE_STDERR_FILE") || GRADE_EXIT=$?
+    GRADE=$(echo "$GRADE_PROMPT" | timeout --kill-after=10 "$GRADE_TIMEOUT" "$HOST_BIN" "${GRADER_HOST_FLAGS[@]}" --model "$GRADER_MODEL" 2>"$GRADE_STDERR_FILE") || GRADE_EXIT=$?
     T_END=$(date +%s)
     T_ELAPSED=$((T_END - T_START))
 
@@ -1841,8 +2086,8 @@ for EVAL_FILE in $EVAL_FILES; do
   SKILL_MD="$SKILL_DIR/SKILL.md"
   SYSTEM_PROMPT=""
   if [[ -f "$SKILL_MD" ]]; then
-    # Inline the shared runtime contract. Every SKILL.md opens by telling the model
-    # to read `<plugin-dir>/skills/_shared/loci-runtime-contract.md`, but an eval
+    # Inline the shared house rules. Every SKILL.md opens by telling the model
+    # to read `<plugin-dir>/skills/_shared/house-rules.md`, but an eval
     # has no session context to resolve `<plugin-dir>` from — so anything the
     # contract owns (Step 0 Pattern B's artifact selection and freshness gate, the
     # arch gate, the envelope rules) was silently absent from every eval, and an
@@ -1853,9 +2098,9 @@ for EVAL_FILE in $EVAL_FILES; do
 $SESSION_CONTEXT
 --- END SESSION CONTEXT ---
 
---- SHARED RUNTIME CONTRACT (referenced by the skill as <plugin-dir>/skills/_shared/loci-runtime-contract.md) ---
-$(cat "$SCRIPT_DIR/skills/_shared/loci-runtime-contract.md" 2>/dev/null)
---- END SHARED RUNTIME CONTRACT ---
+--- SHARED HOUSE RULES (referenced by the skill as <plugin-dir>/skills/_shared/house-rules.md) ---
+$(cat "$SCRIPT_DIR/skills/_shared/house-rules.md" 2>/dev/null)
+--- END SHARED HOUSE RULES ---
 
 --- SKILL INSTRUCTIONS ---
 $(cat "$SKILL_MD")
@@ -2028,13 +2273,21 @@ $(cat "$SKILL_MD")
     # Order between the three does not matter: no placeholder is a substring of
     # another, so none can eat another's name. The skips above guarantee the
     # staged roots are non-empty whenever an eval mentions them.
-    for _var in PROMPT EXPECTED EXPECTATIONS APPROVE_PROMPT SOURCE_FILE; do
+    #
+    # Two spellings (AAD-7791): the four fields the MODEL and the grader read
+    # get the host's (`MODEL_*`, see SESSION_CONTEXT); `source_file`, which only
+    # the harness's own `cp`/`diff` use, keeps the shell's. Same strings on the
+    # Claude host.
+    for _var in PROMPT EXPECTED EXPECTATIONS APPROVE_PROMPT; do
       _val="${!_var}"
-      _val="${_val//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
-      _val="${_val//\$LOCI_TEST_STALE_ROOT/$STALE_ROOT}"
-      _val="${_val//\$LOCI_TEST_BLE_FRESH/$FRESH_BLE_ROOT}"
+      _val="${_val//\$LOCI_TEST_BLE_ROOT/$MODEL_BLE_ROOT}"
+      _val="${_val//\$LOCI_TEST_STALE_ROOT/$MODEL_STALE_ROOT}"
+      _val="${_val//\$LOCI_TEST_BLE_FRESH/$MODEL_FRESH_BLE_ROOT}"
       printf -v "$_var" '%s' "$_val"
     done
+    SOURCE_FILE="${SOURCE_FILE//\$LOCI_TEST_BLE_ROOT/$BLE_ROOT}"
+    SOURCE_FILE="${SOURCE_FILE//\$LOCI_TEST_STALE_ROOT/$STALE_ROOT}"
+    SOURCE_FILE="${SOURCE_FILE//\$LOCI_TEST_BLE_FRESH/$FRESH_BLE_ROOT}"
 
     JOB_SKILLS+=("$SKILL_NAME")
     JOB_IDS+=("$EVAL_ID")
@@ -2111,7 +2364,7 @@ fi
 # stale — so sd-5 could pass without ever detecting staleness.
 if [[ -n "$STALE_ROOT" && $MAX_JOBS -ne 1 ]]; then
   for (( j=0; j<${#JOB_PROMPTS[@]}; j++ )); do
-    if [[ "${JOB_PROMPTS[$j]}" == *"$STALE_ROOT"* ]]; then
+    if [[ "${JOB_PROMPTS[$j]}" == *"$MODEL_STALE_ROOT"* ]]; then
       echo -e "${YELLOW}NOTE: stale-artifact evals share one tree — forcing sequential (-j 1).${NC}"
       MAX_JOBS=1
       break
@@ -2295,7 +2548,7 @@ cat >> "$REPORT" <<EOF
 - Blocked: $BLOCKED  (preflight invoked but couldn't analyze — environment/setup gap, not a skill fail)
 - Skipped: ${#SKIPPED_EVALS[@]}  (did NOT run — reason per eval below)
 - Errors: $ERRORED
-- Dry-run: $DRY  (argv resolved, claude never called)
+- Dry-run: $DRY  (argv resolved, $HOST_BIN never called)
 
 ### Provenance
 
@@ -2346,7 +2599,7 @@ if [[ ${#SKIPPED_EVALS[@]} -gt 0 ]]; then
 fi
 echo -e "  ${YELLOW}Errors:  $ERRORED${NC}"
 if (( DRY > 0 )); then
-  echo -e "  ${CYAN}Dry-run: $DRY${NC}  (argv resolved, claude never called — nothing billed)"
+  echo -e "  ${CYAN}Dry-run: $DRY${NC}  (argv resolved, $HOST_BIN never called — nothing billed)"
 fi
 echo ""
 echo -e "  ${BOLD}$MATCH_LINE${NC}"

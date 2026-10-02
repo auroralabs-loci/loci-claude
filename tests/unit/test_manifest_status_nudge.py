@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.copilot_payloads import current as _host
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 NUDGE = PLUGIN_ROOT / "hooks" / "manifest-status-nudge.sh"
 
@@ -38,7 +40,13 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-pytestmark = pytest.mark.skipif(_find_bash() is None, reason="bash required")
+# Every test runs under both hosts (AAD-7790). Copilot sends no `prompt_id`, so
+# the hook captures stdin and injects the turn id recorded at UserPromptSubmit
+# (AAD-7781) before re-feeding it to the verb; and because Copilot's Stop reply
+# reaches nobody, the verb's `systemMessage` is also recorded for the next
+# prompt (`_carry_record` below, AAD-7783). The document itself goes out as it is.
+pytestmark = [pytest.mark.skipif(_find_bash() is None, reason="bash required"),
+              pytest.mark.usefixtures("host")]
 
 
 def _to_bash_path(p: Path) -> str:
@@ -74,10 +82,22 @@ def _run(project_dir: Path, *, fake_loci: str | None = None) -> tuple[int, dict 
     # the `systemMessage` carries an em-dash), and `text=True` alone decodes with
     # the locale codec -- cp1252 on Windows, where `—` arrived as `â€”` and this
     # test was red on every Windows clone.
+    host = _host()
+    payload = host.respell({"cwd": _to_bash_path(project_dir), "prompt_id": "t-1"},
+                           event="Stop")
+    env.update(host.env(project=_to_bash_path(project_dir)))
+    if host.copilot:
+        # The state directory, spelled for bash: `HOME` above is a native path
+        # (what the hook appends `/.local/bin` to), and under Copilot the hook
+        # also READS the turn record and WRITES the carry here. Claude Code's
+        # run touches no state and keeps its env.
+        env["LOCI_STATE_DIR"] = _to_bash_path(_state_dir(project_dir))
+    host.seed(_state_dir(project_dir))
     proc = subprocess.run(
         [_find_bash(), _to_bash_path(NUDGE)],
-        input=json.dumps({"cwd": _to_bash_path(project_dir), "prompt_id": "t-1"}),
+        input=json.dumps(payload),
         capture_output=True, text=True, encoding="utf-8", timeout=30, env=env,
+        cwd=host.cwd(None),
     )
     out = proc.stdout.strip()
     if not out:
@@ -88,6 +108,18 @@ def _run(project_dir: Path, *, fake_loci: str | None = None) -> tuple[int, dict 
         return proc.returncode, out
 
 
+def _state_dir(project_dir: Path) -> Path:
+    """The LOCI state directory a Copilot run of the hook reads and writes."""
+    return project_dir / "_fakehome" / ".loci" / "state"
+
+
+def _carry_record(project_dir: Path) -> str | None:
+    """The message the hook recorded for the next prompt under Copilot
+    (`turn-<session_id>.nudge-manifest`, first line an age stamp — AAD-7783),
+    or None when it recorded nothing. Always None under Claude Code."""
+    return _host().carried(_state_dir(project_dir), "manifest")
+
+
 # ── silence, which is the common case (a fully patched turn) ────────────────
 
 def test_a_clean_turn_is_silent(tmp_path):
@@ -95,6 +127,7 @@ def test_a_clean_turn_is_silent(tmp_path):
     # is the one deciding "nothing outstanding", not this script.
     code, out = _run(tmp_path, fake_loci="cat >/dev/null; exit 0")
     assert code == 0 and out is None
+    assert _carry_record(tmp_path) is None, "a clean turn recorded a message"
 
 
 # ── the missing-`loci` case: fail-open, but visible ──────────────────────────
@@ -102,9 +135,13 @@ def test_a_clean_turn_is_silent(tmp_path):
 def test_absent_loci_fails_open_with_a_one_line_notice(tmp_path):
     code, out = _run(tmp_path)  # no stub on PATH
     assert code == 0
-    assert set(out) == {"systemMessage"}
+    # A Stop reply gains no context field under Copilot either (AAD-7783): the
+    # notice is recorded for the next prompt instead, asserted below.
+    assert set(out) == _host().user_message_keys("Stop")
     assert "loci" in out["systemMessage"].lower()
     assert "not found" in out["systemMessage"].lower()
+    if _host().copilot:
+        assert _carry_record(tmp_path) == out["systemMessage"]
 
 
 # ── the outstanding case: the CLI's systemMessage rides straight through ────
@@ -115,6 +152,10 @@ def test_an_outstanding_manifest_reaches_the_user(tmp_path):
         f'cat >/dev/null; printf %s\'\\n\' \'{{"systemMessage":"{msg}"}}\''))
     assert code == 0
     assert out == {"systemMessage": msg}
+    if _host().copilot:
+        # Copilot shows `systemMessage` to nobody: the verb's message is also
+        # recorded for the next prompt (AAD-7783), the document unchanged.
+        assert _carry_record(tmp_path) == msg
 
 
 # ── stdin passes through unmangled (no jq, no consuming `cat` in between) ───
@@ -123,7 +164,9 @@ def test_the_harness_payload_reaches_loci_on_stdin(tmp_path):
     seen = tmp_path / "seen.json"
     code, out = _run(tmp_path, fake_loci=f'cat > {_to_bash_path(seen)}')
     assert code == 0 and out is None
-    assert json.loads(seen.read_text(encoding="utf-8"))["prompt_id"] == "t-1"
+    # Under Copilot the field is the turn id the host adapter resolved from the
+    # session's record (AAD-7781) — the stub still reads it off `prompt_id`.
+    assert json.loads(seen.read_text(encoding="utf-8"))["prompt_id"] == _host().turn("t-1")
 
 
 # ── the loop hazard ──────────────────────────────────────────────────────────

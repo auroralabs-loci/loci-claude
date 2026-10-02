@@ -1,4 +1,4 @@
-"""What arms LOCI in a directory — the cheap gate, and the four session blocks.
+"""The cheap gate, and the one session block that no longer depends on it.
 
 Two false positives are the reason this file exists. A documentation repo armed
 as an ``armv7e-m`` C++ project, and the plugin's own repo armed as ``armv6-m``:
@@ -14,10 +14,8 @@ PATH, ELFs, a guessed target, left in the keyed file as cascade hints for a CLI
 too old to read a recipe — is gone since T14: the CLI's cascade is gone, so the
 hints have no reader, and `detect-project.sh` IS the gate.
 
-Above the gate sits the recipe. A project ``loci init`` has recorded is described
-by its keyed context (the recipe's mirror) and never scanned again; a recorded
-``unsupported``/``needs_user`` disarms without a scan; ``failed`` is transient
-and re-arms. Those four branches are the four context blocks asserted here.
+Session start no longer consults the gate (AAD-7531): every directory gets the
+same block, and the gate stays on disk with no caller but these tests.
 """
 
 from __future__ import annotations
@@ -110,7 +108,7 @@ def _detect(target: Path, home: Path) -> dict:
 
 
 class Session:
-    """One session-init run: its hook payload, its context file, its log."""
+    """One session-init run: its hook payload and its log."""
 
     def __init__(self, payload: dict, state: Path):
         self.payload = payload
@@ -121,57 +119,18 @@ class Session:
         return self.payload["hookSpecificOutput"]["additionalContext"]
 
     @property
-    def context_file(self) -> Path:
-        files = sorted(self.state.glob("project-context-*.json"))
-        assert len(files) == 1, f"expected one keyed context, found {files}"
-        return files[0]
-
-    @property
-    def context(self) -> dict:
-        return json.loads(self.context_file.read_text(encoding="utf-8"))
-
-    @property
     def log(self) -> str:
         path = self.state / "loci.log"
         return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
 
-    #: The build facts only `loci init` writes since T14. On a project init has
-    #: never touched, any of them in the keyed file means a scan is back.
-    SCAN_FACTS = frozenset({"compiler", "compiler_path", "build_system",
-                            "artifact", "loci_artifacts", "loci_target"})
-
-    @property
-    def scanned(self) -> bool:
-        """Did anything probe the tree — compilers, ELFs, cross-toolchains?
-
-        The scan T14 deleted logged `start: detect_compiler` and wrote eight
-        build facts into the keyed file. Both are checked: the log line is what
-        the old probe left, and the keys are what any replacement would have to
-        write to be of use. Meaningful only where `loci init` has not written —
-        on an initialized project the same keys are the recipe's mirror.
-        """
-        return ("start: detect_compiler" in self.log
-                or bool(self.SCAN_FACTS & set(self.context)))
-
     @property
     def detector_ran(self) -> bool:
-        """Was `lib/detect-project.sh` invoked at all?
-
-        The stronger claim, and the one an initialized project makes: the recipe
-        answers, so the detector is never even started — no gate, no walk, no
-        subprocess.
-        """
         return "start: detect-project" in self.log
-
-    @property
-    def armed(self) -> bool:
-        return "LOCI auto-run rules" in self.ctx
 
 
 def _run_session_init(cwd: Path, home: Path, **extra: str) -> Session:
     state = home / ".loci" / "state"
-    # A fresh log per run, so `scanned` answers about THIS run and not about a
-    # previous one against the same fixture.
+    # A fresh log per run, so `detector_ran` answers about THIS run.
     if (state / "loci.log").is_file():
         (state / "loci.log").unlink()
     res = subprocess.run(
@@ -188,14 +147,6 @@ def _run_session_init(cwd: Path, home: Path, **extra: str) -> Session:
     )
     assert res.returncode == 0, f"session-init.sh exited {res.returncode}\n{res.stderr}"
     return Session(json.loads(res.stdout), state)
-
-
-def _amend_context(session: Session, **fields) -> None:
-    """Write into the keyed context the way ``loci init`` does — merging."""
-    path = session.context_file
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data.update(fields)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _cli_shim(dirpath: Path, version: str) -> Path:
@@ -254,33 +205,13 @@ def _dev_checkout(tmp_path: Path) -> Path:
 
 
 def _initialized_project(tmp_path: Path, home: Path, *,
-                         env_extra: dict | None = None,
-                         **fields) -> tuple[Path, Session]:
-    """A project with a recipe on disk and ``loci init``'s record in the context.
-
-    Two session-init runs: the first creates the keyed file (on a real machine
-    the CLI would have), the second is the one under test. ``env_extra`` reaches
-    both runs, so a caller can pin the CLI-version facts the block reports.
-    """
-    env_extra = env_extra or {}
+                         env_extra: dict | None = None) -> tuple[Path, Session]:
     proj = tmp_path / "fw"
     (proj / ".loci").mkdir(parents=True)
     (proj / ".loci" / "build.yaml").write_text("schema_version: 1\ntarget: armv7e-m\n")
     (proj / "build").mkdir()
     (proj / "build" / "app.elf").write_bytes(b"\x7fELF")
-    first = _run_session_init(proj, home, **env_extra)
-    _amend_context(first, **{
-        "init_status": "ok",
-        "init_recipe": _to_bash_path(proj / ".loci" / "build.yaml"),
-        "loci_target": "armv7e-m",
-        "compiler": "arm-none-eabi-gcc",
-        "build_system": "cmake",
-        "validated": "compile-check",
-        "confirmed_by_user": True,
-        "artifact": _to_bash_path(proj / "build" / "app.elf"),
-        **fields,
-    })
-    return proj, _run_session_init(proj, home, **env_extra)
+    return proj, _run_session_init(proj, home, **(env_extra or {}))
 
 
 needs_tools = pytest.mark.skipif(
@@ -555,6 +486,147 @@ def test_the_other_compdb_routes_count_as_evidence(tmp_path, marker, depth):
     assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
 
 
+# ── colcon (ROS 2) workspace roots ──────────────────────────────────────────
+#
+# A workspace root declares no build of its own: the packages are under `src/`
+# and colcon's output is under `build/ install/ log/`. Reproduced on a real ROS
+# workspace — the session went inactive AT the workspace root, the directory a
+# ROS developer opens, under a sentence saying no build file declares a build
+# here, while `cd src/<pkg>` armed fine off the package's own `CMakeLists.txt`.
+# The package's file is at depth 3 and the nested walk stops at 2.
+
+def _a_colcon_package(root: Path, rel: str = "src/loci_demo") -> Path:
+    pkg = root / rel
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        "<package format=\"3\"><name>loci_demo</name></package>\n")
+    (pkg / "CMakeLists.txt").write_text("project(loci_demo)\n")
+    return pkg
+
+
+def _colcon_output(root: Path, stamp: str = "build/COLCON_IGNORE") -> None:
+    for name in ("build", "install", "log"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    marker = root / stamp
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    # A directory where colcon keeps a symlink (`log/latest_build`): `-e`
+    # answers the same for both, and an unelevated Windows runner cannot make a
+    # symlink at all.
+    marker.mkdir() if marker.name == "latest_build" else marker.write_text("")
+
+
+@needs_tools
+@pytest.mark.parametrize("repo", [False, True])
+def test_a_colcon_workspace_root_is_a_project(tmp_path, repo):
+    """With and without a `.git` at the root — it was `no_project` both ways,
+    and the two take different routes through the gate."""
+    target = tmp_path / "ws"
+    _a_colcon_package(target)
+    _colcon_output(target)
+    if repo:
+        (target / ".git").mkdir()
+    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
+
+
+@needs_tools
+def test_an_unbuilt_colcon_workspace_is_a_project(tmp_path):
+    """Cloned and not yet built is when a session is most likely to be opened,
+    and there is no `build/` to recognise it by."""
+    target = tmp_path / "ws"
+    _a_colcon_package(target)
+    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
+
+
+@needs_tools
+def test_a_vcs_imported_workspace_is_a_project(tmp_path):
+    """`vcs import` from a `.repos` file produces `src/<repo>/<pkg>/` — the
+    commonest way a real workspace is assembled, one level deeper again."""
+    target = tmp_path / "ws"
+    _a_colcon_package(target, "src/aurora_robot/loci_demo")
+    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
+
+
+@needs_tools
+def test_the_walk_under_src_is_bounded(tmp_path):
+    """Three levels under `src/`, not "somewhere under it". This walk runs on
+    every session start, beside the one above it."""
+    target = tmp_path / "ws"
+    _a_colcon_package(target, "src/a/b/c/loci_demo")
+    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project"
+
+
+@needs_tools
+def test_a_built_workspace_with_no_packages_left_is_a_project(tmp_path):
+    """`src/` emptied (every package `vcs import`ed and removed) or a build with
+    `--base-paths` elsewhere. colcon's own stamp is what says colcon was here."""
+    target = tmp_path / "ws"
+    (target / "src").mkdir(parents=True)
+    _colcon_output(target)
+    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
+
+
+@needs_tools
+@pytest.mark.parametrize("stamp", ["build/COLCON_IGNORE", "install/COLCON_IGNORE",
+                                   "log/COLCON_IGNORE", "log/latest_build"])
+def test_each_of_colcons_stamps_is_enough(tmp_path, stamp):
+    target = tmp_path / "ws"
+    target.mkdir()
+    _colcon_output(target, stamp)
+    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
+
+
+@needs_tools
+def test_build_install_and_log_without_a_stamp_are_not_evidence(tmp_path):
+    """`build`, `install` and `log` are ordinary directory names. The triple on
+    its own would arm any hand-rolled tree that happens to keep all three."""
+    target = tmp_path / "proj"
+    for name in ("build", "install", "log"):
+        (target / name).mkdir(parents=True)
+    (target / "main.c").write_text("int main(){}")
+    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project"
+
+
+@needs_tools
+def test_a_src_directory_of_text_files_does_not_arm(tmp_path):
+    """The declared-build rule is unchanged: `src/` is not itself evidence."""
+    target = tmp_path / "notes"
+    (target / "src" / "chapter").mkdir(parents=True)
+    (target / "src" / "chapter" / "intro.md").write_text("# hello\n")
+    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project"
+
+
+@needs_tools
+def test_a_container_of_repos_is_not_claimed_by_a_colcon_layout(tmp_path):
+    """Under the SAME guard as the depth-2 inference: a directory holding other
+    people's repos is not one project because one of them keeps a `src/`."""
+    target = tmp_path / "projects"
+    for name in ("repo-a", "repo-b"):
+        (target / name / ".git").mkdir(parents=True)
+    _a_colcon_package(target)
+    assert _detect(target, tmp_path / "home")["detection_status"] == "multi_project"
+
+
+@needs_tools
+def test_the_home_tree_is_not_claimed_by_a_colcon_layout(tmp_path):
+    """$HOME is excluded from this inference for the reason it is excluded from
+    the other one: a single `~/src/<pkg>/package.xml` would claim every
+    directory in the home tree."""
+    home = tmp_path / "home"
+    _a_colcon_package(home)
+    assert _detect(home, home)["detection_status"] == "no_project"
+
+
+@needs_tools
+def test_a_package_directory_still_arms_on_its_own(tmp_path):
+    """It always did — off the package's own root `CMakeLists.txt` — and the
+    workspace rule must not have taken that away. `loci init` there is what
+    reports where the workspace is."""
+    target = tmp_path / "ws"
+    pkg = _a_colcon_package(target)
+    _colcon_output(target)
+    assert _detect(pkg, tmp_path / "home")["detection_status"] == "ok"
+
+
 @needs_tools
 def test_a_container_is_not_claimed_by_one_childs_vendor_file(tmp_path):
     """A directory holding three unrelated repos is not one project because one
@@ -800,139 +872,47 @@ def test_nothing_bypasses_the_gate(tmp_path):
 # ── the session blocks ──────────────────────────────────────────────────────
 
 @needs_tools
-def test_docs_repo_is_inactive_and_unscanned(tmp_path):
-    """Acceptance criterion 1, as a test: the shape of the LOCI docs repository
-    — a Markdown tree with a leftover ``.loci-build/`` and a fixture source —
-    must produce the inactive block, arm nothing, and never reach the scan."""
-    target = tmp_path / "docs-repo"
-    (target / ".git").mkdir(parents=True)
-    (target / ".loci-build" / "armv7e-m").mkdir(parents=True)
-    (target / ".loci-build" / "armv7e-m" / "old.o").write_bytes(b"\x7fELF")
-    (target / "docs").mkdir()
-    (target / "docs" / "architecture.md").write_text("# docs")
-    (target / "samples").mkdir()
-    (target / "samples" / "example.c").write_text("int main(){}")
-    home = tmp_path / "home"
-    home.mkdir()
+def test_every_session_gets_the_same_project_free_block(tmp_path):
+    """AAD-7531: nothing about a project is decided at session start."""
+    shapes = {}
+    docs = tmp_path / "docs"
+    (docs / ".git").mkdir(parents=True)
+    (docs / "README.md").write_text("# docs")
+    shapes["docs"] = docs
+    container = tmp_path / "container"
+    for name in ("a", "b"):
+        (container / name / ".git").mkdir(parents=True)
+    shapes["container"] = container
+    make = tmp_path / "make"
+    make.mkdir()
+    (make / "Makefile").write_text("all:\n\ttrue\n")
+    shapes["makefile"] = make
+    rec = tmp_path / "rec"
+    (rec / ".loci").mkdir(parents=True)
+    (rec / ".loci" / "build.yaml").write_text("schema_version: 1\n")
+    shapes["recipe"] = rec
 
-    s = _run_session_init(target, home)
-    assert "LOCI: inactive (detection: no_project)" in s.ctx
-    assert not s.armed
-    # NOT a bare "MUST invoke" search: the disarm sentence quotes that wording in
-    # order to override it. What must be absent is the RULE.
-    assert "you MUST invoke the loci:loci-preflight" not in s.ctx.lower()
-    assert "LOCI target:" not in s.ctx and "Target:" not in s.ctx
-    # Phrase by phrase, because the sentence's whole job is to beat two things
-    # that outrank it: the skills' own description-level MANDATORY, and the
-    # PostToolUse hook's "You MUST invoke … NOW" later in the same context. A
-    # substring check on "do NOT apply in this session" passed happily when the
-    # rest of the sentence was rewritten into "…by default; use your judgement
-    # and go ahead".
-    for phrase in ("do NOT apply in this session",
-                   "do not invoke any LOCI skill automatically",
-                   "OVERRIDES",
-                   "post-edit reminder",
-                   "not a reason to run one"):
-        assert phrase in s.ctx, f"the disarm sentence lost {phrase!r}"
-    assert "use your judgement" not in s.ctx
-    # And the recovery stays bounded to an explicit request, which is the clause
-    # the first cut dropped.
-    assert "If the user explicitly asks" in s.ctx
-    assert not s.scanned, (
-        "the docs repo was probed — the gate ran, which is correct, but it "
-        "must stop before any compiler/ELF/PATH probing")
-    # Version/plugin-dir lines survive so the upgrade plumbing keeps working.
-    assert "loci version:" in s.ctx and "plugin dir:" in s.ctx
+    blocks = {}
+    # The CLI-version half of the block is pinned, or the comparison decides on the
+    # developer's machine: a stale global `loci` (WSL's was 0.2.51 under a 0.2.57 pin)
+    # adds an advisory that names `<home>/.loci/state/loci-cli-install.log`, and four
+    # homes then made four blocks — with nothing about the launch directory in them.
+    env = _cli_version_env(tmp_path, _pinned_cli_version())
+    for name, target in shapes.items():
+        home = tmp_path / f"home-{name}"
+        home.mkdir()
+        s = _run_session_init(target, home, **env)
+        assert not s.detector_ran, name
+        assert not list((home / ".loci" / "state").glob("project-context-*.json")), name
+        blocks[name] = s.ctx
 
-
-@needs_tools
-def test_container_is_inactive_with_its_own_reason(tmp_path):
-    target = tmp_path / "projects"
-    for name in ("repo-a", "repo-b"):
-        (target / name / ".git").mkdir(parents=True)
-    home = tmp_path / "home"
-    home.mkdir()
-
-    s = _run_session_init(target, home)
-    assert "LOCI: inactive (detection: multi_project)" in s.ctx
-    assert "2 independent projects" in s.ctx
-    assert not s.armed
-    assert not s.scanned, "a container of repos was probed"
-
-
-@needs_tools
-def test_uninitialized_project_is_armed_with_the_opt_in_init_rule(tmp_path):
-    """Acceptance criterion 3's first half: the gate passes, so the session is
-    armed AND carries the ``not_initialized`` rule. No target is asserted —
-    there is no recipe to assert one from.
-
-    The rule pinned here **used to be auto-init** and is now opt-in: `loci init`
-    writes four files into someone's tree, so which projects LOCI runs on is the
-    user's choice, not a consequence of an edit landing on a `.c` file. The
-    session is still ARMED, and that is not a contradiction — the analyses run
-    and answer `not_initialized`, which is what makes the one-line "run
-    /loci:init" reply possible. Arming and adopting are different things, and
-    only the second is the user's to decide."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    (target / "main.c").write_text("int main(){}")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    s = _run_session_init(target, home)
-    assert s.armed
-    assert "LOCI: inactive" not in s.ctx
-    assert "not initialized" in s.ctx
-    assert "`not_initialized`" in s.ctx and "/loci:init" in s.ctx
-    # The rule must forbid running it, not merely omit the instruction: the old
-    # wording ("invoke the loci:init skill ONCE this session") is what a model
-    # would otherwise carry over from the six skills that used to repeat it.
-    assert "Do NOT invoke the loci:init skill" in s.ctx
-    assert "loci:init skill ONCE" not in s.ctx, "the auto-init instruction is gone"
-    # BOTH spellings. The pre-T08 block printed the target twice, as `Target:`
-    # and as `LOCI target:`, and asserting only the second let the first be
-    # restored with all 38 tests green — on the one branch where a fabricated
-    # target is the whole failure this task exists to end.
-    assert "LOCI target:" not in s.ctx and "Target:" not in s.ctx, (
-        "an uninitialized project has no recorded target; the scan's "
-        "PATH-derived guess must not be quoted to the model")
-    # The gate ran — that is what armed the session — and nothing else did: no
-    # probe, and no build fact in the file. Since T14 the only writer of
-    # `compiler`, `build_system` and `artifact` is `loci init`; a value here on
-    # a project it has never seen is a guess, and `pre-edit-hook.sh` reads
-    # `loci_target` by name and ships it to `loci build snapshot` (a host-x86
-    # project with a cross-gcc on PATH used to get `armv7e-m` that way).
-    assert s.detector_ran
-    assert not s.scanned
-    assert s.context["init_status"] == "uninitialized"
-    assert s.context["detection_status"] == "ok"
-    for key in ("loci_target", "compiler", "compiler_path",
-                "build_system", "artifact"):
-        assert key not in s.context, (
-            f"{key} reached the keyed file of a project nothing has initialized: "
-            f"{s.context.get(key)!r}")
-
-
-@needs_tools
-def test_initialized_project_reads_the_recipe_mirror_and_never_scans(tmp_path):
-    """Acceptance criterion 2. Every fact in the block comes from the keyed
-    context ``loci init`` wrote; the scan does not run at all."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, s = _initialized_project(tmp_path, home)
-
-    assert not s.detector_ran, (
-        "an initialized project must not even start the detector")
-    assert s.armed
-    assert "LOCI target: armv7e-m" in s.ctx
-    assert "Compiler: arm-none-eabi-gcc, Build: cmake" in s.ctx
-    assert "recipe: " in s.ctx
-    assert "artifact: " in s.ctx and "app.elf" in s.ctx
-    assert "LOCI: inactive" not in s.ctx
-    # Printed ONCE: the old block spelled the target twice, in `Target:` and in
-    # `LOCI target:` — and it is the second one every skill reads.
-    assert s.ctx.count("armv7e-m") == 1
+    assert len(set(blocks.values())) == 1, "the block depends on the launch directory"
+    ctx = blocks["docs"]
+    for present in ("LOCI auto-run rules:", "LOCI init rule:", "Available:"):
+        assert present in ctx
+    for gone in ("LOCI target:", "project context:", "recipe:", "artifact:",
+                 "Branch:", "inactive"):
+        assert gone not in ctx, gone
 
 
 #: The pin, read off the file that holds it rather than copied. T16 bumps that
@@ -978,7 +958,7 @@ def _modelled_size(ctx: str) -> int:
 
 
 @needs_tools
-def test_the_initialized_block_fits_its_budget(tmp_path):
+def test_the_session_block_fits_its_budget(tmp_path):
     """~2.0 KB, measured on the prose rather than on the paths, with a CLI that
     matches the pin.
 
@@ -1003,9 +983,10 @@ def test_the_initialized_block_fits_its_budget(tmp_path):
     # cache dir, the keyed state file, a repo-relative recipe, an artifact), so
     # the injected block lands just inside the ~2.0 KB the design asks for —
     # measured at 1 865 B on a real CMake/arm-none-eabi fixture.
-    assert size <= _STEADY_STATE_BUDGET, (
-        f"the initialized block models {size} B at production path lengths "
-        f"(budget {_STEADY_STATE_BUDGET} B = the ~2.0 KB of acceptance "
+    budget = _STEADY_STATE_BUDGET + _legacy_line_allowance()
+    assert size <= budget, (
+        f"the session block models {size} B at production path lengths "
+        f"(budget {budget} B = the ~2.0 KB of acceptance "
         f"criterion 2, plus todo 042's prefix); the block "
         f"as emitted here was {len(s.ctx.encode())} B, inflated by pytest's "
         f"temp paths")
@@ -1039,19 +1020,31 @@ _SKEW_ADVISORY_ALLOWANCE = 420
 #: against a healthy block of 2 019 B.
 _UNKNOWN_MARKER_ALLOWANCE = 80
 
-#: The artifact-only rule's allowance, on top of the same steady-state budget.
-#: It is a SUBSTITUTION, not an addition: `_AUTORUN_ARTIFACT_ONLY` replaces the
-#: 425 B `_AUTORUN_RULES` rather than following it, so this is the difference
-#: between the two and not the rule's own size. Both must not print — a block
-#: carrying "you MUST invoke loci-post-edit" and "do not" argues with itself, and
-#: a session-start line loses that argument to a skill description saying
-#: MANDATORY. Not transient, like the unknown-version marker: a project with no
-#: compile database pays it every session until one exists. It buys three things
-#: nothing else in the block says — which analyses do work here, that the two
-#: auto-runs do not apply, and that neither `/loci:init` nor a rebuild is the way
-#: out (AAD-7607, where the rebuild suggestion cost a 160 B → 1,032 B stack
-#: regression its baseline).
-_ARTIFACT_ONLY_ALLOWANCE = 520
+
+def _legacy_bash() -> bool:
+    """bash 3 with no newer bash on the host: the profile `lib/bash-compat.sh`
+    describes (AAD-7771). `${v//pat/rep}` there costs O(matches x length^2) —
+    ~2 ms per match at 16 KB — so the hooks read a 4 KB prefix and the guard
+    tokenises 4 KB; the 64 KB shapes in this file are not what that host runs.
+    Probed once per process, on the bash the tests drive."""
+    if _legacy_bash.cache is None:
+        out = subprocess.run([_find_bash(), "-c", 'printf %s "${BASH_VERSINFO[0]}"'],
+                             capture_output=True, text=True, timeout=30)
+        v = out.stdout.strip()
+        _legacy_bash.cache = v.isdigit() and int(v) < 4
+    return _legacy_bash.cache
+
+
+_legacy_bash.cache = None
+
+#: What the one legacy-profile line (`bash: 3.2.57 (stock macOS) …`) may add to
+#: the block, and only where it is printed: a Mac with stock bash and no newer
+#: one installed (AAD-7771). It names the reduced guard and the fix, once.
+_LEGACY_LINE_ALLOWANCE = 260
+
+
+def _legacy_line_allowance() -> int:
+    return _LEGACY_LINE_ALLOWANCE if _legacy_bash() else 0
 
 #: The steady-state budget the two ceilings below are measured against. It was a
 #: flat 2 048 B until todo 042 spelled every skill as `/loci:<name>`: the seven
@@ -1061,7 +1054,7 @@ _STEADY_STATE_BUDGET = 2048 + 35
 
 
 @needs_tools
-def test_the_initialized_block_carries_the_skew_advisory_within_its_own_allowance(tmp_path):
+def test_the_session_block_carries_the_skew_advisory_within_its_own_allowance(tmp_path):
     """The state P68 was reported from, made testable on every host.
 
     A CLI behind the pin is not an edge case — it is what every machine looks
@@ -1085,9 +1078,9 @@ def test_the_initialized_block_carries_the_skew_advisory_within_its_own_allowanc
         "not fire — if it does, the advisory's size depends on the host again")
 
     size = _modelled_size(s.ctx)
-    ceiling = _STEADY_STATE_BUDGET + _SKEW_ADVISORY_ALLOWANCE
+    ceiling = _STEADY_STATE_BUDGET + _SKEW_ADVISORY_ALLOWANCE + _legacy_line_allowance()
     assert size <= ceiling, (
-        f"the initialized block models {size} B with the version-skew advisory, "
+        f"the session block models {size} B with the version-skew advisory, "
         f"over its {ceiling} B ceiling ({_STEADY_STATE_BUDGET} B steady "
         f"state + {_SKEW_ADVISORY_ALLOWANCE} B for the advisory)")
     # …and the advisory is what the extra bytes buy: it must name both versions
@@ -1108,7 +1101,11 @@ def test_the_initialized_block_carries_the_skew_advisory_within_its_own_allowanc
 #: written, and the contract's own worked example showed `on PATH, v0.1.104`, a
 #: shape `session-init.sh` never emitted.
 _VERSION_GATE_SOURCES = (
-    "skills/_shared/loci-runtime-contract.md",
+    "skills/_shared/house-rules.md",
+    # Two of the four gates (frame sizes below 0.1.107, and the differ's own note)
+    # moved here with the compile route on 22 Sep, todo [082]. The anchor itself
+    # stays in the house rules; only the rules citing it moved.
+    "skills/_shared/compile-route.md",
     "skills/loci-post-edit/SKILL.md",
 )
 
@@ -1179,7 +1176,7 @@ def test_no_version_gate_reads_a_number_off_a_line_that_carries_none(tmp_path):
     # …and the section they were routed to exists, is linked, and says the thing
     # that makes the gate decidable.
     contract = (PLUGIN_ROOT / "skills" / "_shared"
-                / "loci-runtime-contract.md").read_text(encoding="utf-8")
+                / "house-rules.md").read_text(encoding="utf-8")
     assert contract.count('id="cli-version-gate"') == 1, (
         "the anchor the version gates link to is missing or duplicated")
     # …and WHERE it sits. Uniqueness is not enough: review moved this anchor 544
@@ -1254,7 +1251,7 @@ def test_the_version_gate_says_unknown_when_the_hook_cannot_assert_one(tmp_path)
     # an unpinned install pays it on every session start for as long as it stays
     # unpinned, so it gets the tightest allowance of the three.
     size = _modelled_size(s.ctx)
-    ceiling = _STEADY_STATE_BUDGET + _UNKNOWN_MARKER_ALLOWANCE
+    ceiling = _STEADY_STATE_BUDGET + _UNKNOWN_MARKER_ALLOWANCE + _legacy_line_allowance()
     assert size <= ceiling, (
         f"the initialized block models {size} B with the unknown-version "
         f"marker, over its {ceiling} B ceiling ({_STEADY_STATE_BUDGET} B "
@@ -1337,655 +1334,11 @@ def test_every_voice_skill_carries_its_own_voice_section():
             f"would render measurements with no voice guidance at all")
 
 
-@needs_tools
-def test_a_recipe_with_no_recorded_state_is_degraded_but_armed(tmp_path):
-    """The state directory can be wiped independently of the repository. The
-    recipe still governs, so the session arms and says what will heal it — and
-    still does not scan, because a scan would invent a target."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj = tmp_path / "fw"
-    (proj / ".loci").mkdir(parents=True)
-    (proj / ".loci" / "build.yaml").write_text("schema_version: 1\n")
-
-    s = _run_session_init(proj, home)
-    assert s.armed
-    assert "has a recipe but no recorded state" in s.ctx
-    assert "LOCI target:" not in s.ctx
-    assert not s.detector_ran
-
+# ── a broken CLI, where a user asks why ─────────────────────────────────────
 
 @needs_tools
-def test_a_recorded_recipe_that_vanished_is_degraded_not_rescanned(tmp_path):
-    """``init_status: ok`` with no ``.loci/build.yaml`` found from here. The
-    CLI's own discovery is the authority — it is the one that refuses to
-    compile — so nothing is cleared and no scan runs; the recipe-derived target
-    survives for the pre-edit hook, and the first analysis settles it."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    shutil.rmtree(proj / ".loci")
-
-    s = _run_session_init(proj, home)
-    assert not s.detector_ran
-    assert "no `.loci/build.yaml` was found" in s.ctx
-    assert s.context["loci_target"] == "armv7e-m", (
-        "the recipe-derived target was clobbered by a guess")
-
-
-@needs_tools
-@pytest.mark.parametrize("status,marker", [
-    ("unsupported", "LOCI: inactive (init: unsupported)"),
-    ("needs_user", "LOCI: inactive (init: needs_user)"),
-])
-def test_a_recorded_refusal_disarms_without_scanning(tmp_path, status, marker):
-    """``unsupported`` is permanent until ``/loci:init``; a headless
-    ``needs_user`` waits for a question nobody has asked. Neither arms, neither
-    scans, and neither may be reset by this hook."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    _amend_context(first, init_status=status)
-    s = _run_session_init(target, home)
-
-    assert marker in s.ctx
-    assert not s.armed
-    assert "do NOT apply in this session" in s.ctx
-    assert not s.detector_ran, (
-        "a recorded refusal must not cost a detector run either")
-    assert s.context["init_status"] == status, "session-init reset a sticky status"
-    # …and the scan's leftovers go with it. This project WAS armed a moment ago,
-    # so its file held `loci_target: armv7e-m` from the machine — which
-    # `pre-edit-hook.sh` would have gone on sending to `loci build snapshot`
-    # long after the CLI declared the project unsupportable.
-    assert "loci_target" not in s.context, (
-        "a scan-derived target outlived the refusal that disarmed the project")
-    assert "detection_status" not in s.context
-
-
-@needs_tools
-def test_a_failed_init_is_re_armed_at_the_next_session(tmp_path):
-    """``failed`` is transient (§6.2): a build broken by the triggering edit
-    must not disarm the project for ever — one attempt per session, never a
-    permanent disarm."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    _amend_context(first, init_status="failed", init_reason="compile failed")
-    s = _run_session_init(target, home)
-
-    assert s.armed
-    assert "`not_initialized`" in s.ctx
-    assert s.context["init_status"] == "failed", (
-        "the transient status was overwritten, losing why the last attempt failed")
-
-
-@needs_tools
-def test_an_empty_recorded_field_does_not_shift_the_others(tmp_path):
-    """`IFS=$'\\t' read -r a b c …` COLLAPSES runs of tabs — tab is IFS
-    whitespace — so one empty middle field shifted every later field left by
-    one. An initialized project with no recorded `init_recipe` was told its ELF
-    was its recipe, and a `0` count arrived where a path belonged.
-
-    The same read then had to survive CRLF: the `jq` a Windows install puts on
-    PATH writes `\\r\\n`, and `read` (unlike the command substitution it
-    replaced) keeps the `\\r` — so an empty field came back as the
-    one-character string `"\\r"`, which is not empty, and `loci_target` reached
-    the model as `armv7e-m\\r`."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    first = _run_session_init(proj, home)
-    # The exact shape: an empty middle field, and empty counts after it.
-    _amend_context(first, init_recipe=None, artifact=None)
-
-    s = _run_session_init(proj, home)
-    assert "LOCI target: armv7e-m" in s.ctx, (
-        "a field after the empty one was lost or corrupted")
-    assert "artifact:" not in s.ctx, "there is no artifact to name"
-    # The recipe line falls back to the walk's own answer, and names the recipe
-    # — report §6.3's degraded branch is specified to do exactly that.
-    recipe_lines = [ln for ln in s.ctx.splitlines() if ln.startswith("recipe: ")]
-    assert len(recipe_lines) == 1 and recipe_lines[0].endswith("build.yaml"), (
-        f"the recipe line was lost or is not a recipe: {recipe_lines}")
-    # No trailing carriage return reached the model.
-    assert "\r" not in s.ctx
-    # And the empty-artifact log line is REACHABLE: `artifact` is compared
-    # against the empty string, which `"\r"` never equalled.
-    assert "recorded no artifact (recipe:" in s.log, (
-        "the empty-artifact line cannot fire — the value is not what it is "
-        "compared against")
-
-
-@needs_tools
-def test_a_recorded_recipe_or_artifact_that_is_gone_is_not_asserted(tmp_path):
-    """A recipe recorded on another machine, or an artifact since deleted, was
-    printed as fact — in the degraded block that says the recipe was not
-    found."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    first = _run_session_init(proj, home)
-    _amend_context(first, init_recipe="/nowhere/gone/.loci/build.yaml",
-                   artifact="/nowhere/gone/app.elf")
-    (proj / ".loci" / "build.yaml").unlink()
-
-    s = _run_session_init(proj, home)
-    assert "recipe:" not in s.ctx, "a recipe that does not exist was named"
-    assert "artifact:" not in s.ctx, "an artifact that does not exist was named"
-    assert "/nowhere/gone" not in s.ctx
-
-
-@needs_tools
-def test_the_mirror_carries_the_provenance_the_skills_read(tmp_path):
-    """`validated` and `confirmed_by_user` are what the skills' provenance line
-    renders when it has no envelope to read them from, and `init_recipe` is how
-    a subdirectory session names the recipe at all. Stripping six keys out of
-    the copied set left all 57 tests green."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    (proj / ".git").mkdir()
-    first = _run_session_init(proj, home)
-    _amend_context(first, init_at="2026-08-28T00:00:00Z", compiler_path="/opt/gcc",
-                   init_candidates=[], validated="replay-compare",
-                   confirmed_by_user=True)
-    sub_dir = proj / "src"
-    sub_dir.mkdir()
-
-    s = _run_session_init(sub_dir, home)
-    # Two keyed files now (the root's and this one), so select by project_root
-    # rather than by `Session.context`, which insists on exactly one.
-    own = next(json.loads(f.read_text(encoding="utf-8"))
-               for f in sorted(s.state.glob("project-context-*.json"))
-               if json.loads(f.read_text(encoding="utf-8"))["project_root"].endswith("src"))
-    for key, value in (("validated", "replay-compare"), ("confirmed_by_user", True),
-                       ("init_at", "2026-08-28T00:00:00Z"),
-                       ("compiler_path", "/opt/gcc"), ("init_candidates", [])):
-        assert own.get(key) == value, (
-            f"the mirror did not carry {key!r} to the subdirectory's file")
-    assert own["init_recipe"].endswith("build.yaml")
-
-
-@needs_tools
-def test_a_subdirectory_session_reads_the_recipe_roots_mirror(tmp_path):
-    """`loci init` keys the context file by the RECIPE ROOT; this hook keys it
-    by the SESSION CWD. For `cd repo/src && claude` those are two files, and
-    without copying the CLI's facts across the second one never receives a
-    single fact: the block said "a recipe but no recorded state" for ever, the
-    pre-edit hook (which keys the same way) sent no `--loci-target`, and running
-    `loci init` from the subdirectory healed the ROOT file — so nothing could
-    fix it."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    (proj / ".git").mkdir()
-    sub_dir = proj / "src" / "drivers"
-    sub_dir.mkdir(parents=True)
-
-    s = _run_session_init(sub_dir, home)
-    state = home / ".loci" / "state"
-    files = sorted(state.glob("project-context-*.json"))
-    assert len(files) == 2, f"expected the root's file and the subdir's: {files}"
-
-    assert "LOCI target: armv7e-m" in s.ctx
-    assert "Compiler: arm-none-eabi-gcc, Build: cmake" in s.ctx
-    assert "no recorded state" not in s.ctx
-    assert not s.detector_ran
-
-    # And in the FILE, because that is what `pre-edit-hook.sh` reads by name.
-    loaded = [json.loads(f.read_text(encoding="utf-8")) for f in files]
-    own = next(c for c in loaded if c["project_root"].endswith("drivers"))
-    assert own["loci_target"] == "armv7e-m"
-    assert own["init_status"] == "ok"
-    # The identity keys stay this session's own — they name its measurement
-    # files, and copying the root's would merge two histories silently.
-    assert own["project_root"].endswith("drivers")
-    assert own["cwd_hash"] != next(
-        c for c in loaded if not c["project_root"].endswith("drivers"))["cwd_hash"]
-
-
-@needs_tools
-def test_an_init_that_finishes_during_the_scan_is_not_reverted(tmp_path):
-    """The read→gate→write window. `detect_and_write_context` reads the context,
-    then runs the detector, then writes — and an in-memory copy taken before the
-    detector ran reverted a `loci init` that completed inside it: `init_status`
-    back to `uninitialized` and every recorded fact gone. The window was seconds
-    when the detector scanned; it is a file walk now, and still a window.
-
-    The detector is replaced by a stub that writes into the keyed file exactly
-    the way the CLI would, which is the race made deterministic. The stub emits
-    the pre-T14 ten-key shape on purpose: the build facts in it must not reach
-    the file either, whatever a stale detector says."""
-    plugin = tmp_path / "plugin"
-    (plugin / "hooks").mkdir(parents=True)
-    (plugin / ".claude-plugin").mkdir(parents=True)
-    shutil.copytree(PLUGIN_ROOT / "lib", plugin / "lib",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy(PLUGIN_ROOT / "hooks" / "session-init.sh", plugin / "hooks")
-    (plugin / ".claude-plugin" / "plugin.json").write_text('{"name":"loci","version":"9.9.9"}')
-
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    (home / ".loci" / "state").mkdir(parents=True)
-
-    # First session: creates the keyed file, so the stub can find it by glob.
-    subprocess.run([_find_bash(), _to_bash_path(plugin / "hooks" / "session-init.sh")],
-                   env=_env(home), cwd=target, capture_output=True, text=True,
-                   timeout=60, stdin=subprocess.DEVNULL)
-
-    (plugin / "lib" / "detect-project.sh").write_text(
-        "#!/usr/bin/env bash\n"
-        "for f in \"$LOCI_STATE_DIR\"/project-context-*.json; do\n"
-        "  [ -f \"$f\" ] || continue\n"
-        "  jq '. + {init_status:\"ok\", loci_target:\"armv6-m\","
-        " init_recipe:\"/p/.loci/build.yaml\", validated:\"compile-check\"}'"
-        " \"$f\" > \"$f.new\" && mv -f \"$f.new\" \"$f\"\n"
-        "done\n"
-        "echo '{\"detection_status\":\"ok\",\"compiler\":\"gcc\","
-        "\"build_system\":\"make\",\"loci_target\":\"armv7e-m\","
-        "\"elf_files\":[],\"build_dirs\":[],\"loci_artifacts\":[],"
-        "\"subproject_roots\":[],\"architecture\":\"x86_64\","
-        "\"compiler_path\":null}'\n",
-        encoding="utf-8", newline="\n")
-
-    res = subprocess.run(
-        [_find_bash(), _to_bash_path(plugin / "hooks" / "session-init.sh")],
-        env=_env(home), cwd=target, capture_output=True, text=True,
-        timeout=60, stdin=subprocess.DEVNULL)
-    assert res.returncode == 0, res.stderr
-
-    ctx = json.loads(next((home / ".loci" / "state").glob("project-context-*.json"))
-                     .read_text(encoding="utf-8"))
-    assert ctx["init_status"] == "ok", (
-        "an init that landed during the scan was reverted to "
-        f"{ctx['init_status']!r}")
-    assert ctx["validated"] == "compile-check"
-    assert ctx["init_recipe"] == "/p/.loci/build.yaml"
-    for key in ("compiler", "build_system", "elf_files", "loci_artifacts",
-                "architecture"):
-        assert key not in ctx, f"the detector's {key} reached the file"
-
-
-@needs_tools
-def test_a_failed_init_beside_a_recipe_is_armed_and_says_why(tmp_path):
-    """`init.py` clears `rec` for `recipe_stale`/`recipe_invalid`/
-    `recipe_tampered`/`compiler_missing`, so `failed` is recorded with a
-    `.loci/build.yaml` still on disk. Reporting that as "a recipe but no
-    recorded state" was false twice over, and it withheld the arming §6.2's
-    transient semantics require."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    first = _run_session_init(proj, home)
-    _amend_context(first, init_status="failed",
-                   init_reason="the recorded compiler is not on this machine")
-
-    s = _run_session_init(proj, home)
-    assert s.armed
-    assert "has a build recipe, but the last initialization of it FAILED" in s.ctx
-    assert "no recorded state" not in s.ctx
-    assert "recipe_stale" in s.ctx and "compiler_missing" in s.ctx
-    assert s.context["init_status"] == "failed"
-    # And NOT the rule for the other state. Emitting both let the block say
-    # "has a build recipe" and "this project has no recipe yet" at once, and
-    # send the model to wait for a `not_initialized` the CLI cannot answer.
-    assert "this project has no recipe yet" not in s.ctx
-    assert "LOCI init rule:" not in s.ctx
-
-
-@needs_tools
-def test_an_unrecognised_status_beside_a_recipe_does_not_claim_there_is_none(tmp_path):
-    """A newer CLI's status value. The recipe decides the branch; the status
-    only decides the wording — ordered the other way round, an unknown value
-    reached the "no recipe yet" block with a `.loci/build.yaml` on disk, and the
-    only written recovery was to wait for a `not_initialized` that will never
-    come."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    first = _run_session_init(proj, home)
-    _amend_context(first, init_status="pending_review")
-
-    s = _run_session_init(proj, home)
-    assert s.armed
-    assert "this project is not initialized" not in s.ctx
-    assert "this project has no recipe yet" not in s.ctx
-    assert "has a build recipe" in s.ctx
-    # …and it is not called a failure. "The last initialization FAILED" is a
-    # claim nothing supports about a value this version merely does not know.
-    assert "does not recognise" in s.ctx
-    assert "FAILED" not in s.ctx
-    assert s.context["init_status"] == "pending_review", "a sticky status was reset"
-
-
-@needs_tools
-def test_the_degraded_state_block_asserts_no_fact_the_cli_did_not_record(tmp_path):
-    """A project armed once, then handed a recipe (a `git pull`, or init run on
-    another machine). Its file still holds the scan's PATH-derived `compiler`,
-    and the degraded branch read it back as fact — `Compiler: clang++` directly
-    above a line saying there is no recorded state, for a project with no
-    clang++ anywhere in it."""
-    target = tmp_path / "proj"
-    (target / ".git").mkdir(parents=True)
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    # The scan that wrote this is gone (T14); a file it left behind is not.
-    _amend_context(first, compiler="clang++", build_system="make")
-    (target / ".loci").mkdir()
-    (target / ".loci" / "build.yaml").write_text("schema_version: 1\n")
-
-    s = _run_session_init(target, home)
-    assert "has a recipe but no recorded state" in s.ctx
-    assert "Compiler:" not in s.ctx, "a scan-derived compiler was asserted as fact"
-    assert "LOCI target:" not in s.ctx
-    # The recipe itself IS named — that is the one thing this branch knows.
-    assert "recipe: " in s.ctx
-
-
-@needs_tools
-def test_a_recipe_the_walk_cannot_reach_is_not_named_even_though_it_exists(tmp_path):
-    """The mutation that survived the last round. Both existing tests DELETE the
-    recipe, so `_loci_read_mirror_facts`' own `-f` check already clears it and
-    the branch's own clear is never exercised. Here the recorded recipe is a
-    real file somewhere else on disk — which is what a checkout moved, copied,
-    or shared through a synced state directory looks like."""
-    home = tmp_path / "home"
-    home.mkdir()
-    elsewhere = tmp_path / "elsewhere" / ".loci"
-    elsewhere.mkdir(parents=True)
-    (elsewhere / "build.yaml").write_text("schema_version: 1\n")
-    (tmp_path / "elsewhere" / "app.elf").write_bytes(b"\x7fELF")
-
-    proj, _ = _initialized_project(tmp_path, home)
-    first = _run_session_init(proj, home)
-    _amend_context(first,
-                   init_recipe=_to_bash_path(elsewhere / "build.yaml"),
-                   artifact=_to_bash_path(tmp_path / "elsewhere" / "app.elf"))
-    shutil.rmtree(proj / ".loci")
-
-    s = _run_session_init(proj, home)
-    assert "no `.loci/build.yaml` was found" in s.ctx
-    assert "recipe: " not in s.ctx, (
-        "the block named a recipe — one that exists, but not one that governs "
-        "this directory — in the same breath as saying none was found")
-    assert "artifact: " not in s.ctx
-    assert "elsewhere" not in s.ctx
-
-
-@needs_tools
-def test_the_block_that_says_no_recipe_was_found_does_not_name_one(tmp_path):
-    """`init_recipe` records where the CLI last wrote a recipe. Printing that
-    path in the very block that says none was found from here is a
-    contradiction the model has to resolve, and the file may not exist on this
-    machine at all."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, _ = _initialized_project(tmp_path, home)
-    shutil.rmtree(proj / ".loci")
-
-    s = _run_session_init(proj, home)
-    assert "no `.loci/build.yaml` was found" in s.ctx
-    assert "recipe: " not in s.ctx, "the block named a recipe it just said was missing"
-    assert "artifact: " not in s.ctx
-    # The recorded target still stands — the CLI wrote it, and it is what the
-    # pre-edit hook needs until the first analysis settles this.
-    assert s.context["loci_target"] == "armv7e-m"
-
-
-@needs_tools
-def test_a_detector_that_could_not_run_says_so(tmp_path):
-    """A crashed detector is not evidence that this is not a project — but it
-    used to print the `no_project` sentence, naming build files, for a
-    directory that may well hold one."""
-    plugin = tmp_path / "plugin"
-    (plugin / "hooks").mkdir(parents=True)
-    (plugin / ".claude-plugin").mkdir(parents=True)
-    shutil.copytree(PLUGIN_ROOT / "lib", plugin / "lib",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy(PLUGIN_ROOT / "hooks" / "session-init.sh", plugin / "hooks")
-    (plugin / ".claude-plugin" / "plugin.json").write_text('{"name":"loci","version":"9.9.9"}')
-    (plugin / "lib" / "detect-project.sh").write_text(
-        "#!/usr/bin/env bash\nexit 1\n", encoding="utf-8", newline="\n")
-
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    (home / ".loci" / "state").mkdir(parents=True)
-
-    res = subprocess.run(
-        [_find_bash(), _to_bash_path(plugin / "hooks" / "session-init.sh")],
-        env=_env(home), cwd=target, capture_output=True, text=True,
-        timeout=60, stdin=subprocess.DEVNULL)
-    assert res.returncode == 0, res.stderr
-    ctx = json.loads(res.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "LOCI: inactive (detection: failed)" in ctx
-    assert "not a claim that it is not a project" in ctx
-    assert "no build file (Makefile" not in ctx, (
-        "a detector crash was reported as an absence of build files")
-    assert "LOCI auto-run rules" not in ctx
-
-
-# ── the writer: merge, don't overwrite; clear, don't accumulate ─────────────
-
-@needs_tools
-def test_cli_written_keys_survive_a_session_start(tmp_path):
-    """PARKED FINDING P3. ``detect_and_write_context`` used to overwrite this
-    file wholesale ("Always overwrites — no stale state left"), so everything
-    ``loci init`` recorded — ``init_status`` above all — was destroyed at the
-    next SessionStart, and §6.2's "carried forward by session-init" was
-    unimplementable. Asserted on the ARMED branch, the only one that writes
-    scan output at all."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    _amend_context(first,
-                   init_status="failed", init_at="2026-08-28T00:00:00Z",
-                   init_reason="the tree did not build", init_candidates=[],
-                   validated="unvalidated", confirmed_by_user=False,
-                   init_recipe="/nowhere/.loci/build.yaml")
-
-    after = _run_session_init(target, home).context
-    assert after["init_status"] == "failed"
-    assert after["init_at"] == "2026-08-28T00:00:00Z"
-    assert after["init_reason"] == "the tree did not build"
-    assert after["validated"] == "unvalidated"
-    assert after["confirmed_by_user"] is False
-    assert after["init_recipe"] == "/nowhere/.loci/build.yaml"
-
-
-@needs_tools
-def test_a_field_the_scan_no_longer_emits_is_deleted(tmp_path):
-    """The other half of the merge rule. A blanket merge would keep the eleven
-    dropped fields — and a stale ``build_system`` a scanning session wrote — for
-    ever on a machine upgrading into this version."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    # All ELEVEN — the ten report §6.3's audit dropped, and `loci_artifacts`,
-    # which T14 dropped with the scan — because the owned-key list could lose
-    # six of them and the suite stayed green. The promise in the comment is
-    # the list, so the test is the list.
-    dead = {"asm_files": [], "binaries": [], "build_compiler": "gcc",
-            "cross_compilers": ["arm-none-eabi-gcc"], "detected_at": "2026-01-01T00:00:00Z",
-            "language_stack": ["cpp"], "loci_compatible": True,
-            "project_type": "cpp", "scan_depth": 8, "source_files": ["main.c"],
-            "loci_artifacts": [{"path": "/x/a.o", "mtime": 1}]}
-    _amend_context(first, build_system="cargo", **dead)
-
-    after = _run_session_init(target, home).context
-    for key in dead:
-        assert key not in after, f"{key} survived a session start"
-    assert "build_system" not in after, (
-        "a build fact a scanning session left behind was kept as if a recipe "
-        "had recorded it — no recipe governs this project")
-
-
-@needs_tools
-def test_a_machine_derived_target_already_in_the_file_is_deleted(tmp_path):
-    """Two halves, and the tests only pinned one. Stripping the machine keys
-    out of the SCAN's fresh output does nothing about a value a PREVIOUS plugin
-    version left in the file — and `pre-edit-hook.sh` reads `loci_target` by
-    name and ships it to `loci build snapshot`."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    # What a pre-T08 plugin left behind on a host-x86 project with a cross-gcc
-    # on PATH.
-    _amend_context(first, loci_target="armv7e-m", architecture="armv7e-m")
-
-    after = _run_session_init(target, home).context
-    assert "loci_target" not in after, (
-        f"a stale machine-derived target survived: {after.get('loci_target')!r}")
-    assert "architecture" not in after
-
-
-@needs_tools
-def test_a_refusal_clears_every_scan_key_not_just_the_target(tmp_path):
-    """A refusal is exactly the state in which no recipe governs, so every
-    build fact in the file is a leftover — a pre-T14 scan's, or an init's since
-    refused — and `pre-edit-hook.sh` reads `loci_target` by name. Gutting the
-    key list down to two names once left the suite green while those keys
-    outlived the refusal that disarmed the project."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    (target / "main.c").write_text("int main(){}")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    # What a pre-T14 plugin's scan left in the file, beside the refusal.
-    _amend_context(first, init_status="unsupported",
-                   compiler="arm-none-eabi-gcc", compiler_path="/usr/bin/arm-none-eabi-gcc",
-                   build_system="make", architecture="armv7e-m", loci_target="armv7e-m",
-                   artifact="/x/app.elf", elf_files=["/x/app.elf"],
-                   build_dirs=["/x"],
-                   loci_artifacts=[{"path": "/x/a.o"}], subproject_roots=[])
-
-    after = _run_session_init(target, home).context
-    for key in ("compiler", "compiler_path", "build_system", "architecture",
-                "artifact", "elf_files", "build_dirs", "loci_artifacts",
-                "loci_target", "detection_status", "subproject_roots"):
-        assert key not in after, f"{key} outlived the refusal that disarmed it"
-    assert after["init_status"] == "unsupported"
-
-
-@needs_tools
-def test_the_scan_key_list_matches_what_the_detector_emits(tmp_path):
-    """Both files call this equality load-bearing — "adding a key here claims it
-    away from the CLI" — and nothing tested it. If the emit gains a key the
-    writer does not own, that key is never cleared; if it loses one, the writer
-    deletes something no longer replaced."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    emitted = set(_detect(target, tmp_path / "home"))
-
-    text = (PLUGIN_ROOT / "lib" / "setup-steps.sh").read_text(encoding="utf-8")
-    m = re.search(r"^_LOCI_SCAN_KEYS='(\[[^']*\])'", text, re.M)
-    assert m, "_LOCI_SCAN_KEYS is not where the writer keeps it"
-    assert set(json.loads(m.group(1))) == emitted, (
-        "detect-project.sh's emit and the writer's scan-key list have drifted:\n"
-        f"  emit only:  {sorted(emitted - set(json.loads(m.group(1))))}\n"
-        f"  list only:  {sorted(set(json.loads(m.group(1))) - emitted)}")
-
-
-@needs_tools
-def test_the_identity_keys_are_always_refreshed(tmp_path):
-    """``cwd_hash``/``branch_slug`` name the measurement and stats files; every
-    branch must write them, including the ones that never scan."""
-    home = tmp_path / "home"
-    home.mkdir()
-    _, s = _initialized_project(tmp_path, home)
-    ctx = s.context
-    assert ctx["cwd_hash"] and ctx["branch_slug"] and ctx["project_root"]
-    assert ctx["cwd_hash"] in s.context_file.name
-
-
-@needs_tools
-@pytest.mark.parametrize("junk", [
-    "{not json",
-    "[1,2,3]",
-    '"a string"',
-    "",
-    # Two concatenated objects: the read streamed BOTH, merged the session's
-    # fields into each, and wrote both back — a file that used to heal itself
-    # every session instead propagated for ever, and every downstream
-    # `jq -r '.loci_target'` answered with two lines.
-    '{"init_status":"ok","loci_target":"tc399"}\n{"a":1}',
-])
-def test_a_corrupt_context_file_heals_instead_of_propagating(tmp_path, junk):
-    """Nothing in a corrupt file can be preserved, and a hook that dies takes
-    the whole SessionStart with it. One object out, always."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    first.context_file.write_text(junk, encoding="utf-8")
-    s = _run_session_init(target, home)
-    assert s.armed
-    assert s.context["detection_status"] == "ok"      # json.loads: exactly one object
-    assert s.context.get("a") is None, "the second object survived the heal"
-
-
-@needs_tools
-def test_a_context_path_that_is_a_directory_is_refused(tmp_path):
-    """`mv -f "$TMP" "$KEYED"` moves INTO a directory and reports success, so
-    the session was told a directory was its context file while a
-    `.tmp.<pid>` accumulated inside it every start."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    path = first.context_file
-    path.unlink()
-    path.mkdir()
-
-    s = _run_session_init(target, home)
-    assert not list(path.glob("*.tmp.*")), "a temp file was left inside the directory"
-    # The session still comes up — a broken state directory must never take
-    # SessionStart down with it.
-    assert "loci version:" in s.ctx
-
-
-@needs_tools
-def test_a_broken_cli_is_reported_even_where_loci_is_inactive(tmp_path):
-    """A docs repo is where a user most often asks "why is loci not working".
-    The inactive blocks drop the healthy `loci command: loci (on PATH)` line to
-    save bytes; they must not drop the line that says something is wrong."""
+def test_a_broken_cli_is_reported_in_a_docs_repo(tmp_path):
+    """A docs repo is where a user most often asks "why is loci not working"."""
     target = tmp_path / "docs"
     (target / ".git").mkdir(parents=True)
     (target / "README.md").write_text("# docs")
@@ -2004,120 +1357,35 @@ def test_a_broken_cli_is_reported_even_where_loci_is_inactive(tmp_path):
     # which exists under the fixture HOME: that is the "prerequisite uv is
     # missing" branch.
     jq_dir = _to_bash_path(Path(shutil.which("jq")).parent)
+    # `augment_path` adds these two directories whenever they exist, whatever
+    # PATH says, so a `uv` living in one of them makes the "uv is missing"
+    # branch unreachable on that host — Homebrew's uv on a Mac (AAD-7771). The
+    # branch under test is then not a property this host can show.
+    for fixed in ("/usr/local/bin", "/opt/homebrew/bin"):
+        if (Path(fixed) / "uv").exists():
+            pytest.skip(f"uv is installed at {fixed}/uv, a directory "
+                        "session-init.sh always puts on PATH, so the "
+                        "'prerequisite uv is missing' branch cannot be reached "
+                        "on this host")
     s = _run_session_init(
         target, home,
         PATH=f"{_to_bash_path(bin_dir)}:{jq_dir}:/usr/bin:/bin:/usr/local/bin")
-    assert "LOCI: inactive" in s.ctx
-    assert "loci: NOT installed" in s.ctx, (
-        f"a broken CLI was invisible in an inactive session:\n{s.ctx}")
-    assert "loci command: loci (on PATH)" not in s.ctx, (
-        "the healthy line is what the inactive block drops")
-
-
-@needs_tools
-def test_legacy_measurements_migrate_even_when_the_cli_wrote_the_context_first(tmp_path):
-    """The migration renames THREE files, and `loci init` writes the context
-    under the new key by itself. Guarding the pass on that file's existence
-    meant a project initialized before its first session-init had its
-    measurement and stats history orphaned under the legacy key — silently,
-    with `/loci:trends` showing nothing."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    state = home / ".loci" / "state"
-    state.mkdir(parents=True)
-
-    # Learn this project's key and slug from a real run, then stage the legacy
-    # trio around it — the CLI's context file included.
-    first = _run_session_init(target, home)
-    new_hash = first.context["cwd_hash"]
-    slug = first.context["branch_slug"]
-    legacy = "a" * 12
-    (state / f"project-context-{legacy}.json").write_text(
-        json.dumps({"project_root": str(target), "cwd_hash": legacy}), encoding="utf-8")
-    (state / f"loci-measurements-{legacy}-{slug}.jsonl").write_text('{"f":1}\n',
-                                                                    encoding="utf-8")
-    (state / f"loci-stats-{legacy}-{slug}.json").write_text('{"functions":3}',
-                                                            encoding="utf-8")
-    # The marker the previous pass would have left; delete it so this session
-    # is the one that migrates (the real first-contact ordering).
-    for m in state.glob(".migrated-*"):
-        m.unlink()
-
-    _run_session_init(target, home)
-    assert (state / f"loci-measurements-{new_hash}-{slug}.jsonl").is_file(), (
-        "the measurement history was left orphaned under the legacy key")
-    assert (state / f"loci-stats-{new_hash}-{slug}.json").is_file()
-    assert not (state / f"loci-measurements-{legacy}-{slug}.jsonl").exists()
-
-
-@needs_tools
-@pytest.mark.skipif(sys.platform != "win32",
-                    reason="needs an OS where an open handle blocks a rename")
-def test_the_marker_is_withheld_when_a_rename_failed(tmp_path):
-    """The marker is what makes the migration a one-shot, so writing it after a
-    FAILED `mv` would drop the file on the floor for ever — the retry the
-    docstring's "idempotent" promises. Removing the `_migrate_failed` guard left
-    all 57 tests green."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    state = home / ".loci" / "state"
-    state.mkdir(parents=True)
-
-    first = _run_session_init(target, home)
-    new_hash, slug = first.context["cwd_hash"], first.context["branch_slug"]
-    legacy = "b" * 12
-    (state / f"project-context-{legacy}.json").write_text(
-        json.dumps({"project_root": str(target), "cwd_hash": legacy}), encoding="utf-8")
-    measurements = state / f"loci-measurements-{legacy}-{slug}.jsonl"
-    measurements.write_text('{"f":1}\n', encoding="utf-8")
-    for m in state.glob(".migrated-*"):
-        m.unlink()
-
-    # Hold the file open: Windows refuses to rename it out from under us.
-    with measurements.open("r+", encoding="utf-8"):
-        _run_session_init(target, home)
-
-    assert measurements.is_file(), "the fixture did not actually block the rename"
-    assert not list(state.glob(f".migrated-{new_hash}-{slug}")), (
-        "the marker was written despite a failed rename, so the retry the "
-        "next session owes this file will never happen")
-
-    # …and the next session, with the handle released, completes it.
-    _run_session_init(target, home)
-    assert (state / f"loci-measurements-{new_hash}-{slug}.jsonl").is_file()
-    assert list(state.glob(f".migrated-{new_hash}-{slug}"))
-
-
-@needs_tools
-def test_the_migration_marker_stops_the_scan_repeating(tmp_path):
-    """It is a one-shot that used to cost a `jq` and a `stat` per file in the
-    state directory on every session — ~13 s of a ~17 s SessionStart against a
-    45-project directory."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    home = tmp_path / "home"
-    home.mkdir()
-
-    first = _run_session_init(target, home)
-    state = home / ".loci" / "state"
-    markers = list(state.glob(".migrated-*"))
-    assert len(markers) == 1, f"no completion marker was written: {list(state.iterdir())}"
-    assert first.context["cwd_hash"] in markers[0].name
-    assert first.context["branch_slug"] in markers[0].name, (
-        "the marker must be per-branch: the measurement and stats files are "
-        "named per branch, so a branch first seen later has its own pair to move")
+    assert "loci: NOT installed" in s.ctx, f"a broken CLI was invisible:\n{s.ctx}"
 
 
 # ── the recipe walk ─────────────────────────────────────────────────────────
 
+def _find_recipe(start: Path, home: Path) -> str:
+    lib = _to_bash_path(PLUGIN_ROOT / "lib" / "setup-steps.sh")
+    res = subprocess.run(
+        [_find_bash(), "-c", f'. "{lib}" && _loci_find_recipe "$1" || true', "_",
+         _to_bash_path(start)],
+        env=_env(home), capture_output=True, text=True, encoding="utf-8", timeout=30)
+    return res.stdout.strip()
+
+
 @needs_tools
-def test_a_recipe_at_the_repo_root_governs_a_subdirectory_session(tmp_path):
-    """One recipe per repo root; a session opened in a subdirectory finds it."""
+def test_a_recipe_at_the_repo_root_governs_a_subdirectory(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     repo = tmp_path / "repo"
@@ -2127,16 +1395,12 @@ def test_a_recipe_at_the_repo_root_governs_a_subdirectory_session(tmp_path):
     sub = repo / "drivers" / "uart"
     sub.mkdir(parents=True)
 
-    s = _run_session_init(sub, home)
-    assert "has a recipe but no recorded state" in s.ctx
-    assert not s.detector_ran
+    assert _find_recipe(sub, home) == _to_bash_path(repo.resolve() / ".loci" / "build.yaml")
 
 
 @needs_tools
 def test_the_walk_stops_at_the_git_toplevel(tmp_path):
-    """A recipe in an unrelated PARENT of the checkout must not govern it —
-    otherwise one stray ``~/projects/.loci/build.yaml`` measures every repo
-    underneath it against one target."""
+    """One stray ``~/projects/.loci/build.yaml`` must not govern every repo under it."""
     home = tmp_path / "home"
     home.mkdir()
     parent = tmp_path / "projects"
@@ -2144,27 +1408,20 @@ def test_the_walk_stops_at_the_git_toplevel(tmp_path):
     (parent / ".loci" / "build.yaml").write_text("schema_version: 1\n")
     repo = parent / "unrelated"
     (repo / ".git").mkdir(parents=True)
-    (repo / "notes.md").write_text("# hi")
 
-    s = _run_session_init(repo, home)
-    assert "LOCI: inactive (detection: no_project)" in s.ctx
-    assert "recipe:" not in s.ctx
+    assert _find_recipe(repo, home) == ""
 
 
 @needs_tools
 def test_a_recipe_in_home_is_never_adopted(tmp_path):
-    """``~/.loci`` is the STATE directory. A ``~/.loci/build.yaml`` there is far
-    likelier to be stray state than a deliberate recipe for every project under
-    the home directory, and adopting it silently is the worst kind of wrong."""
+    """``~/.loci`` is the state directory, so a recipe there is stray state."""
     home = tmp_path / "home"
     (home / ".loci").mkdir(parents=True)
     (home / ".loci" / "build.yaml").write_text("schema_version: 1\n")
     target = home / "scratch"
     target.mkdir()
 
-    s = _run_session_init(target, home)
-    assert "LOCI: inactive (detection: no_project)" in s.ctx
-    assert "recipe:" not in s.ctx
+    assert _find_recipe(target, home) == ""
 
 
 # ── advertisements ──────────────────────────────────────────────────────────
@@ -2181,11 +1438,6 @@ def test_the_available_line_advertises_init(tmp_path):
     available = [ln for ln in s.ctx.splitlines() if ln.startswith("Available:")]
     assert len(available) == 1
     assert "/loci:init" in available[0]
-
-    # And in the initialized block, which is where a user goes to SWITCH target.
-    _, s2 = _initialized_project(tmp_path, home / "other")
-    available = [ln for ln in s2.ctx.splitlines() if ln.startswith("Available:")]
-    assert len(available) == 1 and "/loci:init" in available[0]
 
 
 # ── `loci_cli_version` — two wrong spellings shipped because nothing drove it ──
@@ -2261,7 +1513,7 @@ def test_the_version_gate_table_keeps_all_four_rows_and_their_qualifiers():
     section, which survives deleting a whole row.
     """
     contract = (PLUGIN_ROOT / "skills" / "_shared"
-                / "loci-runtime-contract.md").read_text(encoding="utf-8")
+                / "house-rules.md").read_text(encoding="utf-8")
     flat = re.sub(r"[ \t]+", " ", contract)
     start = flat.index("| What the context shows |")
     end = flat.index("Read the rows in order", start)
@@ -2341,143 +1593,20 @@ def test_every_go_shape_passes_the_gate(name, files, tmp_path):
     assert "build_system" not in info, "the plugin is classifying trees again"
 
 
-# ── todo 027: the fields the keyed file no longer carries ───────────────────
-
-def test_the_writer_owns_no_pruned_key():
-    """The four key sets, read off the file that holds them.
-
-    `architecture` was `loci_target` under a second name; `elf_files` and
-    `build_dirs` were lists whose one useful entry — the recipe's linked image —
-    is the scalar `artifact`. All three belong to DEAD, which is deleted on every
-    branch, and to none of the sets that are replaced or carried forward.
-    """
-    text = (PLUGIN_ROOT / "lib" / "setup-steps.sh").read_text(encoding="utf-8")
-    owned = {}
-    for name in ("_LOCI_DEAD_KEYS", "_LOCI_SCAN_KEYS", "_LOCI_CLI_KEYS",
-                 "_LOCI_RECIPE_KEYS"):
-        m = re.search(rf"^{name}='(\[[^']*\])'", text, re.M)
-        assert m, f"{name} is not where the writer keeps it"
-        owned[name] = set(json.loads(m.group(1)))
-
-    pruned = {"architecture", "elf_files", "build_dirs"}
-    assert pruned <= owned["_LOCI_DEAD_KEYS"], (
-        f"a pruned key is not deleted on every branch: "
-        f"{sorted(pruned - owned['_LOCI_DEAD_KEYS'])}")
-    for name in ("_LOCI_SCAN_KEYS", "_LOCI_CLI_KEYS", "_LOCI_RECIPE_KEYS"):
-        assert not pruned & owned[name], (
-            f"{name} still owns {sorted(pruned & owned[name])}")
-    # The scalar that replaced the two lists is carried forward AND mirrored: it
-    # is `loci init`'s to write, and it is worthless without the recipe.
-    assert "artifact" in owned["_LOCI_CLI_KEYS"]
-    assert "artifact" in owned["_LOCI_RECIPE_KEYS"]
-    assert "artifact" not in owned["_LOCI_DEAD_KEYS"]
-
-
-@needs_tools
-def test_the_pruned_keys_go_even_where_the_mirror_is_kept(tmp_path):
-    """The initialized branch keeps every recorded build fact, so it is the one
-    branch a dead key could survive on. A file an older plugin or CLI left them
-    in loses them at the next session start, and nothing writes migration code
-    for a file that is rebuilt on every SessionStart."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, first = _initialized_project(tmp_path, home)
-    _amend_context(first, architecture="armv7e-m",
-                   elf_files=[_to_bash_path(proj / "build" / "app.elf")],
-                   build_dirs=[_to_bash_path(proj / "build")])
-
-    s = _run_session_init(proj, home)
-
-    for key in ("architecture", "elf_files", "build_dirs"):
-        assert key not in s.context, f"{key} survived a session start"
-    # A prune, not a wipe: the mirror's own facts are still there, and the
-    # `artifact:` line is still read out of `artifact`.
-    assert s.context["loci_target"] == "armv7e-m"
-    assert s.context["artifact"].endswith("app.elf")
-    assert "artifact: " in s.ctx and "app.elf" in s.ctx
-
-
 # ── AAD-7607: a project whose recipe records a binary and no database ─────
 
-@needs_tools
-def test_an_artifact_only_project_is_told_its_scope_instead_of_the_auto_runs(tmp_path):
-    """The two rules are mutually exclusive, and that is the design.
 
-    Under this recipe `loci analyse prepare` answers `compdb_absent` for every
-    source, so "after any Edit/Write … you MUST invoke loci-post-edit" is an
-    instruction to go and be refused. Printing both rules would leave the block
-    arguing with itself, and a session-start line loses that argument to a skill
-    description that says MANDATORY — which is why `_DISARM` names its competitors
-    rather than contradicting them in the abstract. So one replaces the other.
-    """
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, s = _initialized_project(tmp_path, home, artifact_only=True)
-
-    assert "recipe is artifact-only" in s.ctx, (
-        f"the scope was never stated: {s.ctx!r}")
-    assert "you MUST invoke the loci:loci-post-edit skill" not in s.ctx, (
-        "the auto-run rules survived beside the rule that countermands them")
-    # The three things the allowance buys, each of which the ticket's session
-    # needed and did not have.
-    for promised in ("stack-depth", "memory-report", "control-flow"):
-        assert promised in s.ctx, f"{promised} is not named as working here"
-    assert "do NOT rebuild or relink" in s.ctx, (
-        "the rebuild refusal is the one this ticket was filed for")
-    assert "do NOT run /loci:init" in s.ctx
-
-
-@needs_tools
-def test_an_ordinary_project_still_gets_the_auto_run_rules(tmp_path):
-    """The non-vacuity control: same fixture, one field different."""
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, s = _initialized_project(tmp_path, home)
-
-    assert "you MUST invoke the loci:loci-post-edit skill" in s.ctx
-    assert "recipe is artifact-only" not in s.ctx
-
-
-@needs_tools
-def test_the_artifact_only_block_stays_inside_its_own_allowance(tmp_path):
-    """A substitution, so the ceiling is the steady state plus the DIFFERENCE
-    between the two rules — not plus the rule.
-
-    The CLI version is pinned here for P68's reason, and this test re-earned it:
-    unpinned, it measured 2 826 B against a 2 603 B ceiling on a machine whose
-    `loci` was behind the pin this very branch raised — 240 B of version-skew
-    advisory, an environment fact, charged to a prose budget. The advisory has its
-    own ceiling two tests up; this one is about the substitution.
-    """
+def test_the_legacy_bash_line_is_printed_under_bash_3_and_nowhere_else(tmp_path):
+    """One line, only on a host running the legacy profile (stock macOS bash
+    with no newer bash — `lib/bash-compat.sh`), naming the reduced guard and
+    the fix; and within the allowance the two budget tests grant it."""
     home = tmp_path / "home"
     home.mkdir()
     proj, s = _initialized_project(
-        tmp_path, home, artifact_only=True,
-        env_extra=_cli_version_env(tmp_path, _pinned_cli_version()))
-    assert "this plugin pins" not in s.ctx, (
-        "a skew advisory is in this block, so the shim is not the `loci` the hook "
-        "resolved and the number below is an environment fact")
-
-    size = _modelled_size(s.ctx)
-    ceiling = _STEADY_STATE_BUDGET + _ARTIFACT_ONLY_ALLOWANCE
-    assert size <= ceiling, (
-        f"the artifact-only block models {size} B, over its {ceiling} B ceiling "
-        f"({_STEADY_STATE_BUDGET} B steady state + {_ARTIFACT_ONLY_ALLOWANCE} B "
-        f"for the substitution)")
-
-
-@needs_tools
-def test_a_false_artifact_only_is_not_a_true_one(tmp_path):
-    """`false` and the absent key are the same answer, and neither is `true`.
-
-    The mirror read tests `= "true"` rather than `-n`, because every spelling
-    including `false` passes a `-n` — and the answer this must not get wrong is the
-    positive: a project WITH a database whose auto-runs got disarmed stops being
-    measured.
-    """
-    home = tmp_path / "home"
-    home.mkdir()
-    proj, s = _initialized_project(tmp_path, home, artifact_only=False)
-
-    assert "recipe is artifact-only" not in s.ctx
-    assert "you MUST invoke the loci:loci-post-edit skill" in s.ctx
+        tmp_path, home, env_extra=_cli_version_env(tmp_path, _pinned_cli_version()))
+    lines = [l for l in s.ctx.splitlines() if l.startswith("bash: ")]
+    if _legacy_bash():
+        assert len(lines) == 1 and "brew install bash" in lines[0], s.ctx
+        assert len(lines[0].encode()) + 1 <= _LEGACY_LINE_ALLOWANCE, len(lines[0].encode())
+    else:
+        assert not lines, lines

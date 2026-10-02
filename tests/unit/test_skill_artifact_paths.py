@@ -19,9 +19,23 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.unit._skill_text import reach
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS_DIR = PLUGIN_ROOT / "skills"
-CONTRACT = SKILLS_DIR / "_shared" / "loci-runtime-contract.md"
+# The shared contract is two files since 22 Sep (todo [082]): the house rules,
+# and `compile-route.md` for the sections only a skill that builds or diffs an
+# artifact reads. A check about what "the shared contract" says reads both.
+HOUSE_RULES = SKILLS_DIR / "_shared" / "house-rules.md"
+COMPILE_ROUTE = SKILLS_DIR / "_shared" / "compile-route.md"
+
+class _Both:
+    """The two shared files as one document, for a whole-file membership check."""
+    def read_text(self, encoding="utf-8"):
+        return (HOUSE_RULES.read_text(encoding=encoding) + "\n"
+                + COMPILE_ROUTE.read_text(encoding=encoding))
+
+SHARED = _Both()
 
 # Skills that consume compile artifacts. `loci-preflight` is included: it does not
 # read a baseline through the script, but it does compile, and it spelled the flat
@@ -201,7 +215,10 @@ HOOK_SCRIPTS = ("post-edit-hook.sh", "post-bash-bypass.sh", "pre-edit-hook.sh", 
                 "prompt-submit-turn.sh", "manifest-status-nudge.sh",
                 # The Stop impact flush, a `hooks.json` command string until it
                 # needed a log line of its own. Same shape: one `loci` call.
-                "stats-flush.sh")
+                "stats-flush.sh",
+                # AAD-7788: records a Copilot subagent's start for the adapter;
+                # no `loci` call, no path of its own.
+                "subagent-start.sh")
 
 
 def test_every_linted_hook_exists():
@@ -497,7 +514,8 @@ def test_no_shipped_fence_drives_the_leaf_verbs_the_pair_replaced():
     skill = _doc("loci-post-edit")[1]
     assert "data.headers" in skill and "data.units" in skill, (
         "post-edit's Step 0b no longer reads the header account `prepare` returns")
-    assert 'id="header-edits"' in CONTRACT.read_text(encoding="utf-8") and "#header-edits" in skill
+    assert 'id="header-edits"' in SHARED.read_text(encoding="utf-8")
+    assert "#header-edits" in reach("loci-post-edit")
 
 
 def test_exec_trace_runs_the_pair_and_nothing_else():
@@ -523,14 +541,19 @@ def test_no_skill_reads_a_bare_exit_number_as_stale():
     now, and every skill branches on the code before the number."""
     for name in ("loci-post-edit", "loci-preflight", "exec-trace"):
         path, text = _doc(name)
-        assert "manifest_stale" in text, f"{_rel(path)} never names error.code manifest_stale"
+        assert ("manifest_stale" in reach(name)
+                or "house-rules.md#measure-exit-codes" in text), (
+            f"{_rel(path)} neither names error.code manifest_stale nor links the "
+            f"exit-code table that does")
         assert "Branch on `$?` first" not in text and \
                "Branch on `$?` before you parse anything" not in text, (
             f"{_rel(path)} still branches on the exit number before the envelope")
         for stale_as_3 in re.finditer(r"(\| `3` \|[^\n]*[Ss]tale|`3` the tree moved)", text):
             raise AssertionError(f"{_rel(path)}: {stale_as_3.group(0)!r}")
-    contract = CONTRACT.read_text(encoding="utf-8")
-    assert "manifest_stale" in contract and "exit 6" in contract
+    contract = SHARED.read_text(encoding="utf-8")
+    assert re.search(r"\| `6` \|[^\n]*manifest_stale", contract), (
+        "the exit-code table no longer binds 6 to manifest_stale, so the number "
+        "and the code can drift apart again")
 
 
 # ── the legacy build root in prose ───────────────────────────────────────────
