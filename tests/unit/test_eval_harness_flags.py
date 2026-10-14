@@ -553,6 +553,9 @@ def _run(tripwire, *flags, host=None):
     proc = subprocess.run(
         [BASH, str(RUNNER), "--ble-root", str(ble), *flags],
         capture_output=True, text=True, encoding="utf-8", env=env, cwd=str(PLUGIN_ROOT))
+    # pytest shows these only for a failing test; the staging reasons are on stderr.
+    print(proc.stdout)
+    print(proc.stderr, file=sys.stderr)
     assert not log.exists(), f"claude WAS invoked: {log.read_text()}"
     cp_log = log.parent / "copilot-was-called.log"
     assert not cp_log.exists(), f"copilot WAS invoked: {cp_log.read_text()}"
@@ -790,7 +793,7 @@ def _runner_lines() -> list[str]:
     # the only place a plan-turn write can be told from turn 2's legitimate one.
     ('"$HOST_BIN" "${C_ARGS[@]}" "${PLAN_TURN[@]}"',
      'fixture_sweep "$BLE_ROOT"'),
-    ('--resume "$SID" "${RESUME_TURN[@]}" ) >"$T2_JSON"',
+    ('"$HOST_BIN" "${T2_ARGV[@]}" ) >"$T2_JSON"',
      'fixture_sweep "$BLE_ROOT"'),
 ])
 def test_the_sweep_runs_before_any_early_return(call, sweep):
@@ -1292,6 +1295,32 @@ def test_copilot_plan_mode_is_plan_plus_deny_write_and_nothing_else_is(tripwire)
     assert seen == {"plan", "no-plan"}
 
 
+@pytest.mark.parametrize("host, plan, resume", [
+    ("claude", " --permission-mode plan ", "--permission-mode acceptEdits"),
+    ("copilot", " --plan ", "--mode interactive"),
+])
+def test_the_two_turn_resume_argv_is_turn_ones_without_plan_mode(tripwire, host, plan, resume):
+    """Turn 2 resumes turn 1's session out of plan mode: the same flags, then
+    `--resume <id>`, then the host's edit-permitting mode — and none of turn 1's
+    plan flags or deny list, which would refuse the edit turn 2 exists for. The
+    dry run records turn 2 from the builder the real turn calls
+    (`two_turn_resume_argv`), so this pins the argv that runs (AAD-7835)."""
+    proc = _run(tripwire, "--dry-run", host=None if host == "claude" else host)
+    files = sorted(_results_dir(proc).glob("*_dryrun.txt"))
+    seen = 0
+    for f in files:
+        lines = dict(ln.split(":", 1) for ln in f.read_text(encoding="utf-8").splitlines() if ":" in ln)
+        if lines.get("flow", "").strip() != "two-turn":
+            assert "resume" not in lines, f.name
+            continue
+        turn1 = lines["argv"].strip()
+        assert plan in turn1, turn1
+        flags = turn1[:turn1.index(plan)]
+        assert lines["resume"].strip() == f"{flags} --resume <session-id> {resume}", f.name
+        seen += 1
+    assert seen, "no two-turn eval in the dry run"
+
+
 def _results_dir(proc) -> Path:
     results = next(ln.split("→", 1)[1].strip() for ln in proc.stdout.splitlines()
                    if ln.startswith("Results →"))
@@ -1406,7 +1435,11 @@ def test_the_grader_call_is_spelled_per_host_in_the_source():
     assert '"$HOST_BIN" "${GRADER_HOST_FLAGS[@]}" --model "$GRADER_MODEL"' in text
     assert "GRADER_HOST_FLAGS=(-s)" in text
     assert "GRADER_HOST_FLAGS=(-p)" in text
-    assert text.count("timeout --kill-after=10 \"$GRADE_TIMEOUT\"") == 1
+    # Through the harness's own wrapper, which falls back to `gtimeout` and then a
+    # bash watchdog: stock macOS has no `timeout`, and the bare call this pinned
+    # until AAD-7835 made every macOS grade a GRADE_ERROR.
+    assert text.count('| with_timeout "$GRADE_TIMEOUT" "$HOST_BIN"') == 1
+    assert "timeout --kill-after=10 \"$GRADE_TIMEOUT\"" not in text
 
 
 # ── the transcript readers, both hosts ───────────────────────────────────────
@@ -1562,3 +1595,37 @@ def test_the_harness_reads_transcripts_through_the_host_aware_readers():
         assert needle in text, needle
     assert text.count('select(.type=="system" and .subtype=="init")') == 0
     assert 'TOOL_CALLS=$(transcript_tool_calls "(no tool calls)" "$JSON_FILE")' in text
+
+
+def test_the_claude_plan_mode_eval_carries_the_plan_notice(tripwire):
+    """AAD-7803. `--permission-mode plan` is the permission half of plan mode and
+    nothing else: in print mode Claude Code tells the model no word about it
+    (probed on 2.1.288 — asked, the model quotes "no such instruction"), where
+    the interactive REPL injects a reminder and Copilot's host prefixes `[[PLAN]]`.
+    The preflight skill gates on that signal, so the Claude flow's system prompt
+    carries the notice the REPL would — appended, so a non-plan eval's system
+    prompt is byte for byte what it always was, and argv never changes."""
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1")
+    plan_text = (_results_dir(proc) / "loci-preflight_evalpf-critical-1_sysprompt.txt").read_text(encoding="utf-8")
+    assert plan_text.endswith("\n--- END PLAN MODE ---"), plan_text[-200:]
+    assert plan_text.count("--- PLAN MODE ---") == 1
+    assert "Plan mode is active for this turn (the headless form of /plan: --permission-mode plan)." in plan_text
+    assert "You MUST NOT make any edits" in plan_text
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-4")
+    off_text = (_results_dir(proc) / "loci-preflight_evalpf-critical-4_sysprompt.txt").read_text(encoding="utf-8")
+    assert "PLAN MODE" not in off_text
+    assert off_text.endswith("--- END SKILL INSTRUCTIONS ---")
+    # Same skill file, so the plan eval's prompt is the non-plan one plus the
+    # notice — once the results directory each run names in its session context
+    # is normalised away, with the stale-fixture block: each run stages it with a
+    # real `loci init`, so one run can carry it and the next not.
+    def _ts(text: str) -> str:
+        text = re.sub(r"\nStale-artifact fixture root: .*(?:\n  .*)*", "", text)
+        return re.sub(r"eval-results/\d{8}-\d{6}", "eval-results/TS", text)
+    head, sep, _ = _ts(plan_text).partition("\n\n--- PLAN MODE ---\n")
+    assert sep, "no plan notice in the plan-mode eval's system prompt"
+    assert head == _ts(off_text)
+    # Copilot's host says it itself (`[[PLAN]]` on a `--plan` run): no notice there.
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", host="copilot")
+    sent = (_results_dir(proc) / "loci-preflight_evalpf-critical-1_prompt_sent.txt").read_text(encoding="utf-8")
+    assert "PLAN MODE" not in sent

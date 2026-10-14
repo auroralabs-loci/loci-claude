@@ -28,7 +28,7 @@ augment_path
 
 echo ""
 echo -e "${BLUE}=========================================${NC}"
-echo -e "${BLUE}  LOCI Plugin for Claude Code${NC}"
+echo -e "${BLUE}  LOCI Plugin${NC}"
 echo -e "${BLUE}  SW Execution-Aware Analysis${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
@@ -74,8 +74,9 @@ echo -e "${GREEN}OK${NC}"
 # This step runs before the CLI is guaranteed to exist, so it cannot ask `loci`,
 # and `jq` is no longer a prerequisite. So: jq if the host has one, else a
 # python, else say plainly that nothing validated it. A missing parser is not a
-# broken install and must not fail the setup — Claude Code parses hooks.json
-# itself and reports its own error — but an INVALID file with a parser present
+# broken install and must not fail the setup — the host (Claude Code or GitHub
+# Copilot CLI) parses hooks.json itself and reports its own error — but an
+# INVALID file with a parser present
 # still stops here, which is the whole point of the step.
 JQ=$(command -v jq 2>/dev/null || true)
 PY_BIN=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
@@ -99,11 +100,14 @@ else
   echo -e "${YELLOW}skipped (no jq or python on this host)${NC}"
 fi
 
-# 6. Register hooks with Claude Code. As a plugin, Claude Code reads hooks.json
-# directly — skip when running from the plugin cache (the ../../.. heuristic
-# would resolve to a wrong path there).
+# 6. Register hooks with the host. As a plugin, both Claude Code and GitHub
+# Copilot CLI read hooks.json directly — skip when running from either host's
+# plugin cache (`~/.claude/plugins/…`, `~/.copilot/installed-plugins/…`): the
+# ../../.. heuristic resolves to a wrong path there. Under Copilot it resolved
+# to `~/.copilot` and wrote the hooks into a stray `~/.copilot/.claude/
+# settings.json` that no host reads (AAD-7792).
 echo -n "Registering hooks... "
-if echo "${PLUGIN_DIR}" | grep -q '\.claude/plugins'; then
+if echo "${PLUGIN_DIR}" | grep -q -e '\.claude/plugins' -e '\.copilot/installed-plugins'; then
   echo -e "${GREEN}plugin mode — hooks.json used directly${NC}"
 elif [ -z "$JQ" ]; then
   # Only the non-plugin (checkout) install reaches here, and the rewrite below
@@ -179,7 +183,7 @@ echo "In a project /loci:init has set up, the plugin will automatically:"
 echo "  - Pre-scan C/C++/Rust/Go edits and prompt execution-aware analysis"
 echo "  - Analyze ELF binaries locally via the loci CLI (timing, energy,"
 echo "    stack depth, memory, symbols, assembly, diff)"
-echo "  - Inject performance/regression findings into Claude's context"
+echo "  - Inject performance/regression findings into the agent's context"
 echo ""
 echo "Skills: /loci:exec-trace, /loci:stack-depth, /loci:memory-report, /loci:control-flow"
 echo "Auto-runs: loci-preflight (in /plan), loci-post-edit (after edits)"

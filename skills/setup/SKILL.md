@@ -61,8 +61,9 @@ command in their own terminal, then re-runs `/loci:setup`.
 
 First determine the platform and package manager yourself — then give the single
 correct command. Do NOT default to Debian/Ubuntu and do NOT ask the user what
-their distro is; work it out and hand them the right command directly. The
-session context (`Platform`, `OS Version`) tells you the OS. On macOS/Windows
+their distro is; work it out and hand them the right command directly.
+`uname -s` names the OS (`Darwin`, `Linux`; `MINGW*`/`MSYS*` or a PowerShell
+shell tool is Windows). On macOS/Windows
 that settles it (`brew` / `winget`). On Linux it does not — verify with
 `command -v` which package manager is present (`apt-get`, `dnf`, `pacman`, …)
 instead of assuming apt.

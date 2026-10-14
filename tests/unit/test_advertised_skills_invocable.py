@@ -141,7 +141,7 @@ def test_help_advertises_the_skills_a_user_cannot_start_without():
     # keyed on the two shapes a subsetting instruction can take — an omission
     # verb, or a preposition of exclusion — and it is still not a proof. What
     # carries the guarantee is Step 2's standing instruction, asserted below, and
-    # `test_project_detection_gate.py::test_the_available_line_advertises_init`,
+    # `test_session_init_block.py::test_the_available_line_advertises_init`,
     # which RENDERS the session block rather than reading its source.
     removal = re.compile(
         r"(?:\b(?:drop|omit|remove|skip|leave|hide|suppress|exclude|elide)\w*\b"
@@ -179,7 +179,7 @@ def test_help_advertises_the_skills_a_user_cannot_start_without():
     # failure `_MUST_BE_ADVERTISED` exists to prevent, with this test green.
     #
     # The load-bearing guard for the rendered value is
-    # `test_project_detection_gate.py::test_the_available_line_advertises_init`,
+    # `test_session_init_block.py::test_the_available_line_advertises_init`,
     # which runs the hook and reads its real `additionalContext`. It is skipped on
     # a host without bash and jq, so this cheap structural check stands beside it:
     # the variable must reach `_ctx_line` unmodified.

@@ -241,3 +241,38 @@ def test_setup_declines_a_plugin_dir_with_a_single_quote():
     assert "*\"'\"*" in _setup_text(), (
         "setup.sh writes the plugin dir inside the launcher's single quotes; a "
         "dir containing one must be declined by name, not written broken")
+
+
+def _plugin_cache_probe() -> list[str]:
+    """The `grep` patterns setup.sh uses to tell a plugin-cache install from a
+    checkout, where it registers hooks into `<project>/.claude/settings.json`."""
+    m = re.search(r'echo "\$\{PLUGIN_DIR\}" \| grep -q ((?:-e \'[^\']+\' ?)+); then',
+                  _setup_text())
+    assert m, "setup.sh no longer probes PLUGIN_DIR for a plugin-cache path"
+    return re.findall(r"-e '([^']+)'", m.group(1))
+
+
+@pytest.mark.parametrize("cache_dir", [
+    "/c/Users/u/.claude/plugins/cache/loci/loci/0.2.84",
+    "/c/Users/u/.claude/plugins/marketplaces/loci",
+    "/c/Users/u/.copilot/installed-plugins/loci/loci",
+    "/home/u/.copilot/installed-plugins/_direct/auroralabs-loci--loci-claude",
+])
+def test_setup_knows_both_hosts_plugin_caches(cache_dir):
+    """Under GitHub Copilot CLI the plugin lives in `~/.copilot/installed-plugins/`,
+    which the Claude-only probe did not match, so the `../../..` heuristic
+    resolved to `~/.copilot` and setup.sh wrote the hooks into a stray
+    `~/.copilot/.claude/settings.json` that no host reads (AAD-7792). Both hosts
+    read hooks.json themselves; a cache path of either skips registration."""
+    patterns = _plugin_cache_probe()
+    assert any(re.search(p, cache_dir) for p in patterns), (
+        f"setup.sh would treat {cache_dir!r} as a checkout and register hooks "
+        f"three directories up; its probe patterns are {patterns}")
+
+
+def test_setup_registers_hooks_for_a_checkout():
+    patterns = _plugin_cache_probe()
+    checkout = "/home/u/proj/tools/loci-claude-dev"
+    assert not any(re.search(p, checkout) for p in patterns), (
+        f"setup.sh's cache probe {patterns} also matches a plain checkout, so "
+        f"a checkout install never registers its hooks")

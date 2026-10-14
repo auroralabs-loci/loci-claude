@@ -43,6 +43,7 @@ command -v loci_host_payload_adapt >/dev/null 2>&1 || loci_host_payload_adapt() 
 command -v loci_json_system_message >/dev/null 2>&1 \
     || loci_json_system_message() { printf '{"systemMessage":"%s"}\n' "$2"; }
 command -v loci_host_carry_done >/dev/null 2>&1 || loci_host_carry_done() { return 1; }
+command -v loci_host_carry_reply >/dev/null 2>&1 || loci_host_carry_reply() { printf '%s\n' "$2"; }
 
 # stdin carries `.session_id` and reads once, so it is captured here and re-fed
 # to the CLI below. The capture happens ONLY when the log is on (the library's
@@ -79,11 +80,13 @@ if ! command -v loci >/dev/null 2>&1; then
 fi
 
 # With a carry in hand the verb's stdout is captured: a verb that printed
-# nothing (no `prompt_id` it could read, a swallowed error) would otherwise
-# take the carry down with it, so the hook then says the carry itself; and the
-# records are removed only once a document has gone out. Under fast-fail the
-# notice carries the text (lib/loci_failfast.sh). Copilot only — nothing of
-# this runs where the adapter set no carry.
+# nothing (no `prompt_id` it could read, a swallowed error) or a reply without
+# the carry (a CLI older than 0.2.63) would otherwise take the carry down with
+# it, so the library then says it beside the verb's context
+# (`loci_host_carry_reply`); and the records are removed only once a document
+# holding them has gone out. Under fast-fail the notice carries the text
+# (lib/loci_failfast.sh). Copilot only — nothing of this runs where the
+# adapter set no carry.
 if [ -n "${LOCI_HOST_CARRY:-}" ]; then
     if loci_fail_fast; then
         _ps_out=$(loci_fail_fast_run prompt-submit UserPromptSubmit loci hook prompt-submit)
@@ -91,8 +94,7 @@ if [ -n "${LOCI_HOST_CARRY:-}" ]; then
         _ps_out=$(printf '%s' "$LOCI_HOOK_PAYLOAD" | loci hook prompt-submit)
         loci_log INFO prompt-submit "loci hook prompt-submit rc=$? (captured)"
     fi
-    [ -n "$_ps_out" ] || _ps_out=$(loci_json_hook_output UserPromptSubmit "$LOCI_HOST_CARRY")
-    printf '%s\n' "$_ps_out"
+    loci_host_carry_reply UserPromptSubmit "$_ps_out"
     loci_host_carry_done
     loci_log INFO prompt-submit "end: carry delivered"
     exit 0

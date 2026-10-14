@@ -120,7 +120,7 @@ class Run:
 
 
 def _run(hook: str, payload: dict, tmp_path: Path, *, dev: bool = True,
-         cwd: Path | None = None) -> Run:
+         cwd: Path | None = None, hook_log: bool = False) -> Run:
     """Run one hook on one payload, with a stubbed `loci` on PATH."""
     home = tmp_path / "fakehome"
     state = tmp_path / "state"
@@ -148,6 +148,8 @@ def _run(hook: str, payload: dict, tmp_path: Path, *, dev: bool = True,
     }
     if dev:
         env["LOCI_ENV"] = "dev"
+    if hook_log:
+        env["LOCI_HOOK_LOG"] = "1"
 
     host = _host()
     payload = host.respell(payload)
@@ -281,6 +283,31 @@ def test_logging_off_leaves_the_hook_exactly_as_it_was(hook, build, src, tmp_pat
     assert off.stdout == dev.stdout, f"{hook} prints differently with the log off"
     assert off.log == "", f"{hook} wrote a log outside dev mode"
     assert not (off.state / "loci.log").exists()
+
+
+@pytest.mark.parametrize("hook,build,src", CASES,
+                         ids=[f"{h}-{i}" for i, (h, _, _) in enumerate(CASES)])
+def test_the_log_switch_alone_logs_the_same_without_dev_mode(hook, build, src, tmp_path):
+    """`LOCI_HOOK_LOG=1` is the log and nothing else (AAD-7793): the acceptance
+    gates need the hooks' start/end lines against a PRODUCTION sign-in, and
+    `LOCI_ENV=dev` — the other switch — also moves the loci CLI to the dev
+    backend and the dev session store, where that sign-in does not exist. So
+    the switch must write the same lines dev mode writes, and change nothing
+    the hook prints."""
+    root = _project(tmp_path)
+    payload = build(root)
+
+    dev = _run(hook, payload, tmp_path, cwd=root)
+    sw = _run(hook, payload, tmp_path / "sw", dev=False, hook_log=True,
+              cwd=_project(tmp_path / "sw"))
+
+    assert sw.code == dev.code == 0, f"{hook}: {sw.proc.stderr}"
+    assert sw.stdout == dev.stdout, f"{hook} prints differently under LOCI_HOOK_LOG"
+    lines = [ln for ln in sw.log_lines if f"[loci.{src}]" in ln]
+    assert lines, f"{hook} left no log line under LOCI_HOOK_LOG=1:\n{sw.log}"
+    assert any("start:" in ln for ln in lines) and any("end:" in ln for ln in lines)
+    for ln in lines:
+        assert f"[session={SESSION_ID}]" in ln, ln
 
 
 # ── the verdict, not just the fact that the hook ran ────────────────────────

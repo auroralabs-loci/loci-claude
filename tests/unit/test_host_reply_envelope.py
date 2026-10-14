@@ -396,6 +396,121 @@ def test_a_verb_that_prints_nothing_does_not_take_the_carry_down(tmp_path):
     assert _records(state) == []
 
 
+def _prompt_with_stub(tmp_path: Path, env: dict, body: str) -> subprocess.CompletedProcess:
+    stub = _stub_loci(tmp_path, body)
+    return subprocess.run(
+        [_find_bash(), _to_bash_path(HOOKS / "prompt-submit-turn.sh")],
+        input=_payload("UserPromptSubmit", prompt="hi"),
+        env={"PATH": f"{stub}:/usr/bin:/bin", **env},
+        capture_output=True, text=True, encoding="utf-8", timeout=60)
+
+
+def test_a_reply_without_the_carry_gets_it_beside_the_verbs_context(tmp_path):
+    """A `loci` older than 0.2.63 answers the prompt with its turn line and no
+    carry. Any output used to count as delivered, so the records went unsaid;
+    now the hook prints ONE document — the verb's context, then the carry — and
+    only then are the records removed (AAD-7835)."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    _bash(CARRY_ADD, env=env, args=["draft", "LOCI: draft pending.", _payload("Stop")])
+    old = '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"[loci] turn=cp-1-ab"},"additionalContext":"[loci] turn=cp-1-ab"}'
+    proc = _prompt_with_stub(tmp_path, env, f"cat >/dev/null; printf '%s\\n' '{old}'")
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    ctx = out["additionalContext"]
+    assert ctx == out["hookSpecificOutput"]["additionalContext"]
+    assert ctx.startswith("[loci] turn=cp-1-ab\n[loci] Between the markers"), ctx
+    assert "--- LOCI notice ---\nLOCI: draft pending.\n--- end of LOCI notice ---" in ctx
+    assert _records(state) == []
+
+
+def test_a_reply_that_carries_it_goes_out_as_the_verb_printed_it(tmp_path):
+    """The CLI at the pin appends the carry itself: its document is printed
+    byte for byte, not rebuilt."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    _bash(CARRY_ADD, env=env, args=["draft", "LOCI: draft pending.", _payload("Stop")])
+    sent = tmp_path / "sent.json"
+    body = (f'cat >/dev/null; . "{_to_bash_path(LIB / "loci_json.sh")}"; '
+            "loci_json_hook_output UserPromptSubmit \"[loci] turn=cp-1-ab\"$'\\n'\"$LOCI_HOOK_CARRY\" "
+            f'| tee "{_to_bash_path(sent)}"')
+    proc = _prompt_with_stub(tmp_path, env, body)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == sent.read_text(encoding="utf-8")
+    assert "LOCI: draft pending." in json.loads(proc.stdout)["additionalContext"]
+    assert _records(state) == []
+
+
+def test_a_record_written_after_the_take_is_the_next_prompts(tmp_path):
+    """The Stop hooks run in parallel on their own timeouts, so one can write
+    while the next prompt's hook is between its take and its done. The done
+    removed every record of the session — that one too, unsaid, against the
+    header's "never lost". The take claims what it reads; the done removes only
+    the claims (AAD-7835)."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    script = _lib("loci_host.sh") + (
+        'loci_host_carry_add draft "first" "$1" || echo add-failed\n'
+        'loci_host_adapt "$2" || echo adapt-failed\n'
+        'case "$LOCI_HOST_CARRY" in *first*) echo took-first ;; esac\n'
+        'loci_host_carry_add draft "second" "$1" || echo add-failed\n'
+        'loci_host_carry_add manifest "third" "$1" || echo add-failed\n'
+        'loci_host_carry_done; echo "done=$?"\n')
+    proc = _bash(script, env=env, args=[_payload("Stop"), _payload("UserPromptSubmit", prompt="hi")])
+    assert proc.stdout.split() == ["took-first", "done=0"], proc.stdout + proc.stderr
+    left = {p.name.split(".nudge-", 1)[1]: _record(p)[1] for p in _records(state)}
+    assert left == {"draft": "second", "manifest": "third"}, left
+    # And the next prompt says both.
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert "second" in seen["carry"] and "third" in seen["carry"]
+    assert "first" not in seen["carry"]
+    assert _records(state) == []
+
+
+def test_a_claim_a_dead_hook_left_is_taken_by_the_next_prompt(tmp_path):
+    """A prompt hook killed between its take and its done (a timeout) leaves its
+    claims on disk: the next prompt claims them again and says them, never
+    loses them, and leaves no claim behind."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    script = _lib("loci_host.sh") + (
+        'loci_host_carry_add draft "orphaned" "$1" || echo add-failed\n'
+        'loci_host_adapt "$2" || echo adapt-failed\n')
+    proc = _bash(script, env=env, args=[_payload("Stop"), _payload("UserPromptSubmit", prompt="hi")])
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    claims = [p.name for p in _records(state)]
+    assert len(claims) == 1 and ".nudge-draft.taken-" in claims[0], claims
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert seen["carry"].count("--- LOCI notice ---\norphaned\n--- end of LOCI notice ---") == 1
+    assert _records(state) == []
+
+
+def test_a_leftover_claim_under_this_very_pid_is_neither_overwritten_nor_said_twice(tmp_path):
+    """Pids are reused (on Windows freely): a leftover claim can carry the take's
+    own pid and the k it would pick first. `mv -f` onto it dropped the leftover
+    unread and read the new record twice. The take now never claims onto a name
+    already on disk, and says the leftover — the older message — first."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    # Two leftovers of one tag: `….taken-0-9` sorts first (no pid starts with 0)
+    # and its claim would be `….taken-<this pid>-1` — the other leftover's name.
+    script = _lib("loci_host.sh") + (
+        'loci_host_carry_add draft "NEW record" "$1" || echo add-failed\n'
+        'b="$LOCI_STATE_DIR/turn-' + SESSION + '.nudge-draft.taken"\n'
+        'printf "%s\\nOLDER leftover\\n" "$(_loci_host_mint)" > "$b-0-9"\n'
+        'printf "%s\\nOLD leftover\\n" "$(_loci_host_mint)" > "$b-$$-1"\n'
+        'loci_host_adapt "$2" || echo adapt-failed\n'
+        'printf "%s" "$LOCI_HOST_CARRY"\n')
+    proc = _bash(script, env=env, args=[_payload("Stop"), _payload("UserPromptSubmit", prompt="hi")])
+    carry = proc.stdout
+    for msg in ("OLDER leftover", "OLD leftover", "NEW record"):
+        assert carry.count(f"\n{msg}\n") == 1, (msg, carry + proc.stderr)
+    assert carry.index("OLD leftover") < carry.index("NEW record")
+    assert carry.index("OLDER leftover") < carry.index("NEW record")
+
+
 def test_a_fast_fail_halt_at_prompt_time_carries_the_message_too(tmp_path):
     state, env = _state(tmp_path)
     env["COPILOT_CLI"] = "1"

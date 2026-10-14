@@ -4,17 +4,26 @@ description: >
   Execution-aware preflight analysis (timing/energy) on the
   functions an edit touches and the callees of any new code, using compiled
   artifacts, to catch problems while the design is still cheap to change.
-  MANDATORY in /plan mode when the user describes new C/C++/Rust/Go logic or a
-  modification in a project a LOCI recipe governs. Do NOT invoke for
-  review/explain requests or direct edits outside plan mode.
+  MANDATORY in plan mode (/plan; a [[PLAN]] prompt under GitHub Copilot CLI)
+  when the user describes new C/C++/Rust/Go logic or a modification in a
+  project a LOCI recipe governs. Outside plan mode do NOT invoke, whatever the
+  words: a "how should I …" question with plan mode off is answered without
+  it, as are review/explain requests and direct edits. Plan mode is the host's
+  mode, never inferred from the wording.
 when_to_use: >
   In plan mode: "implement", "add", "write a function", "new feature", "how
-  should I", "modify", "refactor", "guard".
+  should I", "modify", "refactor", "guard". The same words with plan mode off:
+  never.
 ---
 
 # loci-preflight
 
-This skill is a **thinking tool, not a write-gate**. Run it during planning —
+**Gate: plan mode only.** This skill applies when the host is in plan mode:
+`/plan` under Claude Code; under GitHub Copilot CLI a `[[PLAN]]` prefix on the
+prompt. If plan mode is off, stop here, whatever the request says: answer it
+as asked, run no `loci` command for it and print no `## Preflight:` report.
+
+This skill is a **thinking tool, not a write-gate**. Run it in plan mode —
 while you are still deciding what to write — so the execution fit is visible
 before any code changes. The output shapes how you write, not just whether.
 
@@ -62,8 +71,9 @@ happens to the plan. `data.contract` is the string `project` or
 
 ## When to run
 
-Run preflight as part of forming your plan, immediately after you understand
-what function(s) you need to write and before you issue any Edit/Write call:
+In plan mode, run preflight as part of forming your plan, immediately after you
+understand what function(s) you need to write and before you issue any Edit/Write
+call:
 
 1. User describes the task
 2. You read the relevant files to understand the call site and surrounding code
@@ -77,10 +87,11 @@ the plan is handed over for approval — never a one-line summary — and open t
 plan with the verdict box ([Output format](#output-format)). The hand-over is
 `ExitPlanMode` under Claude Code. Under GitHub Copilot CLI, where a `[[PLAN]]`
 prompt is plan mode, it is `exit_plan_mode`, which follows the plan file you
-save in the session folder: that file is what the user approves — and what
-`--plan --mode autopilot` implements unasked — so there the plan file carries
-the full report after the verdict box and before the steps, and the reply's
-summary may stay brief. Copilot's plan mode blocks a shell command that
+save in the session folder. That file is what the user approves — and what
+`--plan --mode autopilot` implements unasked — so it carries the full report
+after the verdict box and before the steps. The reply carries the full report
+on every host; the plan file is in addition to it, never instead, and a
+one-line summary is not it. Copilot's plan mode blocks a shell command that
 redirects or pipes (`2>&1`, `| …`) as a workspace write; a bare `loci …` runs.
 
 ## Step 0: Resolve the project
@@ -95,9 +106,9 @@ report what `prepare` established. Step 3 carries the quota case.
 A](../_shared/compile-route.md#pattern-a); its answer gives `<project_root>` and
 `<project-context>` for every call after it. Compiler, flags and target come from the
 recipe by way of the CLI, so there is nothing here to detect or pass. `not_resolved`:
-ask which project. Any other refusal takes its row — `compdb_absent` on an
-artifact-only recipe included, where timing cannot run and no rebuild is offered —
-relayed in this skill's own block:
+[the user names it](../_shared/house-rules.md#not-resolved). Any other refusal takes
+its row — `compdb_absent` on an artifact-only recipe included, where timing cannot run
+and no rebuild is offered — relayed in this skill's own block:
 
 ```
 ## Preflight: STOPPED
@@ -187,8 +198,9 @@ Six rules for reading the envelope:
   `reason` and is not `current` — carry the reason into the report.
 - **Empty `data.functions` has two causes, and the envelope says which.** Never
   name a cause the envelope does not state. (A name you passed that nothing holds
-  never gets this far: `prepare` refuses with `function_not_found`, and its
-  message says whether the name is absent or compiled out.)
+  never gets this far: `prepare` refuses with `function_not_found` or
+  [`function_inlined`](../_shared/house-rules.md#function-inlined), and its
+  message says why.)
   - **`data.unscoped_units`** — nothing asked for reached a function in that unit:
     no `--functions`, and no contract entry bounding one of its functions. Each
     entry lists the functions the unit does hold. Re-run with `--functions` naming
@@ -339,7 +351,7 @@ that section's caption under them.
   to judge it against. An entry you reach no word on either is the coverage count
   beside the verdict, never a drawn row.
 - **`data.paths.<fn>.hot_path`** carries `candidate`, `scope`, `blocks`, `ns`,
-  `lower_bound` and its `reasons`, plus `energy_uws` where the contract bounds
+  `lower_bound` and its `reasons`, plus `energy_nws` where the contract bounds
   energy for that function or where there is no contract at all. `lower_bound: true` means the figure
   can only grow, so the number is prefixed `≥` and the reason goes in the Note. It is
   today's code, not the plan's doing ([Checkpoint words](#checkpoint-words)).
@@ -488,10 +500,12 @@ the first-pass draft.
 ## Output format
 
 Emit the preflight report in the **response text**, before describing what
-you will write — in plan mode, before the hand-over ([Plan mode](#plan-mode)),
+you will write — before the hand-over ([Plan mode](#plan-mode)),
 so the user approves the plan having seen it. A one-line summary is not the report: the table, the Execution fit
 line and the footer are. The approval dialog shows the plan and nothing else, so the
-plan body opens with the verdict in the LOCI box, then only the adjusted steps:
+plan body opens with the verdict in the LOCI box, then only the adjusted steps
+under Claude Code; under Copilot the plan file also carries the report between
+the two ([Plan mode](#plan-mode)):
 
 ```
 ─── LOCI · preflight ───────────────────
@@ -612,7 +626,7 @@ information.
 
 The Execution fit line is the worst row verdict in its checkpoint word, with rows
 that reached no word excluded and counted beside it (`(2 of 7 judged)`). The
-one-sentence cause names the finding, not the row — "STOP — hot path 3100 ns
+one-sentence cause names the finding, not the row — "STOP — hot path 3.10 µs
 contains an unresolved call target", not "STOP — the Safety row failed".
 
 ### Template
@@ -634,8 +648,8 @@ Execution fit: **<GOOD|ADJUST PLAN|STOP>** — <one sentence> [(<N> of <M> judge
 
 | ENTRY                     | FUNCTION        | STATUS  | AGENT ASSESSMENT | NOTE |
 |---------------------------|-----------------|:-------:|:----------------:|------|
-| Performance (Hot-Path)    | process_message |  PASS   | Looks good       | hot-path worst 1.8 µs |
-| Energy                    | process_message |  PASS   | Looks good       | 0.05 µWs |
+| Performance (Hot-Path)    | process_message |  PASS   | Looks good       | hot-path worst 2.14 ns |
+| Energy                    | process_message |  PASS   | Looks good       | 0.52 nWs |
 
 No contract in this repo — every STATUS above is composed from the agent
 assessment beside it, not from a bound. `/loci:contract` records the limits this
@@ -697,12 +711,12 @@ One line before the footer, grounded in a number from this run:
 
 ## LOCI footer
 
-After emitting the preflight report (or all-clear shorthand), append the
+After emitting the preflight report, append the
 footer as the last thing printed — **only if N > 0** (at least one
 function was measured). If no functions were processed (nothing measurable, or
 `measure` never ran), do NOT emit the footer.
 
-**Record once the plan is settled** — in plan mode, just before the hand-over
+**Record once the plan is settled** — just before the hand-over
 ([Plan mode](#plan-mode)). If a
 rejected plan comes back worse, record again on the same `--run`; never to lower it — the
 warning is what the rejection answered, and the post-edit shows whether the new plan kept

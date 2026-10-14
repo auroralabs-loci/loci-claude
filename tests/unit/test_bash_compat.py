@@ -177,13 +177,50 @@ def test_session_init_names_the_profile_once_and_only_under_it():
 
 def test_the_eval_harness_does_not_call_gnu_timeout_directly():
     """Stock macOS has no `timeout`; `run_evals.sh` exited 127 before `claude`
-    ran and every eval came back "empty response". One wrapper, every site."""
+    ran and every eval came back "empty response". One wrapper, every site —
+    the grader's included: it called the binary bare until AAD-7835, so every
+    macOS eval that reached grading ended GRADE_ERROR, and this test counted
+    that call as one of "the wrapper's two arms" (the `gtimeout` arm never
+    matched the pattern)."""
     src = (PLUGIN_ROOT / "run_evals.sh").read_text(encoding="utf-8")
     direct = [l for l in src.splitlines()
-              if re.search(r"(^|[|;&(\s])timeout\s+--kill-after", l)
+              if re.search(r"(^|[|;&(\s])g?timeout\s+--kill-after", l)
               and not l.lstrip().startswith("#")
               and "command -v timeout" not in l
               and "with_timeout()" not in l]
-    # The wrapper's own two arms are the only callers of the binary.
+    # The wrapper's own two arms, `timeout` and `gtimeout`, are the only callers.
     assert len(direct) == 2, "\n".join(direct)
+    assert all(re.match(r"\s+g?timeout --kill-after=10 \"\$@\"$", l) for l in direct), direct
     assert src.count('| with_timeout "$EVAL_TIMEOUT"') == 4
+    assert src.count('| with_timeout "$GRADE_TIMEOUT"') == 1
+
+
+def test_the_eval_timeout_wrapper_works_with_neither_binary(tmp_path):
+    """The wrapper's own fallback, run: no `timeout`, no `gtimeout` (stock
+    macOS). The two external tools it needs are hashed before PATH is emptied,
+    so `command -v` finds neither binary on any host. A command that finishes
+    keeps its stdin (the grader's prompt is piped) and its exit code; one that
+    outlives the bound is killed and answers 124, as GNU `timeout` does."""
+    script = tmp_path / "wd.sh"
+    script.write_text(
+        'S=$(command -v sleep); C=$(command -v cat)\n'
+        f'eval "$(sed -n \'/^with_timeout() {{/,/^}}/p\' "{_to_bash_path(PLUGIN_ROOT / "run_evals.sh")}")"\n'
+        'PATH=/nonexistent-loci-dir\n'
+        'hash -p "$S" sleep; hash -p "$C" cat\n'
+        'command -v timeout >/dev/null && echo "timeout visible"\n'
+        'command -v gtimeout >/dev/null && echo "gtimeout visible"\n'
+        # Timed: the grader's call is a `$( … )` capture, and a watchdog holding
+        # the capture pipe made it wait out the whole bound (AAD-7835 review).
+        'start=$SECONDS; out=$(printf "VERDICT: PASS" | with_timeout 20 cat); '
+        'echo "rc=$? out=$out took=$((SECONDS - start))"\n'
+        'printf x | with_timeout 20 sh_missing_cmd 2>/dev/null; echo "rc=$?"\n'
+        'start=$SECONDS; with_timeout 1 sleep 30; rc=$?; echo "rc=$rc took=$((SECONDS - start))"\n',
+        encoding="utf-8", newline="\n")
+    proc = subprocess.run([_find_bash(), _to_bash_path(script)], capture_output=True,
+                          text=True, encoding="utf-8", timeout=60)
+    lines = proc.stdout.splitlines()
+    m = re.fullmatch(r"rc=0 out=VERDICT: PASS took=(\d+)", lines[0])
+    assert m and int(m.group(1)) < 5, proc.stdout + proc.stderr
+    assert lines[1] == "rc=127", proc.stdout
+    m = re.fullmatch(r"rc=124 took=(\d+)", lines[2])
+    assert m and int(m.group(1)) < 10, proc.stdout

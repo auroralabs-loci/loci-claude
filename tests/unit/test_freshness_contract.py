@@ -31,7 +31,6 @@ SKILLS = PLUGIN_ROOT / "skills"
 # DIFFS an artifact reads. A check scopes itself to the one that owns its subject.
 HOUSE_RULES = SKILLS / "_shared" / "house-rules.md"
 COMPILE_ROUTE = SKILLS / "_shared" / "compile-route.md"
-DETECT = PLUGIN_ROOT / "lib" / "detect-project.sh"
 
 
 
@@ -619,9 +618,11 @@ _NOT_PROSE_PATHS = {"hooks/hooks.json"}
 #: README's install section legitimately lists five cross-compiler drivers, and
 #: the driver-enumeration screen would report it. A screen that reports the
 #: install guide for documenting the install is one PR from deletion.
+#: `RELEASING.md` is the maintainers' release page (AAD-7793): a release
+#: checklist nothing hands a model, like README.
 _NOT_MODEL_PROSE = {"LICENSE.md", "DPA.md", "README.md", "PORTAL.md",
                     "usage-examples.md", "requirements-test.txt",
-                    "authorization-flow/AuthorizationFlow.md"}
+                    "authorization-flow/AuthorizationFlow.md", "RELEASING.md"}
 
 
 def _prose_files():
@@ -699,24 +700,21 @@ INJECTING_SCRIPTS = ("hooks/session-init.sh", "hooks/post-edit-hook.sh",
                      # prose the model reads when a write to a guarded file is
                      # denied, in the hook whose entire subject is those files.
                      "hooks/contract-guard.sh",
-                     #: …and the `lib/` scripts, which P74 recorded as the
+                     #: …and `lib/setup-steps.sh`, which carries the CLI
+                     #: advisories. P74 recorded the `lib/` scripts as the
                      #: residual: "a NEW permissive sentence added to a `.sh`
-                     #: file, which no registry would catch today".
-                     #: `compile-and-read-back.sh` prints the `NOTE` every
-                     #: change-measuring skill reads back and quotes in a report;
-                     #: `setup-steps.sh` carries the CLI advisories;
-                     #: `detect-project.sh` and `eval-graders.sh` are here because
-                     #: an include list of the two that obviously qualify is the
-                     #: mistake `_NOT_PROSE`'s own comment says not to repeat.
+                     #: file, which no registry would catch today". The other
+                     #: `lib/` entries left with their files:
+                     #: `compile-and-read-back.sh` (T16/T17) and
+                     #: `detect-project.sh` (AAD-7745).
                      #:
-                     #: Measured before widening, exactly as the `.md` widening
-                     #: was: across all four, the wording list, the ladder list
-                     #: and T13's three screens match NOTHING. The scoping is what
+                     #: Measured when the list was widened, exactly as the `.md`
+                     #: widening was: the wording list, the ladder list and
+                     #: T13's three screens matched NOTHING. The scoping is what
                      #: makes that true — `_injected_prose` reads quoted strings
-                     #: that reach the model, not executed commands, so
-                     #: `detect-project.sh` running `command -v arm-none-eabi-gcc`
-                     #: (which is its job) is invisible here, and reporting a
-                     #: detector for detecting is this file's recorded lesson.
+                     #: that reach the model, not executed commands, and
+                     #: reporting a detector for detecting is this file's
+                     #: recorded lesson.
                      #: `lib/eval-graders.sh` is deliberately NOT here. It
                      #: hands the model nothing — its strings are grader
                      #: regexes, `$1`/`$2` and verdict labels — so
@@ -724,7 +722,7 @@ INJECTING_SCRIPTS = ("hooks/session-init.sh", "hooks/post-edit-hook.sh",
                      #: per-file non-vacuity assert unfalsifiable, which
                      #: is the decorative-entry problem that assert
                      #: exists to catch, one level up.
-                     "lib/detect-project.sh", "lib/setup-steps.sh")
+                     "lib/setup-steps.sh")
 
 
 #: A heredoc opener: `<<` or `<<-`, then the delimiter in any of the four
@@ -847,9 +845,9 @@ def _injected_prose():
     """(label, text) for every string a script hands the model.
 
     **Scoped to what is emitted, not to the file.** Screening whole `.sh` files was
-    tried first and cries wolf on the first run: `lib/detect-project.sh` genuinely
-    executes `command -v arm-none-eabi-gcc` because detecting is its job, and
-    `hooks/contract-guard.sh` genuinely names all four guarded paths because
+    tried first and cried wolf on the first run: `lib/detect-project.sh` (deleted
+    since) executed `command -v arm-none-eabi-gcc` because detecting was its job,
+    and `hooks/contract-guard.sh` genuinely names all four guarded paths because
     guarding them is its job. A screen that reports a detector for detecting is one
     PR from deletion — this file's own recorded lesson, twice over. What a model
     actually reads is the argument of `_ctx_line` and the `_UPPER='…'` block
@@ -883,7 +881,7 @@ def _injected_prose():
         # decorative. Measured after widening: 149 strings from
         # `compile-and-read-back.sh` (was 63), 55 from `eval-graders.sh` (was 0),
         # and the wording, ladder and T13 screens still match NOTHING across all
-        # nine files — the scoping to quoted ARGUMENTS is what keeps
+        # nine files — the scoping to quoted ARGUMENTS is what kept
         # `detect-project.sh`'s own probes out.
         starts = [m.end() for m in re.finditer(
             r"(?:_ctx_line\b|\bnote\b|\becho\b|\bprintf\b"
@@ -1041,12 +1039,16 @@ def test_the_injected_prose_scan_finds_the_context_block():
 # `main` kept arriving red on this lint. The stamp's own value is checked against
 # the manifest by `test_agents_txt_contract.py`.
 _VERSION_STAMP = re.compile(r"(LOCI version: )\d+\.\d+\.\d+\S*")
+# The CLI pin in the same section's manual install, for the same reason: every pin
+# bump moves it, and its value is checked against `LOCI_CLI_VERSION` by
+# `test_agents_txt_contract.py` (AAD-7835).
+_CLI_PIN = re.compile(r"(loci-tools==)\d+\.\d+\.\d+\S*")
 
 
 def _section_digest(flat: str) -> str:
-    """The registry key of one whitespace-collapsed section, stamp left out."""
-    return hashlib.sha1(
-        _VERSION_STAMP.sub(r"\g<1><version>", flat).encode("utf-8")).hexdigest()[:10]
+    """The registry key of one whitespace-collapsed section, stamp and pin left out."""
+    flat = _CLI_PIN.sub(r"\g<1><pin>", _VERSION_STAMP.sub(r"\g<1><version>", flat))
+    return hashlib.sha1(flat.encode("utf-8")).hexdigest()[:10]
 
 
 def _guarded_sections():
@@ -1140,20 +1142,45 @@ ALLOWED_GUARDED_MENTIONS = {
         # Read 2026-09-29: it describes the recipe and routes its write through
         # `/loci:init`, and names `.loci/contract.yaml` as what LOCI drafts and the
         # user applies. It instructs no write.
-        "045f31ba60",  # LOCI: install and setup ======================= LOCI version: 0.
+        # Re-hashed by AAD-7792 (2026-10-02): the file now installs on two hosts (a
+        # `copilot plugin …` block beside the Claude Code ones, PowerShell 7 and Git
+        # Bash as Windows prerequisites) and was trimmed under its byte ceiling. Read:
+        # the recipe is still `/loci:init`'s to write and `.loci/contract.yaml` is
+        # still what LOCI drafts and the user applies. It instructs no write.
+        # Re-hashed by the AAD-7792 review: the Copilot floor is 1.0.90, the version
+        # the Epic was first verified on. Read: nothing else moved.
+        # Re-hashed by AAD-7835 (2026-10-06): the manual CLI install names the pin,
+        # `loci-tools==<LOCI_CLI_VERSION>`, instead of whatever PyPI serves; the
+        # digest leaves the pin's number out as it does the stamp (`_CLI_PIN`).
+        # Read: the recipe is still `/loci:init`'s to write and `.loci/contract.yaml`
+        # still what LOCI drafts and the user applies. It instructs no write.
+        "71605414d2",  # LOCI: install and setup ======================= LOCI version: 0.
     },
     "PORTAL.md": {
-        "350d3af802",  # ## Getting Started 1. Create your LOCI account and open the port
+        # Re-hashed by AAD-7792 (2026-10-02): step 2 names both hosts (Claude Code or
+        # GitHub Copilot CLI) and step 4 says "from the agent". Read: step 3 still
+        # routes the recipe through `/loci:init`; it instructs no write.
+        # Re-hashed by the AAD-7792 review: "Every Claude Code and Cursor session"
+        # became "Every agent session". Read: it still instructs no write.
+        "2fe86ee8e4",  # ## Getting Started 1. Create your LOCI account and open the port
     },
     "README.md": {
         # Re-hashed: Quick Start now opens on the sign-in step.
-        "95f7ff143c",  # ## Quick Start Sign in once per machine. Every analysis skill is
+        # Re-hashed by AAD-7835 (2026-10-06): the `! loci login` comment says it is
+        # typed at the agent's prompt and runs in the user's shell, not "in your
+        # terminal". Read: the section still routes the recipe through `/loci:init`;
+        # it instructs no write.
+        "28a42d5fab",  # ## Quick Start Sign in once per machine. Every analysis skill is
         # Re-hashed: the section now says to open the cockpit in a separate
         # terminal, because it takes over the one it runs in.
         # Re-hashed again by AAD-7656 (#349): it opens on what the cockpit is for,
         # "what LOCI catches that your coding agent might miss". Read: it still only
         # describes `.loci/contract.yaml` as what the contract view shows.
-        "33a2209bb4",  # ## Cockpit `loci cockpit` shows what LOCI catches that your codi
+        # Re-hashed by AAD-7792 (2026-10-02): "a Claude Code session" became "a
+        # coding agent session" (the cockpit will not share a terminal with either
+        # host). Read: it still only describes `.loci/contract.yaml` as what the
+        # contract view shows.
+        "3eca697f5e",  # ## Cockpit `loci cockpit` shows what LOCI catches that your codi
         "baa36b300c",  # ### LOCI says the project is not initialized Every measurement r
         # New section (`## Verdicts`, the two word sets). Read: it tells the
         # USER where a bound comes from — `.loci/contract.yaml`, `/loci:contract`,
@@ -1173,7 +1200,10 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed by AAD-7788: the table gained the SubagentStart row. Read: the
         # new row names no guarded file; the two the guard denies are still only
         # described as its subject.
-        "e19251b8f0",  # ## Hooks | Hook | Trigger | Action | |------|---------|--------|
+        # Re-hashed by AAD-7835: the SessionStart row drops "project detection",
+        # removed in AAD-7531. Read: the two guarded files are still only the
+        # guard's subject.
+        "e50d149573",  # ## Hooks | Hook | Trigger | Action | |------|---------|--------|
     },
     "hooks/contract-guard.sh": {
         "700717b625",  # The build recipe (.loci/build.yaml) is written by 'loci init', n
@@ -1206,9 +1236,18 @@ ALLOWED_GUARDED_MENTIONS = {
         "3253e74af4",  # ## Where the bounds live **One committed file per repository** (
     },
     "skills/_shared/house-rules.md": {
-        "722a91a5df",  # ## When a `loci` call refuses: the eleven coded errors **A proje
-        "951706b357",  # ### The recipe provenance line Every **absolute** report — exec-
-        "3bf8959eec",  # ## The build recipe: what every measurement rests on `.loci/buil
+        # Re-hashed 2026-10-05: the relink bullet names `data.linked_before` as the
+        # pre-escalation source. Still describes the recipe; instructs no write.
+        "7aefb8646a",  # ## When a `loci` call refuses: the eleven coded errors **A proje
+        # Re-hashed 7 Oct: `confirmed_by_user: false` no longer renders as
+        # "(written by --auto)" -- the recipe does not record that. Describes; no write.
+        # Re-hashed by AAD-7615: the block's path is named per verb (prepare carries it
+        # per unit, measure not at all). Still describes; instructs no write.
+        "6520df2da0",  # ### The recipe provenance line Every **absolute** report — exec-
+        # Re-hashed 2026-10-06: the supported-ISA list gains `neoverse-v2`. Read: it
+        # describes the recipe and instructs no write.
+        # Re-hashed by AAD-7615: the recipe-provenance-line anchor sits in this chunk.
+        "7a94ccb4c9",  # ## The build recipe: what every measurement rests on `.loci/buil
         "2ce21f47c2",  # # LOCI house rules (shared) Canonical instructions shared by the
         # D21 (2026-09-21): the band rule was in two shared files and said "stated
         # in no skill's prose", which seven skills break. One home now, corrected.
@@ -1229,7 +1268,12 @@ ALLOWED_GUARDED_MENTIONS = {
         # (`analyse show` carries `data.run`) and a line saying a piped metered call
         # still bills. Read: it describes the envelope and forbids a parser; it
         # instructs no write.
-        "d32f8a8ea9",  # ## Output: the JSON envelope Every `loci` command prints **one J
+        # Re-hashed 6 Oct by `no_artifact` (AAD-7769): its routing line sits in this
+        # chunk. Still describes and relays; instructs no write.
+        # Re-hashed 7 Oct by `client_too_old`: one more coded error to relay; 8 Oct its
+        # fix is updating the plugin, and the auth line keeps only its instruction. Still
+        # describes and relays; instructs no write.
+        "63a55ca03f",  # ## Output: the JSON envelope Every `loci` command prints **one J
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044: the four values are read out of a printed
         # `<project-context>`, not out of a `jq`.
@@ -1245,7 +1289,11 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed by AAD-7789 (2026-10-02): check 9 says that under GitHub Copilot
         # CLI the detail column carries item 17's per-event hook counts. Read: the
         # row reads hooks.json and instructs no write.
-        "15cfd43c1a",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
+        # Re-hashed by AAD-7745 (2026-10-07): check 2 is "Project context exists",
+        # and the null-compiler row says `"unknown"` is a recipe naming no compiler.
+        # Read: the `.loci/build.yaml` mention describes a recipe on disk; no write.
+        # Re-hashed again 2026-10-07: check 4's target set gains `neoverse-v2`.
+        "b8c36b5a3d",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
         # Re-hashed by todo 044: check 9 reads hooks.json rather than parsing it
         # with a `jq`.
     },
@@ -1274,7 +1322,11 @@ ALLOWED_GUARDED_MENTIONS = {
         # section describes a guarded file and instructs no write.
     },
     "skills/exec-trace/SKILL.md": {
-        "efa6f15d21",  # ### Artifact provenance (mandatory) Emit the `Artifact:` line on
+        # Re-hashed 7 Oct: `confirmed_by_user: false` no longer renders as
+        # "(written by --auto)" -- the recipe does not record that. Describes; no write.
+        # Re-hashed by AAD-7615: the Recipe line reads `data.provenance[].recipe`.
+        # Still describes and relays; instructs no write.
+        "3fff924fad",  # ### Artifact provenance (mandatory) Emit the `Artifact:` line on
         # Re-hashed again the same day: the section gained the `error`-key case and
         # named `via`, both of which the two leaf-verb reports already carried and
         # this one did not. Still describes and relays; instructs no write.
@@ -1348,7 +1400,9 @@ ALLOWED_GUARDED_MENTIONS = {
         # mention still relays a `contract.yaml` refusal; nothing asks for a write.
         # Re-hashed 2026-09-29: a `≥` figure the change did not cause is carried.
         # Read: names the contract as input only; no write.
-        "c0d52e8c18",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
+        # Re-hashed 2026-10-07: `energy_uws` is now `energy_nws` (nWs). Read: names the
+        # contract as input only; no write.
+        "5996a6ceca",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044 (the target is read out of the context file, not
         # by "the contract's own `jq`") and by F06 round 2, which made this step
@@ -1386,10 +1440,13 @@ ALLOWED_GUARDED_MENTIONS = {
         # Split 24 Sep: an orphan ``` fence in preflight had been swallowing
         # Step 3 into Step 1 as one section. Removing it parts them, so the
         # one registered digest becomes two.
-        "6344b86489",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
+        # Re-hashed by AAD-7836: the parenthetical names `function_inlined` beside
+        # `function_not_found`. Read: still relays and describes; no write, no hunt.
+        "2a23cb3861",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
         # Re-hashed 2026-09-29: a `≥` figure the change did not cause is carried.
         # Read: names the contract as input only; no write.
-        "6d173f8d59",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
+        # Re-hashed 2026-10-07, on the same change as post-edit's.
+        "c3e8a6b473",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044, on the same change as post-edit's.
         # Re-hashed by todo 048 (the `prepare` invocation dropped `--context`,
@@ -1412,7 +1469,11 @@ ALLOWED_GUARDED_MENTIONS = {
         # guarded file, still described and never written.
     },
     "skills/memory-report/SKILL.md": {
-        "e3e5b1b4a3",  # ## Step 1: one call ``` loci analyse memory --turn "<turn-id>" -
+        # Re-hashed 6 Oct by `no_artifact` (AAD-7769): its routing line sits in this
+        # chunk. Still describes and relays; instructs no write.
+        # Re-hashed 7 Oct by `--source` (AAD-7807) and the object-scope fold-back
+        # sentence (#406), merged in 0cf18ed. Still describes and relays; instructs no write.
+        "1612f39f41",  # ## Step 1: one call ``` loci analyse memory --turn "<turn-id>" -
         # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
         # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
         # describes a guarded file, forbids a write to it, or reads it back —
@@ -1421,7 +1482,9 @@ ALLOWED_GUARDED_MENTIONS = {
         # section text carries the path, so the digest moved with it; nothing else did.
         # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
         # section text carries the path, so the digest moved with it; nothing else did.
-        "d7c65c79b4",  # ## Artifact provenance (mandatory) Emit the `Artifact:` line onc
+        # Re-hashed 7 Oct: `confirmed_by_user: false` no longer renders as
+        # "(written by --auto)" -- the recipe does not record that. Describes; no write.
+        "1efc62e61d",  # ## Artifact provenance (mandatory) Emit the `Artifact:` line onc
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by F06: this section gained what exit `2` means, the
         # judgement payloads the envelope carries, and the assembled `data.rows`.
@@ -1452,8 +1515,21 @@ ALLOWED_GUARDED_MENTIONS = {
         # none instructs a write.
         # AAD-7735: re-hashed by the `data.detail.resolved` line, which names the key
         # a root is reported under. Read: it describes an output field.
-        "736eac55f7",  # ## Step 1: one call ``` loci analyse stack --turn "<turn-id>" --
-        "165b8cd8ea",  # ### Artifact provenance (mandatory) Emit two lines from `data.ar
+        # Re-hashed 6 Oct by `no_artifact` (AAD-7769): its routing line sits in this
+        # chunk. Still describes and relays; instructs no write.
+        # Re-hashed 7 Oct by `--source` (AAD-7807): the flag and its one-line rule
+        # sit in this chunk. Read: still describes and relays; instructs no write.
+        # Re-hashed by AAD-7836: the `ok:false` line routes `function_inlined` to the
+        # house rules, and names `function_not_found` (AAD-7615) as a missing root.
+        # Read: still describes and relays; instructs no write.
+        # Re-hashed by AAD-7797: `data.detail` names `whole_binary`, the binary's own
+        # lists (present when an entry bounds them), and a clause the `data.rows`
+        # bullet said twice is said once. Read:
+        # describes output fields; instructs no write.
+        "89760d0626",  # ## Step 1: one call ``` loci analyse stack --turn "<turn-id>" --
+        # Re-hashed 7 Oct: `confirmed_by_user: false` no longer renders as
+        # "(written by --auto)" -- the recipe does not record that. Describes; no write.
+        "08b7162948",  # ### Artifact provenance (mandatory) Emit two lines from `data.ar
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # New mention, added by F06's review round: the `.ok`-first rule names
         # `.loci/contract.yaml` because a malformed one fails to load with a
@@ -1602,6 +1678,22 @@ def test_a_release_moves_no_registered_digest():
             != _section_digest(flat)), "an edit beside the stamp moved nothing"
 
 
+def test_a_cli_pin_bump_moves_no_registered_digest():
+    """The same for the CLI pin `agents.txt`'s manual install names since
+    AAD-7835 (`loci-tools==<LOCI_CLI_VERSION>`, pinned to the installer by
+    `test_agents_txt_contract.py`): a pin bump is not prose, and the first one,
+    0.2.71 → 0.2.72, re-hashed the section the day the pin was added."""
+    pinned = [flat for rel, _digest, flat in _guarded_sections()
+              if rel == "agents.txt" and "loci-tools==" in flat]
+    assert len(pinned) == 1, "the pin is no longer in one guarded section"
+    flat = pinned[0]
+    bumped = _CLI_PIN.sub(r"\g<1>99.0.0", flat)
+    assert bumped != flat, "the pin did not match `_CLI_PIN`"
+    assert _section_digest(bumped) == _section_digest(flat), "a pin bump moved the section's digest"
+    assert (_section_digest(flat.replace("loci-tools==", "loci-tools>=", 1))
+            != _section_digest(flat)), "an unpinned install would move nothing"
+
+
 # Sections in the two skills T11 cleared of the compiler ladder that still name a
 # compiler-discovery term. The phrase screen above catches the ladder's historical
 # WORDING; this catches its SUBJECT, which is what a paraphrase keeps. A reviewer
@@ -1677,16 +1769,29 @@ COMPILER_DISCOVERY_SECTIONS = {
         # reinstall to /loci:setup instead of naming two wrong package names; Step 5
         # gains the `host records` Raw Data block. Read: versions and transcripts
         # recorded, refusals relayed, no compiler hunt anywhere.
-        "432a4719b3",  # ## Step 1: Collect environment snapshot Run these in parallel wh
-        "3cae2eda61",  # # LOCI Bug Report **Shared house rules.** Read `<plugin-dir>/ski
+        # Re-hashed by AAD-7745 (2026-10-07): item 7 says every context field is
+        # `loci init`'s, that any verb rebuilds a missing one from the recipe, and
+        # that `subproject_roots` / `uninitialized` are an older plugin's leftovers.
+        # Read: the one match is `compiler_missing` among the CLI codes the section
+        # relays; no compiler hunt.
+        "41af81a9d4",  # ## Step 1: Collect environment snapshot Run these in parallel wh
+        # Re-hashed by AAD-7835 (2026-10-06): the tool list says "file search" for
+        # `Glob`/`Grep`, which have no Copilot name. Read: `command -v loci` is the
+        # CLI, not a compiler; no compiler hunt.
+        "d65e1914bf",  # # LOCI Bug Report **Shared house rules.** Read `<plugin-dir>/ski
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed again by AAD-7789 (2026-10-02); see the note above the Step 1 hash.
-        "10bbe48d86",  # ### C. loci CLI installed and healthy? The analysis stack lives 
-        "15cfd43c1a",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
+        "10bbe48d86",  # ### C. loci CLI installed and healthy? The analysis stack lives
+        # Re-hashed by AAD-7745 (2026-10-07), Step 2 and Step 5: check 2 reads
+        # "Project context exists" in the spec and the template, and the
+        # null-compiler row no longer credits a scan with `"unknown"`. Read: the
+        # matches are `command -v loci`, the CLI; no compiler hunt.
+        # Re-hashed again 2026-10-07: check 4's target set gains `neoverse-v2`.
+        "b8c36b5a3d",  # ## Step 2: Run 10-point diagnostics checklist For each check, re
         # Re-hashed by AAD-7786: the report's table rows read Host / Model, and the
         # closing line says "a new session". Read: a template; no compiler hunt.
         # Re-hashed again by AAD-7789 (2026-10-02); see the note above the Step 1 hash.
-        "8ea86a0bcd",  # ## Step 5: Write report file Determine the output filename: ``` 
+        "1f7401c076",  # ## Step 5: Write report file Determine the output filename: ```
         # Re-hashed 22 Sep (todo [082]): the file gained a shared-contract block,
         # and section B's `elf diff` link now points at `compile-route.md`. Read:
         # both still relay a coded refusal and name no compiler of their own.
@@ -1760,7 +1865,9 @@ COMPILER_DISCOVERY_SECTIONS = {
         # Split 24 Sep: an orphan ``` fence in preflight had been swallowing
         # Step 3 into Step 1 as one section. Removing it parts them, so the
         # one registered digest becomes two.
-        "6344b86489",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
+        # Re-hashed by AAD-7836: the parenthetical names `function_inlined` beside
+        # `function_not_found`. Read: still relays and describes; no write, no hunt.
+        "2a23cb3861",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
         # Re-hashed by the T14 work, by todo 048 (which dropped `--context`) and
         # again by todo 044; the same relay rule as post-edit's, plus "not one of
         # them has you looking for a compiler" in the same section. F06's
@@ -1845,6 +1952,9 @@ CONTRACT_HEADINGS = (
     '## The artifact a run measures: selection, freshness, and the `Artifact:` line',
     '### Selection: named, then recorded, then ranked',
     '### Freshness is a filter, and it runs after the ranking',
+    # The measuring verbs' own refusal (`error.code: no_artifact`), routed by
+    # `error.reason`; deliberately not a twelfth row of the coded-error table.
+    '### When nothing qualifies: `no_artifact`',
     '### The `Artifact:` line',
     '## The build recipe: what every measurement rests on',
     '### The recipe provenance line',
@@ -3238,13 +3348,17 @@ def test_every_pattern_b_skill_must_name_the_artifact_it_measured(skill):
 #: `memory-report` make one `loci analyse` call and read the same block off the
 #: verb's envelope (`data.artifact.recipe`) — pinned separately, because a rule
 #: about reading the context file is unsatisfiable against a JSON block.
-# D9 (2026-09-21) moved exec-trace across: `prepare` selects its artifact the same
-# way the other two verbs do, and the context file and the envelope disagree after a
-# mid-session init, so the envelope is the source for all three. Nothing is left in
+# D9 (2026-09-21) moved exec-trace across: the context file and the envelope disagree
+# after a mid-session init, so the envelope is the source for all three. AAD-7615:
+# exec-trace's envelope is `prepare`'s, which carries the block per unit under
+# `data.provenance[].recipe` and has no `data.artifact`. Nothing is left in
 # `ABSOLUTE_REPORTS`; the parametrized test below therefore runs on nothing and is
 # kept only so re-adding a context-file reader has somewhere to land.
 ABSOLUTE_REPORTS = ()
 VERB_OWNED_ABSOLUTE_REPORTS = ("exec-trace", "stack-depth", "memory-report")
+RECIPE_KEY = {"exec-trace": "data.provenance[].recipe",
+              "stack-depth": "data.artifact.recipe",
+              "memory-report": "data.artifact.recipe"}
 
 
 @pytest.mark.parametrize("skill", ABSOLUTE_REPORTS)
@@ -3299,7 +3413,7 @@ def test_every_absolute_report_names_the_recipe_its_numbers_rest_on(skill):
 @pytest.mark.parametrize("skill", VERB_OWNED_ABSOLUTE_REPORTS)
 def test_every_verb_owned_report_renders_the_recipe_line_from_the_envelope(skill):
     """Same line, different source: the verb already chose the artifact and read the
-    recipe, so the skill renders `Recipe:` from `data.artifact.recipe` and never goes
+    recipe, so the skill renders `Recipe:` from the verb's recipe block and never goes
     back to the context file for it. Each condition is pinned by the fact it rests on.
     """
     sec = _subsection(_raw(SKILLS / skill / "SKILL.md"),
@@ -3309,7 +3423,7 @@ def test_every_verb_owned_report_renders_the_recipe_line_from_the_envelope(skill
     assert "The recipe provenance line" in sec, (
         f"{skill} shows the line but points at nothing that governs it")
     for needed, why in (
-        (".artifact.recipe", "the envelope key the values come from"),
+        (RECIPE_KEY[skill], "the envelope key the values come from"),
         ("`via`", "`named` qualifies the line the way B2 case 1 does — the user's "
                   "binary has nothing vouching for its flags"),
         ("No recipe governs this project", "the sentence printed when the block is "
@@ -3333,6 +3447,29 @@ def test_every_verb_owned_report_renders_the_recipe_line_from_the_envelope(skill
         f"{skill}'s example line dropped the validation tier it exists to carry")
     assert "confirmed by user" in sec or "not confirmed by anyone" in sec, (
         f"{skill}'s example line dropped the confirmation qualifier")
+
+
+def test_no_prepare_route_reads_the_recipe_off_data_artifact():
+    """`analyse prepare` has no `data.artifact`: it carries the block per unit, under
+    `data.provenance[].recipe`, and `analyse measure` carries none. Prose that sent a
+    prepare-route skill to `data.artifact.recipe` read an absent key and printed
+    "No recipe governs this project." on a confirmed, validated recipe (AAD-7615).
+    """
+    prov = _section(_text(HOUSE_RULES), "### The recipe provenance line",
+                    "#### The caveat half")
+    for needed in ("`analyse cfg`, `analyse stack`, `analyse memory`: `data.artifact.recipe`",
+                   "`analyse prepare`: `data.provenance[].recipe`",
+                   "`analyse measure`: none"):
+        assert needed in prov, f"the per-verb source no longer says {needed!r}"
+    prepare_route = [*(SKILLS / "exec-trace").glob("*.md"),
+                     *(SKILLS / "loci-post-edit").glob("*.md"),
+                     *(SKILLS / "loci-preflight").glob("*.md"),
+                     SKILLS / "_shared" / "compile-route.md"]
+    offenders = [str(f.relative_to(SKILLS)) for f in prepare_route
+                 if "artifact.recipe" in _raw(f)]
+    assert not offenders, (
+        f"a prepare-route skill reads the recipe off `data.artifact`, which prepare "
+        f"does not carry: {offenders}")
 
 
 #: An omission verb aimed at the provenance lines. The obligation is stated once,
@@ -3521,6 +3658,36 @@ def test_the_lower_bound_qualifier_survives_into_the_recorded_verdict():
         "row cannot know the depth was a floor")
 
 
+def test_an_object_run_folds_back_its_frame_never_a_depth():
+    """An escalated run that landed on the object handed back `stack: 8 B — PASS`:
+    the object's `worst_case_depth` is its own frame, and the parent's Stack row
+    drew it as a depth. Both fold-back blocks carry the object form."""
+    body = _skill("stack-depth")
+    form = "stack: unmeasured on object — own frame <frame_size> B, <reason>"
+    first = _section(body, "### Escalation fold-back", "## Step 5: record it")
+    assert form in first, "the escalation fold-back has no object form"
+    assert "`relink not run`" in first and "`data.artifact.before_reason`" in first
+    assert form in _section(body, "### Fold-back to parent (escalation mode)", None), (
+        "the footer's fold-back block has no object form")
+    assert "escalated, it folds back the object form, never a depth" in body
+
+
+def test_an_object_memory_run_folds_back_no_firmware_figure():
+    """An object's `rom_total` / `ram_static_total` are one translation unit's, and
+    an escalated run handed them back as `memory: ROM <N> B / RAM <M> B`, which the
+    parent's row read as the firmware's footprint."""
+    body = _skill("memory-report")
+    form = ("memory: firmware unmeasured on object — <artifact> ROM <rom_total> B / "
+            "RAM <ram_static_total> B, <reason>")
+    first = _section(body, "### Escalation fold-back", "## Step 4: record it")
+    assert form in first, "the escalation fold-back has no object form"
+    assert "no firmware figure and no percentage" in first
+    assert "`relink not run`" in first and "`data.artifact.before_reason`" in first
+    assert form in _section(body, "### Fold-back to parent (escalation mode)", None), (
+        "the footer's fold-back block has no object form")
+    assert "an object run folds back the object form, never firmware totals" in body
+
+
 def test_bug_report_precomputes_the_staleness_evidence():
     body = _skill("bug-report")
     assert "loci build fresh --elf" in body
@@ -3565,12 +3732,10 @@ def test_bug_report_checklist_count_matches_its_rows():
 
 
 # ---------------------------------------------------------------------------
-# Detection: the scan stays deleted (T14)
+# Detection: the scan stays deleted (T14), and so does the gate (AAD-7745)
 # ---------------------------------------------------------------------------
 #: Every probe the pre-T14 `detect-project.sh` ran once the gate said "project".
-#: None may come back under its own name; `test_the_emit_carries_exactly_the_
-#: surviving_fields` in `test_project_detection_gate.py` is the behavioural half,
-#: for one that comes back under a new one.
+#: None may come back under its own name.
 _SCAN_PROBES = ("detect_compiler", "detect_build_system", "find_sources",
                 "find_elf_files", "find_loci_artifacts", "find_build_dirs",
                 "find_binaries", "find_asm_files", "find_cargo_elf_files",
@@ -3579,6 +3744,21 @@ _SCAN_PROBES = ("detect_compiler", "detect_build_system", "find_sources",
                 "detect_build_compiler", "detect_full", "_tree_is_go",
                 "_find_windows_compiler")
 
+#: …and the gate's own tests of a directory, which decided arming until AAD-7531
+#: stopped session start consulting them.
+_GATE_FUNCTIONS = ("_project_gate", "_has_root_build_file",
+                   "_has_nested_build_declaration", "_is_colcon_workspace")
+
+
+def _plugin_shell() -> list[Path]:
+    """Every shell script the plugin runs: the hooks, the libraries they source,
+    the installer, and the top-level harnesses (`run_evals.sh` was the one caller
+    of `--force-scan`)."""
+    return sorted([*(PLUGIN_ROOT / "hooks").glob("*.sh"),
+                   *(PLUGIN_ROOT / "lib").glob("*.sh"),
+                   *(PLUGIN_ROOT / "setup").glob("*.sh"),
+                   *PLUGIN_ROOT.glob("*.sh")])
+
 
 def test_the_scan_stays_deleted():
     """T14 deleted the session scan: every fact about how a project builds is the
@@ -3586,13 +3766,19 @@ def test_the_scan_stays_deleted():
     probe that returns is a second answer beside `loci init`'s — the drift T15
     spent three review rounds closing, reopened — and 1,170 lines of tests about
     which root it walked first went with it.
+
+    AAD-7745 deleted the gate the scan ran behind, so this reads every script the
+    plugin runs rather than the one file the scan lived in: a probe or a gate test
+    that comes back has to land in one of them.
     """
-    body = _uncommented(_raw(DETECT))
-    for probe in _SCAN_PROBES:
-        assert f"{probe}()" not in body, f"{probe} is back in detect-project.sh"
-    assert "--force-scan" not in body, "the gate bypass is back"
-    assert "command -v" not in body, (
-        "detect-project.sh probes PATH again; the gate reads files, not machines")
+    scripts = _plugin_shell()
+    assert len(scripts) >= 15, [p.name for p in scripts]
+    for path in scripts:
+        rel = path.relative_to(PLUGIN_ROOT).as_posix()
+        body = _uncommented(_raw(path))
+        for name in _SCAN_PROBES + _GATE_FUNCTIONS:
+            assert f"{name}()" not in body, f"{name} is back in {rel}"
+        assert "--force-scan" not in body, f"the gate bypass is back in {rel}"
 
 
 
@@ -3775,47 +3961,14 @@ def test_the_autorun_rules_name_every_extension_a_skill_is_invoked_for():
         f"the copy the model obeys.")
 
 
-def test_the_arming_gate_knows_every_root_build_system_the_cli_does():
-    """The gate and `loci init` must not disagree about what a project is.
-
-    Before T14 this compared the gate with the scan's `detect_build_system` in
-    the same file. The scan is gone and the CLI's `_ROOT_MARKERS` is the one
-    classifier left, so that is what the gate is held to: a marker the CLI
-    initializes on but the gate does not arm on is a project `loci init` would
-    measure and session-init disarms. `go.mod` was exactly that once (reproduced
-    before this test existed); `west.yaml`, the long spelling beside `west.yml`,
-    was that until this lint read the CLI.
-    """
-    src = _cli_source_dir()
-    if src is None:
-        pytest.skip("loci-cli checkout not available")
-    detect = _uncommented(_raw(DETECT))
-    gate = re.search(r"_has_root_build_file\(\)\s*\{(.*?)\n\}", detect, re.S)
-    assert gate, "could not find _has_root_build_file"
-    gate_files = set(re.findall(r'\$d/([A-Za-z0-9._-]+)', gate.group(1)))
-    # …and the nested walk, which is the same question two levels down. Reading
-    # only the root list let `west.yaml` reach the root and not the walk: a repo
-    # with `fw/west.yaml` initialized fine and never armed.
-    nested = re.search(r"_has_nested_build_declaration\(\)\s*\{(.*?)\n\}", detect, re.S)
-    assert nested, "could not find _has_nested_build_declaration"
-    nested_files = set(re.findall(r"-name ([A-Za-z0-9._-]+)", nested.group(1)))
-
-    text = (src / "init_evidence.py").read_text(encoding="utf-8")
-    m = re.search(r"_ROOT_MARKERS[^=]*=\s*\((.*?)\n\)", text, re.S)
-    assert m, "could not find _ROOT_MARKERS in the CLI"
-    # `("<system>", ("<file>", …))` entries; the prose between them is skipped.
-    cli_markers = {name
-                   for group in re.findall(r'\("[a-z]+",\s*\(([^)]*)\)\)', m.group(1))
-                   for name in re.findall(r'"([^"]+)"', group)}
-    assert len(cli_markers) > 5, sorted(cli_markers)
-
-    missing = sorted(cli_markers - gate_files)
-    assert not missing, (
-        f"`loci init` treats {missing} as a root build declaration but "
-        f"`_has_root_build_file` does not, so a project whose ONLY declaration is "
-        f"one of those is initialized by the CLI and disarmed by the session.")
-    missing_nested = sorted(cli_markers - nested_files)
-    assert not missing_nested, (
-        f"the nested walk does not look for {missing_nested}, so a repo whose build "
-        f"lives one level down under one of those is initialized by the CLI and "
-        f"disarmed by the session.")
+def test_not_resolved_never_lets_the_agent_pick_the_root():
+    """AAD-7807: on `not_resolved` the agent passed a `--project-root` it picked from
+    the layout; the CLI ran under it, filed history there, and init built on it."""
+    text = _raw(HOUSE_RULES)
+    rule = text[text.index('<a id="not-resolved"></a>'):]
+    rule = rule[:rule.index("`not_initialized` is its row")]
+    assert re.search(r"Never pass a\s+`--project-root` you derived", rule)
+    assert "error.candidates[]" in rule and "Other" in rule, "the user may name their own"
+    # Not init: it reads no shared file, so its Step 1 states the rule itself.
+    for skill in ("_shared/compile-route.md", "loci-preflight/SKILL.md", "trends/SKILL.md"):
+        assert "house-rules.md#not-resolved" in _raw(SKILLS / skill), skill

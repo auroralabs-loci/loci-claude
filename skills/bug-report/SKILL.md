@@ -25,7 +25,7 @@ session to diagnose and fix the issue.
 
 This skill must work even when LOCI is completely broken. Do NOT run analysis
 skills or heavy `loci` verbs (timing / elf) for collection — they may be the
-thing that's broken. Use only: Read, Bash, Glob, Grep, plus the lightweight,
+thing that's broken. Use only: Read, Bash, file search and the lightweight,
 fast-failing probes `command -v loci`, `loci auth status`, `loci doctor`,
 `loci init probe` (a read-only dump of what init decides from) and
 `loci build fresh` (a local mtime/DWARF check — no backend call, no asmslicer).
@@ -90,20 +90,17 @@ Run these in parallel where possible via Bash and Read:
 6. **OS short name** — `uname -s | tr '[:upper:]' '[:lower:]'` (for filename)
 7. **Project context** — Read `<project-context>` (the `context_file` `loci
    project` named). Record the full JSON. If
-   missing, record "MISSING". Read two groups of fields apart, because they have
-   different writers and a report that confuses them files the wrong finding:
-   `init_status`, `init_recipe`, `validated`, `confirmed_by_user`, `loci_target`,
-   `compiler`, `compiler_path`, `build_system` and `artifact` all
-   come from **`loci init`, out of the recipe** — the session writes only
-   `detection_status` and `subproject_roots` (the gate's answer; the scan that used
-   to fill the rest is gone). A `null` in the recipe group means *no recipe stands
-   behind this context* — which is true of a project that was never initialized
-   **and** of one whose last init FAILED against a recipe still on disk.
-   `init_status` is what separates them; record it verbatim — and note it has a
-   second writer of its own: the session writes `uninitialized` for an armed
-   project `loci init` has never seen, and in the inactive branches the key is
-   **absent** rather than null. "Absent", "uninitialized", "failed" and "ok" are
-   four different findings.
+   missing, record "MISSING". `loci init` writes it and every verb that resolves
+   the project rebuilds it from the recipe, so MISSING beside a recipe on
+   disk means the state directory was wiped and nothing has run
+   since. Every field is init's — `init_status`, `detection_status` and, **out
+   of the recipe**, `init_recipe`, `validated`, `confirmed_by_user`,
+   `loci_target`, `compiler`, `compiler_path`, `build_system` and `artifact`. A
+   `null` in the recipe group means *no recipe stands behind this context*, even
+   with one still on disk; `init_status` says why, so record it verbatim. A
+   `subproject_roots` key, or an `init_status` of `uninitialized`, was left by
+   an older plugin's session start; nothing writes either now, and
+   `uninitialized` still reads as no recipe yet (checks 3, 4 and 6 below).
 8. **CLI health** — run `loci doctor` and record `data.report` (covers Python
    3.12, asmslicer, analysis deps, c++filt, the Rust demangler, cross-compilers,
    credential store, the state dir and, when the recipe puts the toolchain in a
@@ -288,9 +285,9 @@ For each check, record status (PASS / FAIL) and a detail string.
 | # | Check | How to test | PASS when |
 |---|-------|-------------|-----------|
 | 1 | loci CLI available & signed in | `command -v loci` resolves AND `loci auth status` exits 0 (`data.status == "signed_in"`) | loci on PATH and signed in |
-| 2 | Session context exists | `<project-context>` (keyed file) exists and contains `project_root` | File exists with key |
+| 2 | Project context exists | `<project-context>` (keyed file) exists and contains `project_root` | File exists with key |
 | 3 | Compiler recorded | `compiler` field in `<project-context>` is not `unknown`, `null` or empty (recipe-only since T14: the session no longer scans PATH) | Has a value |
-| 4 | LOCI target supported | `loci_target` in `<project-context>` is one of: `aarch64`, `armv7e-m`, `armv6-m`, `tc399` | Value in set |
+| 4 | LOCI target supported | `loci_target` in `<project-context>` | One of `aarch64`, `neoverse-v2`, `armv7e-m`, `armv6-m`, `tc399` |
 | 5 | loci CLI healthy | `loci doctor` exits 0 and `data.healthy` is true (covers Python 3.12, asmslicer, analysis deps, c++filt, the Rust demangler, cross-compilers, credential store, state dir; on a container-toolchain recipe also the `engine-*` checks) | Exit 0 / healthy |
 | 6 | Build artifacts exist | Read `artifact` from `<project-context>` (the recipe's own, written by `loci init`); fall back to a glob for `**/*.o` under the one build root, `.loci/build/` — **skipping `turns/`, `cargo/`, `dumps/` (and the pre-rename `elf/`) and every `.loci-stage-*/` directory at any depth** — or any `.elf`/`.o`/`.axf` in the project root. A `.loci-build/` beside it is a pre-move CLI's leftover and is not searched | At least one found |
 | 7 | Analysed artifact is not stale | For each candidate from check 6 (cap at 5, newest first) run `loci build fresh --elf <path>` and read `.data.role` **before** `.data.stale` + `.data.sources_newer` | No candidate reports `stale: true`, **unless** its `role` is exactly `"baseline"` |
@@ -346,10 +343,10 @@ and stand or fall with the recipe. Three shapes, each a different finding:
 - **all three absent, `init_status` is `unsupported` or `needs_user`** — init
   stopped before recording anything, and the finding is `init_status`.
 - **`compiler` is `null` beside a `.loci/build.yaml` on disk** — `loci init` wrote
-  the file with its no-recipe branch and no scan reran, so `init_status` is
-  `failed`. Check 3 fails while a recipe exists; the finding is the failed init,
-  and `null` (init wrote it) is a different signal from `"unknown"` (the scan did)
-  and from absent (nobody did).
+  the file with its no-recipe branch, so `init_status` is `failed`. Check 3
+  fails while a recipe exists; the finding is the failed init, and `null` (no
+  recipe behind it) is a different signal from `"unknown"` (a recipe that names
+  no compiler) and from absent (nothing wrote it).
 
 If `loci` is not on PATH, checks 5, 7 and 10 automatically FAIL (the analysis
 stack lives inside the CLI; `loci doctor` reports the specific missing piece).
@@ -558,7 +555,7 @@ Generated: <YYYY-MM-DD HH:MM:SS UTC>
 | # | Check | Status | Detail |
 |---|-------|--------|--------|
 | 1 | loci CLI available & signed in | <PASS/FAIL> | <detail> |
-| 2 | Session context exists | <PASS/FAIL> | <detail> |
+| 2 | Project context exists | <PASS/FAIL> | <detail> |
 | 3 | Compiler recorded | <PASS/FAIL> | <detail> |
 | 4 | LOCI target supported | <PASS/FAIL> | <detail> |
 | 5 | loci CLI healthy | <PASS/FAIL> | <detail> |

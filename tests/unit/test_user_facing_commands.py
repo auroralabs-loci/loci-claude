@@ -5,8 +5,9 @@ is barred from running itself — a browser flow, a full-screen view that takes 
 its terminal, and the moment a bound's authorship transfers. Everything else the
 CLI does, the agent does, or a slash command does on the user's behalf.
 
-The `! ` prefix is the enforceable half: in Claude Code it means *the user types
-this*, so any `! loci <verb>` outside the two allowed verbs is a handover by
+The `! ` prefix is the enforceable half: on both hosts (Claude Code and GitHub
+Copilot CLI alike run `! <command>` in the user's own shell) it means *the user
+types this*, so any `! loci <verb>` outside the two allowed verbs is a handover by
 construction, whatever the surrounding prose claims. The rest of the rule is prose
 and `test_the_rule_is_still_written` is what keeps it from being deleted quietly.
 """

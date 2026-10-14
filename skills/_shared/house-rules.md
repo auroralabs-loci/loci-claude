@@ -36,7 +36,7 @@ named in the line that carries them.
 | **Conclusion rows** | five columns, the cockpit's two among them | |
 | **Structural invariants** | which measurement answers which of the four, and *Report the zero* | |
 | **Naming a path or a loop** | by its source range, never by an id no reader can resolve | `naming-paths` |
-| **The artifact a run measures** | how the verb selects and ranks it, freshness as a filter, and the `Artifact:` line | `the-artifact` |
+| **The artifact a run measures** | how the verb selects and ranks it, freshness as a filter, `no_artifact` when nothing qualifies, and the `Artifact:` line | `the-artifact`, `no-artifact` |
 | **Bounds returned by the CLI** | what a bound looks like coming back, and what each field means | |
 | **The build recipe** | what every measurement rests on, and the provenance line it prints | |
 | **When a `loci` call refuses** | the coded errors, each with the one recovery that works; fast-fail mode is under it (`fail-fast`) | |
@@ -84,8 +84,16 @@ run init yourself, and finish the run, whose measurement is unaffected. `stats
 record` refusing with **`state_unrecordable`** is the one case nothing could repair:
 relay its message, do not retry, and report the run as measured but not recorded.
 
-`not_resolved` means the request did not say which project: ask the user rather
-than guess. `not_initialized` is its row under **When a `loci` call refuses** — except
+<a id="not-resolved"></a>
+**`not_resolved`: the user names the project, never you.** Never pass a
+`--project-root` you derived from the layout: the CLI trusts it unchecked and files
+history under it. Ask with [the question tool](#question-tool): one option per
+`error.candidates[]` entry, its `path` as the label and its `why` as the description
+(`checkout` the git toplevel, `ide_project` the directory whose IDE project builds the
+file, `build_file` the nearest one holding a build file); Other takes a path of their
+own. Re-run the call with `--project-root "<their answer>"`.
+
+`not_initialized` is its row under **When a `loci` call refuses** — except
 in a skill that does its job without a recipe (contract, trends, help): there, finish
 that job and close with `/loci:init <project_root>` as the next step, never a
 measurement.
@@ -352,7 +360,7 @@ the envelope carries `data.run`: `verdict`, `gates`, and `judged[]` with each
 entry's `bound` and `observed`. **Never offer a second metered run before you have
 looked there.**
 
-Two error `code`s are stable and must be handled deterministically:
+Three error `code`s are stable and must be handled deterministically:
 
 <a id="auth-required"></a>
 - `auth_required` (exit 3) — not signed in / token expired, and **nothing was
@@ -361,15 +369,16 @@ Two error `code`s are stable and must be handled deterministically:
   it writes ``run `loci login` ``, and here signing in is the user's to run, so
   the line they read carries the prefix — `! loci login`, one of the three
   commands that may be put in front of them. Everything else is the CLI's
-  wording. Do not write your own: three hand-written versions of this sentence
-  were three places to update when the message changed.
+  wording. Do not write your own.
 - `quota_exceeded` (exit 4) — usage limit reached; surface `error.message`
   verbatim and stop the backend path.
+- `client_too_old` (exit 4) — the plugin pins a loci-tools the server refuses.
+  Surface `error.message`, say to update the LOCI plugin, stop. No retry.
 
 <a id="measure-exit-codes"></a>
 
 `loci analyse measure` adds three, on its own exit numbers so they can never be
-mistaken for the two above. **Read `.ok` first; on `ok:false` branch on
+mistaken for those above. **Read `.ok` first; on `ok:false` branch on
 `error.code`, and where there is no `code` treat it as an uncoded failure —
 emit `error.message` verbatim and stop.** A malformed `.loci/contract.yaml`
 raises with no `code` and exits **`2`**, the same number a breach uses, so a bare
@@ -383,7 +392,7 @@ exit code is the verdict:
 | `1` | The analysis itself failed | Emit `error.message` verbatim and stop; nothing was judged |
 | `6` | `error.code: manifest_stale` — the tree changed since `prepare` | Re-run `prepare`; **nothing was spent** |
 | `7` | `error.code: invalid_selection` / `invalid_manifest` | The message names the valid candidate ids; correct the reference |
-| `3` / `4` | `error.code: auth_required` / `quota_exceeded` | As above; stop, nothing was billed |
+| `3` / `4` | `error.code: auth_required` / `quota_exceeded` / `client_too_old` | As above; stop, nothing was billed |
 
 **Never conflate 2 with 1.** Both `0` and `2` carry usable measurements; `1`
 means the analysis failed and there is no report to write. An advisory breach
@@ -393,7 +402,9 @@ A skill that reads a bare `3` as "stale" re-runs `prepare` forever on an expired
 login.
 
 The build verbs raise eleven more, and they are a closed set with one recovery
-each — **When a `loci` call refuses** below is the whole list.
+each — **When a `loci` call refuses** below is the whole list. The measuring
+verbs add one of their own: `no_artifact`, exit `1`, routed by `error.reason`
+under **[When nothing qualifies](#no-artifact)**.
 
 Bulky text (assembly, CFG, diffs) is **written to files** somewhere under
 `dumps/` — under the current turn's tree when one is on record, else under
@@ -601,11 +612,8 @@ left at `measured` is a judgement you skipped, and the turn-end check says so.
 
 ## Conclusion rows: five columns, the cockpit's two among them
 
-There is no `Basis` column. It existed to disclose which of `contract`,
-`starter` and `LOCI` supplied a row's bound, and two of those three no longer
-supply one: there is no starter fallback and skill-owned bands do not judge. What
-is left — whether a bound or a reading reached the row — is what the two verdict
-columns say outright.
+There is no `Basis` column: whether a bound or a reading reached the row is what
+the two verdict columns say outright.
 
 Every judging skill's conclusion table carries the same five, in this order:
 `ENTRY`, `FUNCTION`, `STATUS`, `AGENT ASSESSMENT`, `NOTE` — the cockpit's
@@ -631,9 +639,8 @@ the composition matrix and the run's worst-of; what is specific here:
   denominator is someone else's or there is no percentage. A row with no such denominator
   reports the absolute figure.
 - **One row, one requirement.** A row is one contract entry, so a single
-  judgement sets its word. The `(function, gate)` merge that used to put two
-  bounds in one row is gone, and with it `rows[].entries` — say which figure the
-  row's word is about and there is nothing left to disambiguate.
+  judgement sets its word, and there is no `rows[].entries`: say which figure the
+  row's word is about.
 - **A row an entry decided quotes the requirement.** Say what was required, in
   the entry's own words: `judgements[].text` carries it. A `❌ FAIL` that does not
   state the bound it breached sends the user to look up their own requirement,
@@ -647,9 +654,7 @@ the composition matrix and the run's worst-of; what is specific here:
 
 ## Structural invariants: which measurement answers which signal
 
-The four structural signals are the ones nothing was mapping to a measurement, so
-`loci contract check` filed them as "no measurement supplied" and the report
-dropped them as routine. They come from one `loci elf stack` run over a **linked**
+The four structural signals come from one `loci elf stack` run over a **linked**
 binary, and each one's `curr` is a **count** — the signal has no unit:
 
 | Signal | Read from | `curr` is |
@@ -672,7 +677,10 @@ Three rules make the mapping usable:
 - **They are whole-binary, always.** The contract rejects a `function` on a
   structural signal (`scope_unexpected`), so there is no per-function structural
   bound to judge. A hazard you found in one function is evidence *for the
-  whole-binary entry*; name the function in the Note, not in the scope.
+  whole-binary entry*; name the function in the Note, not in the scope. With an
+  entry on them the verb counts the whole binary, and the row's Note cites
+  `data.detail.whole_binary`; without one, `data.detail`'s lists are only what the
+  analysed functions reach. A clean function never makes the binary clean.
 - **A `.o` cannot answer them.** In a relocatable object the call edges are
   unapplied relocations, so `has_unknown_callees` reads `false` for a binary whose
   callees were simply never linked. From a `.o`, the invariant is
@@ -755,7 +763,7 @@ got there:
 |---|---|
 | `named` | the user named a binary (`--elf`). It is then the **only** candidate, and a path that is not a file, or not an ELF LOCI analyses, is a usage error rather than a fall-through; an ELF for another ISA is `arch_mismatch`. |
 | `recipe` | the artifact the recipe records (`artifacts.elf`), when it is on disk. It **leads**, because the recipe is the project's own answer to *which binary do you build*. |
-| `ranked` | linked binaries newest-first, then objects, each admitted by its ELF header: a file only named like one, or an ELF for another ISA, is passed over. The fallback for a project whose recipe names none. A shared library is never ranked; a refusal names those it found, for `--elf`. |
+| `ranked` | linked binaries newest-first, then objects, each admitted by its ELF header: a file only named like one, an unparseable ELF, or an ELF for another ISA, is passed over. The fallback for a project whose recipe names none. A shared library is never ranked; a refusal names those it found, for `--elf`. |
 
 **The recipe says WHICH file, never WHEN it was last built.** A recorded artifact
 is filtered for freshness exactly like a ranked one.
@@ -779,6 +787,36 @@ refused out from under the comparison.
 
 Refusal reasons travel with the choice, so a run that fell through to an object
 can say what it fell through **from**. Relay them; do not re-derive them.
+
+<a id="no-artifact"></a>
+
+### When nothing qualifies: `no_artifact`
+
+When no candidate survives, the measuring verbs (`analyse prepare` without
+`--source`, `analyse stack`, `analyse memory`, `analyse cfg`) refuse with exit
+`1` and `error.code: no_artifact`. It is **not** one of the eleven coded errors —
+those refuse a recipe; this one refuses every candidate. `error.message` names
+each candidate and why it was refused, so relay it verbatim. Then give the one
+next step that `error.reason` picks:
+
+| `error.reason` | What you say next |
+|---|---|
+| `stale` | the binary is older than its sources, or an interrupted link left it unreadable. Relinking fixes it: name `error.full_build` when present. |
+| `recorded_missing` | the recipe records `error.recorded_artifact`, and it is not on disk: never built, or cleaned. Name `error.full_build` as the build that makes it. **Not `/loci:init`** — the recipe is right, the file is just absent. |
+| `wrong_target` | binaries exist, but for another ISA. Relay the message's advice: build one for the target, or name one with `--elf`. Never measure the other ISA's binary instead. |
+| `none` | nothing was found. Name `error.full_build` when present, and `--elf` for a binary the user already has. When `error.recorded_artifact` is `null`, add one line: `/loci:init` records the project's binary so later runs find it without `--elf`. That is the user's call; name it and stop. |
+
+<a id="function-inlined"></a>
+
+**`function_inlined`, exit `1`: the compiler inlined the named function.** Relay
+`error.message`, then offer to measure an entry's `into` instead, where it has one;
+ask first. A run that measured other names lists it in `data.inlined`: relay each
+`reason`.
+
+**The build is the user's to run, not yours, and never mid-turn.** During a change
+measurement, relinking between the snapshot and the measurement replaces the Before
+with nothing able to rebuild it. Whatever the reason, never go looking for a binary
+yourself, and never pick one the verb did not.
 
 ### The `Artifact:` line
 
@@ -814,8 +852,8 @@ path, build system, the `configure` / `full_build` / compile-database `regen`
 commands, the artifact paths and the Rust knobs. `/loci:init` writes it, every
 `loci build` verb reads it, `loci project` reports it. It is machine-local and gitignored, so a fresh clone has none until init runs there.
 
-**One target ISA, always one LOCI supports** (`aarch64`, `armv7e-m`, `armv6-m`,
-`tc399`): init refuses to write a recipe for anything else and records the
+**One target ISA, always one LOCI supports** (`aarch64`, `neoverse-v2`, `armv7e-m`,
+`armv6-m`, `tc399`): init refuses to write a recipe for anything else and records the
 project `unsupported`, after which `loci project` answers `not_initialized` with
 `init_status: unsupported`. A file resolving outside the initialized image is a
 coded `outside_target`, never a silent measurement of the wrong one.
@@ -874,6 +912,8 @@ next compile) and why `.loci/contract.yaml` is committed, where its diff shows.
 notice — and therefore the one where "the hook did not stop me" is furthest from
 "this was mine to do". A write that would succeed is not a write you may make.
 
+<a id="recipe-provenance-line"></a>
+
 ### The recipe provenance line
 
 Every **absolute** report — exec-trace, stack-depth, memory-report — carries one
@@ -881,14 +921,14 @@ line saying what its numbers rest on, beside the `Artifact:` line:
 
     Recipe: .loci/build.yaml (target armv7e-m, validated replay-compare, confirmed by user)
 
-Every value is **read, never inferred**, out of the verb's `data.artifact.recipe`
+Every value is **read, never inferred**, out of the verb's recipe block
 (below): `target`, `validated` (`replay-compare` | `compile-check` |
 `unvalidated`), `confirmed_by_user`, and `path` — which is absolute, so print it
 relative to `<project_root>` or print it whole, but do not invent a spelling for
 it. Two values qualify the number: render
 `validated: unvalidated` as `validated unvalidated — these flags are a claim, not
-a demonstrated one`, and `confirmed_by_user: false` as `not confirmed by anyone
-(written by --auto)` — once, plainly, with `/loci:init` as what clears it.
+a demonstrated one`, and `confirmed_by_user: false` as `not confirmed by anyone` —
+once, plainly, with `/loci:init` as what clears it.
 
 **Except where `artifact_only` is `true`**: that recipe records no flags at all,
 so "these flags are a claim" describes nothing and doubts numbers read out of a
@@ -900,21 +940,27 @@ recipe resolved and can override it, so read it with `printf '%s'
 "${LOCI_EXTRA_CFLAGS:-}"` and append `+ LOCI_EXTRA_CFLAGS` when it is non-empty.
 
 **The source is the verb's envelope, not the context file — for all three absolute
-reports.** `loci analyse stack` and `loci analyse memory` return the block
-under `data.artifact.recipe` — the same keys a compile's `.meta.json` carries
-(`path`, `target`, `validated`, `confirmed_by_user`, `escrow`, `warnings`), plus
-`recorded_artifact` and `recorded_artifact_on_disk`. Render the line from it under
-the same rules: a `null` value and an absent block both mean *"No recipe governs
-this project"*; an `error` key means a recipe exists and refused to load — print
-its code in place of the line, once, with `/loci:init` as what repairs it; relay
-`warnings` verbatim beside the line whether or not the line prints; and when
-`data.artifact.via` is `named`, qualify the line the way a user-named binary is — the
+reports.** Where the block sits depends on the verb:
+
+- `analyse cfg`, `analyse stack`, `analyse memory`: `data.artifact.recipe`.
+- `analyse prepare`: `data.provenance[].recipe`, one per unit. One line when every
+  unit's block agrees, the normal case; otherwise one line per unit, each
+  prefixed by that unit's `artifact`.
+- `analyse measure`: none — the line comes from the `prepare` envelope whose
+  manifest id `measure` was given.
+
+The block carries the keys a compile's `.meta.json` does (`path`, `target`,
+`validated`, `confirmed_by_user`, `escrow`, `warnings`), plus `recorded_artifact`
+and `recorded_artifact_on_disk`. Render the line from it under the same rules: a
+`null` value and an absent block both mean *"No recipe governs this project"*; an
+`error` key means a recipe exists and refused to load — print its code in place
+of the line, once, with `/loci:init` as what repairs it; relay `warnings`
+verbatim beside the line whether or not the line prints; and when the `via` beside
+the block is `named`, qualify the line the way a user-named binary is — the
 user's binary has nothing vouching for its flags.
 
-**`exec-trace` reads the same block.** `prepare` selects its artifact through the
-same path the leaf verbs use, so `data.artifact.recipe` is on its route too — and
-it is derived from the recipe record rather than from a compile, which is what
-lets one rule serve every absolute report. The context file is not a second
+The block is derived from the recipe record rather than from a compile, which is
+what lets one rule serve every absolute report. The context file is not a second
 source: after a mid-session `/loci:init` the two disagree, and the call that chose
 the artifact is the only one that knows what built it.
 
@@ -923,7 +969,7 @@ recipe supplied no flags, no compiler and no target, so nothing it says is a cla
 about the numbers, and the binary
 came from the project's own build. Print no line rather than a line plus a
 caveat explaining that it does not apply. Whether the measured binary is the
-canonical one is a different question and `data.artifact.via` already answers it
+canonical one is a different question and `via` already answers it
 on the `Artifact:` line.
 
 **Where a value reads `null`, do not render the line with a null in it** — say
@@ -1083,9 +1129,10 @@ Five need more than a line:
   the second of which reads as a clean first measurement rather than the regression
   it is.
   `data.artifact.before_saved: true` on the run that refused the stale binary (or
-  `error.before_saved` on a refusal) says this turn kept a copy; only then may you
-  offer the recipe's `full_build`, and only the user's yes runs it — post-edit's
-  *When to offer a relink* says when.
+  `error.before_saved` on a refusal), or `data.linked_before.before_saved: true` on
+  `prepare` / `measure` ahead of an escalation, says this turn kept a copy; only
+  then may you offer the recipe's `full_build`, and only the user's yes runs it —
+  post-edit's *When to offer a relink* says when.
   `false` means it would destroy the only pre-edit state: report what refused, with
   `before_reason`, and do not suggest the rebuild. Except `no_edit_this_turn`:
   nothing changed this turn, so a relink loses nothing. Ask once with
@@ -1144,8 +1191,7 @@ counterparts:
 1. **The artifact is one `.o` per crate, named after the crate target**, never
    `<basename>.o` — every crate has a `main.rs` / `lib.rs` / `mod.rs`, so the
    source filename says nothing about where the object goes. **Do not construct
-   the path**, and do not assume the spelling: the exact name has already changed
-   once between CLI releases. Take every path from the compile envelope
+   the path** or assume its spelling. Take every path from the compile envelope
    (`data.output`, `data.meta_file`, and `data.output_prev` / `data.meta_prev`
    when a pre-edit snapshot exists), or from `loci analyse prepare`'s
    `provenance[]`, which is what a change-measuring skill reads.
@@ -1167,8 +1213,7 @@ counterparts:
    see [Reading the CLI's version](#cli-version-gate) before promising a user you
    can measure a trait method.
 
-   **Since 0.1.126 the CLI reports three things about a `--functions` query that
-   it used to leave you to guess at. All three arrive as `ok:true` findings, not
+   **Three things about a `--functions` query arrive as `ok:true` findings, not
    errors:**
 
    - `data.ambiguous_functions` + an `AMBIGUOUS_FUNCTION_QUERY` warning — the
@@ -1180,9 +1225,8 @@ counterparts:
      query that was ambiguous. Not Rust-only — a C++ overload set
      (`calculate`) reports the same way.
    - `data.functions_not_found` + a `FUNCTIONS_NOT_FOUND` warning on `elf cfg` —
-     a name the binary does not have. This used to come back as an `ok:false`
-     envelope, so **a successful CFG no longer implies it covers what you asked
-     for**: read this list before reporting on the graph.
+     a name the binary does not have. **A successful CFG does not imply it covers
+     what you asked for**: read this list before reporting on the graph.
    - `data.demangle` (`{scheme, total, demangled, raw, disambiguated}`) + an
      `UNREADABLE_SYMBOL_NAMES` warning when `raw > 0` — some names could not be
      rendered. Say which, rather than presenting raw `_R…` text as a name.
@@ -1202,7 +1246,9 @@ counterparts:
 
 The recipe records the rustc target triple as `rust.triple`, derived from the
 LOCI target — you never pick one, and `rust_target_missing` carries the exact
-`rustup target add` line when its std is not installed. One target has no triple
+`rustup target add` line when its std is not installed. `neoverse-v2` shares
+`aarch64`'s triple; the CLI adds `-C target-cpu=neoverse-v2` to the rustc flags at
+compile time, not as a recipe field. One target has no triple
 at all: **rustc has no TriCore backend, so Rust analysis is unavailable on
 tc399.**
 
@@ -1313,9 +1359,9 @@ language's, and six rules follow from that one fact.
 
 Caveats to surface rather than fight:
 
-- **Which ISAs Go reaches.** `GOARCH=arm64` builds `aarch64`; Cortex-M needs
-  **TinyGo**, whose board decides the ISA (`pca10040` → `armv7e-m`, `microbit` →
-  `armv6-m`). Go's 32-bit `arm` port is **A-profile** (an MMU, an OS) and LOCI's
+- **Which ISAs Go reaches.** `GOARCH=arm64` builds `aarch64` and `neoverse-v2`;
+  Cortex-M needs **TinyGo**, whose board decides the ISA (`pca10040` → `armv7e-m`,
+  `microbit` → `armv6-m`). Go's 32-bit `arm` port is **A-profile** (an MMU, an OS) and LOCI's
   32-bit targets are M-profile, so there is no mapping between them and init
   refuses one with that reason. **tc399 has no Go backend at all**, exactly as it
   has no rustc one.

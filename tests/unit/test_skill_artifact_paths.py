@@ -92,7 +92,7 @@ BUILD_ROOT_RE = r"(?:\.loci-build|\.loci/build)"
 
 ASSEMBLED_OBJECT_RE = re.compile(
     BUILD_ROOT_RE + r"/(?:objects/)?"
-    r"(?:<[a-z_]+>|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|aarch64|armv7e-m|armv6-m|tc399)/"
+    r"(?:<[a-z_]+>|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|aarch64|neoverse-v2|armv7e-m|armv6-m|tc399)/"
     # The filename part: ordinary characters, OR a `$(…)` command substitution, which
     # contains spaces and a `)` and so was excluded by a plain character class —
     # letting `$(basename <source> .c).o` through, the single most likely shell

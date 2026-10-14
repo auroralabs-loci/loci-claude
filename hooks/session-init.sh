@@ -51,8 +51,9 @@ command -v loci_host_reads_payload >/dev/null 2>&1 || loci_host_reads_payload() 
 command -v loci_host_session_resumed >/dev/null 2>&1 || loci_host_session_resumed() { return 1; }
 command -v loci_host_name >/dev/null 2>&1 || loci_host_name() { return 1; }
 command -v loci_host_notice >/dev/null 2>&1 || loci_host_notice() { return 1; }
+command -v loci_hook_log >/dev/null 2>&1 || loci_hook_log() { return 1; }
 LOCI_HOOK_INPUT=""
-if { loci_is_dev || loci_fail_fast || loci_host_reads_payload; } && [ ! -t 0 ]; then
+if { loci_is_dev || loci_hook_log || loci_fail_fast || loci_host_reads_payload; } && [ ! -t 0 ]; then
     LOCI_HOOK_INPUT=$(cat 2>/dev/null || true)
 fi
 
@@ -101,10 +102,24 @@ mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 
 _welcome_text() {
     # Marker lives at ~/.loci/.welcome-shown, outside the versioned plugin dir,
-    # so the one-time welcome isn't re-shown on every version bump. Fall back to
-    # PLUGIN_DIR when ~/.loci isn't writable.
-    local marker_dir="${HOME}/.loci"
-    [ -d "$marker_dir" ] || marker_dir="$PLUGIN_DIR"
+    # so the one-time welcome isn't re-shown on every version bump. Created on
+    # demand; PLUGIN_DIR only when ~/.loci cannot be CREATED — the state
+    # ladder's rule (above): the fallback is taken on a failed create, not on
+    # a missing directory. It used to be taken on a missing one, and ~/.loci
+    # is missing exactly when LOCI_STATE_DIR points elsewhere (every test
+    # home, a QA session), so the marker landed in the plugin root — the one
+    # place a hook must never write, and a first run that writes there shows
+    # the welcome once and silences every run after it (AAD-7806). Note the
+    # change for a session that pins LOCI_STATE_DIR elsewhere to keep its home
+    # clean (QA, the eval harness): ~/.loci and the marker are now written in
+    # the real home on the first start, and the welcome is per user, as the
+    # upgrade test has always said. No HOME at all: nothing is created, the
+    # plugin dir keeps the marker (`${HOME:-}`, as the state ladder spells it).
+    local marker_dir="$PLUGIN_DIR"
+    if [ -n "${HOME:-}" ]; then
+        marker_dir="${HOME}/.loci"
+        [ -d "$marker_dir" ] || mkdir -p "$marker_dir" 2>/dev/null || marker_dir="$PLUGIN_DIR"
+    fi
     local marker="${marker_dir}/.welcome-shown"
     [ -f "$marker" ] && return 0
 
@@ -168,7 +183,7 @@ _LOCI_READY_LINE="loci command: loci (on PATH)"
 if ! $_DETECTION_READY && ! have_uv; then
     _LOCI_STATUS_LINE=$(printf 'loci: NOT installed — its prerequisite `uv` is missing and the plugin does not install it. If the user requests a LOCI skill/analysis, determine the uv install command for their OS/package manager, tell them to run it (e.g. `! <install command>`), then run /loci:setup (or `bash %s/hooks/ensure-loci-cli.sh`) to install the loci CLI. Execution-aware analysis is unavailable until then.' \
         "$AUTH_PLUGIN_DIR")
-    _INSTALL_FAIL_MSG=$(printf '⚠ LOCI: the loci CLI is not installed — prerequisite `uv` is missing.\nAsk Claude for the uv install command for your system, then run /loci:setup.')
+    _INSTALL_FAIL_MSG=$(printf '⚠ LOCI: the loci CLI is not installed — prerequisite `uv` is missing.\nAsk your coding agent for the uv install command for your system, then run /loci:setup.')
 elif ! $_DETECTION_READY; then
     _install_status="" _install_log="${STATE_DIR}/loci-cli-install.log"
     if [ -f "${STATE_DIR}/loci-cli-status.json" ]; then
@@ -264,7 +279,7 @@ fi
 # section — verified for both mandatory auto-run skills (loci-preflight,
 # loci-post-edit) and for exec-trace, control-flow, stack-depth, memory-report
 # and trends; bug-report opts out on purpose, and `contract` phrases its own
-# rule inline. `tests/unit/test_project_detection_gate.py` pins that list, so
+# rule inline. `tests/unit/test_session_init_block.py` pins that list, so
 # the drop cannot outlive its justification.
 #
 # What those sections do NOT carry is the four hard rules — cite numbers, no
@@ -290,21 +305,30 @@ _AVAILABLE='Available: /loci:help, /loci:init, /loci:exec-trace, /loci:stack-dep
 # calls nothing — while the function that will call it is the one the plan
 # modifies and preflight measures (a live `--plan` run skipped on exactly that
 # reading). Claude Code's clause is the one it has always been.
+#
+# And Copilot's clause says the other half out loud (AAD-7803): the rule above
+# names only when preflight runs, and under the eval harness gpt-5.6-sol — like
+# sonnet on both hosts — took the skill's trigger words ("how should I modify")
+# as the gate and invoked outside plan mode. Claude Code's clause stays byte
+# for byte for parity (tools/claude-parity.sh, test_host_session_context);
+# Claude's negative half rides in the skill description, which both hosts load.
 _EDIT_TOOLS='Edit/Write'
 _PATH_WHY=' — Claude Code prompts the user for permission on every out-of-project access, halting automated preflight/post-edit/eval runs'
 _PLAN_MODE='In /plan mode'
 _PREFLIGHT_ON='on its existing callees'
+_PREFLIGHT_OFF=''
 _HOST_LINE=''
 if _HOST_NAME=$(loci_host_name) && [ -n "$_HOST_NAME" ]; then
     _EDIT_TOOLS='edit/create'
     _PATH_WHY=''
     _PLAN_MODE='In plan mode (a [[PLAN]] prompt)'
     _PREFLIGHT_ON='on the functions it changes and the existing callees of its new code (a new function changes its caller)'
+    _PREFLIGHT_OFF=' Outside plan mode: never, whatever the wording.'
     _HOST_LINE="host: ${_HOST_NAME}. Tool names in LOCI's skills read as yours: Edit/Write is edit/create, Bash is bash or powershell, Read is view, the question tool is ask_user; /plan, /loci:<skill> and ! <command> work as written."
 fi
 # The reminder is the trigger, not "any edit": the hook emits it only for edits a
 # recipe governs.
-_AUTORUN_RULES='LOCI auto-run rules: '"$_PLAN_MODE"', when the user describes new C/C++/Rust/Go logic in a project a LOCI recipe governs, you MUST invoke loci:loci-preflight '"$_PREFLIGHT_ON"' before proposing edits. After an '"$_EDIT_TOOLS"' to a C/C++/Rust/Go source (.c,.cc,.cpp,.cxx,.c++,.rs,.go) or a header it includes, invoke loci:loci-post-edit as soon as the hook'"'"'s `You MUST invoke` reminder appears; it appears only for edits a recipe governs.'
+_AUTORUN_RULES='LOCI auto-run rules: '"$_PLAN_MODE"', when the user describes new C/C++/Rust/Go logic in a project a LOCI recipe governs, you MUST invoke loci:loci-preflight '"$_PREFLIGHT_ON"' before proposing edits.'"$_PREFLIGHT_OFF"' After an '"$_EDIT_TOOLS"' to a C/C++/Rust/Go source (.c,.cc,.cpp,.cxx,.c++,.rs,.go) or a header it includes, invoke loci:loci-post-edit as soon as the hook'"'"'s `You MUST invoke` reminder appears; it appears only for edits a recipe governs.'
 _TOOL_POLICY='LOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); read it and branch on `ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory'"$_PATH_WHY"'. Always write inside the project (e.g. `.loci/build/`) so every tool sees the same path.'
 # Adopting a project is the USER'S decision, so this rule no longer auto-runs
 # init — it used to, and that was the intrusive half. `loci init` writes four

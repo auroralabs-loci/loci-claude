@@ -8,8 +8,9 @@ because hostile review defeated 12 of its first 19 assertions with the suite
 green).
 
 **Why a second file rather than more of `test_freshness_contract.py`.** That suite
-pins one guarantee — *a stale artifact must not be measured* — and carries ~1 000
-lines of `detect-project.sh` integration tests alongside it. These pins are about a
+pins one guarantee — *a stale artifact must not be measured* — and carried ~1 000
+lines of `detect-project.sh` integration tests alongside it when this file was split
+off. These pins are about a
 different guarantee: *the recipe is the only source of build facts, and the prose
 that used to guess them stays deleted*. Two of them (the byte ceilings) are not
 about prose content at all. The shared helpers are imported rather than copied, so
@@ -548,10 +549,9 @@ def test_no_probe_verb_hunts_a_compiler():
     triple) and a T12 reviewer defeated seven phrase patterns by exactly that
     kind of one-word miss.
 
-    Screens shipped documents and injected prose, not the shell that legitimately
-    runs the probe: `lib/detect-project.sh` executes `command -v arm-none-eabi-gcc`
-    because detecting is its job, and reporting a detector for detecting is how a
-    screen gets deleted.
+    Screens shipped documents and injected prose. The plugin's own shell is held
+    to a stricter rule in `test_init_skill.py`, naming no compiler at all, since
+    the detector that ran `command -v arm-none-eabi-gcc` is deleted (AAD-7745).
     """
     offenders = []
     for rel, text in _screened():
@@ -772,7 +772,9 @@ HOT_FILE_CEILINGS = {
     "skills/loci-post-edit/escalation.md": 4_100,            # 3,736 B
     "skills/loci-post-edit/headers.md": 3_800,               # 3,446 B
     "skills/loci-post-edit/quiet-run.md": 15_600,            # 14,159 B
-    "skills/loci-preflight/escalation.md": 3_270,            # 2,972 B
+    # +1,130 B on 7 Oct: when a child's stale-link object run earns a relink before
+    # the first edit; a restatement above it was cut to offset part of it.
+    "skills/loci-preflight/escalation.md": 4_400,            # 3,983 B
     # Downloaded on its own, so it repeats what README says rather than linking
     # it; the ceiling is what keeps the repetition from growing into a second
     # README.
@@ -860,7 +862,9 @@ HOT_FILE_CEILINGS = {
     # +200 B on 30 Sep (AAD-7620): the closed ENTRY list had no row for a
     # text-only entry, which every judging skill offers and none could draw once
     # `analyse cfg` returned them. One sentence, compressed twice first.
-    "skills/_shared/verdicts.md": 27_600,                   # 27,554 B
+    # 8 Oct: the display-precision rule landed inside this, paid for by a NOTE-bullet
+    # sentence that addressed maintainers, not the model.
+    "skills/_shared/verdicts.md": 27_600,                   # 27,544 B
     "skills/bug-report/SKILL.md": 35_500,                    # 32,187 B
     # +400 B for AAD-7595's branch: the no-contract `STATUS` rule landing in
     # every judging skill. Taken on a promise — the trim back under is deferred,

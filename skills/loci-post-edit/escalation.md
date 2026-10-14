@@ -13,14 +13,8 @@ triggers; one run answers every request it lists. Each emits its own report, and
 its one-line summary becomes a Stack / Safety / Memory row here. Increment `R` by 1 at the trigger
 and again after reasoning over the result.
 
-**With no contract, the decision is yours.** There are no entries, so there is no
-request demanding a stack or memory measurement and the CLI proposes nothing.
-Call `stack-depth` or `memory-report` yourself — with `--parent-run` — when what
-you just read argues for it: a frame delta on a deep call chain, a ROM total that
-moved on an edit that should not have touched it, or new recursion, a call through
-a function pointer or a callee this project does not define — only `stack-depth`
-judges those. The argument is the whole gate.
-A child run costs latency and context, not money — `analyse stack` and
+**With no contract, the decision is yours**, on SKILL.md Step 4a's triggers; the
+argument is the whole gate. A child run costs latency and context, not money — `analyse stack` and
 `analyse memory` are unmetered end to end — so argue for it from what it would
 tell you, and "just to check" is still not that.
 
@@ -48,17 +42,20 @@ Nothing coming back is the common case and needs no apology.
 ## When to offer a relink
 
 After an edit the linked binary is older than its sources, so the child falls back
-to the object and `stack_depth` goes unmeasured. A relink rewrites the user's build
-outputs, so you offer it, never run it unasked:
+to the object and `stack_depth` goes unmeasured; `memory-report` loses the same way,
+ROM and RAM being whole-binary. Offer the relink before invoking either, and never
+run it unasked — it rewrites the user's build outputs:
 
-1. **Only when `data.artifact.before_saved` is `true`** (`error.before_saved` on a
-   refusal). `false`: a relink destroys the only Before — report `before_reason`.
-2. **Only where the edit plausibly moves a bounded figure** (a function on the
-   entry's call graph; a new call, local array, recursion or indirect call) **and
-   the tree builds as it stands**.
+1. **Only when `data.linked_before.before_saved` is `true`** on `measure`'s envelope.
+   `false`: a relink destroys the only Before — report `before_reason`, except
+   `no_edit_this_turn` ([house rules](../_shared/house-rules.md#coded-errors)).
+2. **Only where the edit plausibly moves a bounded figure**: a function on the
+   entry's call graph; a new call, local array, recursion, indirect call or static data.
 3. **Ask once per turn with the question tool**
    ([house rules](../_shared/house-rules.md#question-tool)), naming the entry and
-   `data.artifact.relink`. A yes covers the turn; a no is not asked again; with
+   `data.linked_before.relink`. A yes covers the turn; a no is not asked again; with
    nobody to answer, skip.
-4. **Yes:** run it, then the child again with the same `--turn` and `--parent-run`.
-   **No:** record the entry `no_opinion`, `relink declined`; its row stays `—`.
+4. **Yes:** run it, then the child with the same `--turn` and `--parent-run`; it
+   finds a fresh link. **No, or `false`:** invoke the child anyway; the entry is
+   `no_opinion`, and stack-depth folds back the object's own frame with `relink
+   not run` or the `before_reason`, never a depth.

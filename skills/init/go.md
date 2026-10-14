@@ -16,8 +16,8 @@ build cache, inside LOCI's gitignored output directory.
 Two things belong in what you tell the user after a Go init:
 
 - **Which tool, and which board.** `go` and `tinygo` are different recipes. Plain
-  `go` reaches `aarch64` only — Go's 32-bit `arm` port is A-profile and LOCI's 32-bit
-  targets are M-profile, so there is no mapping between them. Cortex-M needs TinyGo,
+  `go` reaches `aarch64` and `neoverse-v2` only — Go's 32-bit `arm` port is A-profile
+  and LOCI's 32-bit targets are M-profile, so there is no mapping between them. Cortex-M needs TinyGo,
   whose **board** decides the ISA (`pca10040` is `armv7e-m`, `microbit` is `armv6-m`).
   If the probe found TinyGo imports but no board, `.data.candidates` offers both
   Cortex-M targets and the user picks. Better, name the board with

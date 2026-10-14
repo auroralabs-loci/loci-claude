@@ -374,7 +374,7 @@ Four things the numbers mean:
 
 - **`data.paths.<fn>.hot_path`** carries `candidate`, `scope`, `blocks`, `ns`,
   `lower_bound`, and `before_ns` when the same path was costed on the
-  Before side. `energy_uws` rides along only where the contract bounds energy for
+  Before side. `energy_nws` rides along only where the contract bounds energy for
   that function, or where there is no contract at all. `lower_bound: true` means
   the figure can only grow, so the row's number is prefixed `≥`. A minimum the Before
   was too is carried ([Checkpoint words](#checkpoint-words)). `reasons` names what made it one — a loop whose trip count could not
@@ -414,18 +414,24 @@ by hand is a different measurement from the one the record holds.
 
 ## Step 4a: what the escalated skills still answer
 
-**`data.escalations` lists what the contract could ask of another skill. Invoke one
-only where this edit can move what it checks** — once, inline, with
-`--parent-run <this run's manifest id>`, before Step 5:
+**Invoke `stack-depth` or `memory-report` only where this edit can move what it
+checks** — once, inline, with `--parent-run <this run's manifest id>`, before Step 5:
 
-- `stack-depth`: a listed request's `fn` is a function this edit touched, or the edit
-  adds recursion, a call through a function pointer, or a callee the project does not
-  define (the diff, or a path's `reasons`: `recursive call`, `unresolved call site`).
-- `memory-report`: the edit adds or grows static data — a global, a static array, a
+- `stack-depth`: the edit adds recursion, a call through a function pointer, or a
+  callee the project does not define (the diff, or a path's `reasons`: `recursive
+  call`, `unresolved call site`); or it touches a function a listed request names as
+  `fn`, or, with no contract, adds a local array or a call on a deep call chain.
+- `memory-report`: the edit adds or grows static data: a global, static array or
   string table.
 
-Otherwise invoke neither and offer no relink. How the child's row is drawn and when
-to offer a relink: [`escalation.md`](escalation.md).
+**`data.contract` decides who picks.** `project`: invoke only a skill
+`data.escalations` lists. `none`: that list is always empty, and the triggers are
+yours to argue.
+
+**Offer the relink before invoking.** The link predates this edit, so the child
+would measure the object. Where `data.linked_before.before_saved` is `true`, ask;
+a yes runs `data.linked_before.relink` first, a no or `false` invokes it anyway:
+[`escalation.md`](escalation.md#when-to-offer-a-relink).
 
 ## Step 5: Internal reasoning pass (mandatory)
 
@@ -585,8 +591,8 @@ edit.
 
 **Row-inclusion rules:**
 - Include Performance and Energy rows when the corresponding path measurement exists.
-  **`energy_uws` is absent on a path the contract does not bound for energy** — a
-  repo that wrote a contract and left energy out of it gets no `energy_uws` and
+  **`energy_nws` is absent on a path the contract does not bound for energy** — a
+  repo that wrote a contract and left energy out of it gets no `energy_nws` and
   therefore no Energy row. Do not derive one from the timing figure; without a
   contract at all the field is present as before.
 - A numeric row an enabled contract entry covers takes its `STATUS` from that
@@ -680,8 +686,8 @@ Verdict: **<OK|CAUTION|FLAG>** — <one sentence cause> [(<N> of <M> judged)]
 
 | ENTRY                    | FUNCTION        | BEFORE  | AFTER   | STATUS | AGENT ASSESSMENT | NOTE |
 |--------------------------|-----------------|---------|---------|:------:|:----------------:|------|
-| Performance (Hot-Path)   | process_message | 1,404ns | 3,474ns | CAUTION | Needs attention | +147% on the ranked hot path (msg.c:46-52), new hot-path block bb_0x1ea |
-| Energy                   | process_message | 0.2uWs  | 0.49uWs | CAUTION | Needs attention | +145% on the ranked hot path (msg.c:46-52) |
+| Performance (Hot-Path)   | process_message | 1.40 µs | 3.47 µs | CAUTION | Needs attention | +147% on the ranked hot path (msg.c:46-52), new hot-path block bb_0x1ea |
+| Energy                   | process_message | 200 nWs | 490 nWs | CAUTION | Needs attention | +145% on the ranked hot path (msg.c:46-52) |
 
 No contract in this repo — every STATUS above is composed from the agent
 assessment beside it, not from a bound. `/loci:contract` records the limits this
@@ -838,7 +844,7 @@ per-function projection when it wrote the run, so `/loci:trends` fills with noth
 retyped. Retyping a measured number into a second call is how a recorded figure and
 a copied one end up disagreeing in the same report. Stack figures were never part of
 this: `stack_b` is written by `stack-depth`, which records it itself, including when
-it ran as your Step 4a escalation.
+it ran as your Step 4a escalation; an object run records no stack figure at all.
 
 ### Clean-escalation suffix
 

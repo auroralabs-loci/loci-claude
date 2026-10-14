@@ -116,10 +116,12 @@ _LOCI_HOST_RETAIN_SECS=604800
 # rather than a budget the ordinary case approaches.
 _LOCI_HOST_SWEEP_MAX=400
 # How long a `SubagentStart` marker waits for the child's first prompt. The
-# probe saw 0.6 s between the two; the bound is for a child that never came
-# (a spawn Copilot refused), so that its marker is not the one a later
-# session's first prompt in the same cwd claims (see the header).
-_LOCI_HOST_CHILD_WAIT_SECS=60
+# probe saw 0.6 s between the two — two hooks of one spawn, no model call in
+# between; the bound is for a child that never came (a spawn Copilot
+# refused), so that its marker is not the one a later session's first prompt
+# in the same cwd claims (see the header). The window IS that hole's width,
+# so it is 25 times what was measured rather than a minute (AAD-7835).
+_LOCI_HOST_CHILD_WAIT_SECS=15
 _LOCI_HOST_CR=$'\r'
 
 # Public API: loci_host_copilot — is the host GitHub Copilot CLI?
@@ -358,9 +360,10 @@ loci_host_adapt() {
     loci_host_copilot || return 1
     LOCI_HOST_PAYLOAD="${1:-}"
     LOCI_HOST_PROMPT_ID=""
-    LOCI_HOST_CARRY=""
+    LOCI_HOST_CARRY="" _LOCI_HOST_CARRY_TAKEN=""
     LOCI_HOST_PATCH_FILES=""
     LOCI_HOST_PATCH_TRUNCATED=""
+    LOCI_HOST_EDIT_UNREAD=""
     command -v loci_json_load >/dev/null 2>&1 || {
         loci_log ERROR host "lib/loci_json.sh did not source — no turn id adapted"
         return 1
@@ -439,6 +442,18 @@ _loci_host_adapt_turn() {
         loci_log WARN host "turn: no session_id on the $event payload — no turn id adapted"
         return 1
     fi
+    # The id is injected at the front of the object (below), so a document that
+    # does not open with `{` cannot carry one — and is refused HERE, before a
+    # mint: refused after it, the new id was on record and the carry taken for
+    # a turn the verbs never saw, and every later hook resolved an id nothing
+    # had stamped (AAD-7835).
+    case "$LOCI_HOST_PAYLOAD" in
+        '{'*) ;;
+        *)
+            loci_log WARN host "turn: payload is not a JSON object — no turn id adapted"
+            return 1
+            ;;
+    esac
 
     local agent=""
     if [ "$event" = UserPromptSubmit ]; then
@@ -488,16 +503,9 @@ _loci_host_adapt_turn() {
 
     # Injected at the FRONT: the hooks read `prompt_id` out of the bounded prefix
     # `loci_json_load` parses, and the front is the one place that is inside it
-    # whatever the payload's size. The document is an object — every host payload
-    # starts with `{` — and has at least `session_id` in it (read above), so the
-    # comma is never the object's last character.
-    case "$LOCI_HOST_PAYLOAD" in
-        '{'*) ;;
-        *)
-            loci_log WARN host "turn: payload is not a JSON object — no turn id adapted"
-            return 1
-            ;;
-    esac
+    # whatever the payload's size. The document is an object (checked before the
+    # mint) and has at least `session_id` in it (read above), so the comma is
+    # never the object's last character.
     LOCI_HOST_PROMPT_ID="$id"
     LOCI_HOST_PAYLOAD="{\"prompt_id\":\"$id\",${agent:+\"agent_id\":\"$agent\",}${LOCI_HOST_PAYLOAD#\{}"
     return 0
@@ -573,8 +581,11 @@ loci_host_subagent_start() {
 #
 # THE CLAUDE NAME WINS: a prefix that already uses the Claude key — any Claude
 # Code payload, should one ever carry `COPILOT_CLI` — is not touched for that
-# field, so no payload ever ends up with both spellings of one argument, which
-# `contract-guard.sh` would otherwise have to treat as a name used twice.
+# field, so the adapter never makes a payload carry both spellings of one
+# argument. One that ARRIVES with both — or with two `path` keys, the first of
+# which is renamed — is refused by `contract-guard.sh` under Copilot (its
+# path-pair screen, AAD-7810; past the head too since AAD-7811): the guard
+# reads `file_path`, Copilot writes `path`.
 #
 # Only an `Edit` or a `Write`: Copilot's `view`, `glob` and `grep` tools carry
 # a `path` too, and the matchers keep them out of these hooks today, but a
@@ -591,6 +602,7 @@ loci_host_subagent_start() {
 # inside a string value is `\"path\"`, and an occurrence that is not a key is
 # stepped over, not stopped at.
 _LOCI_HOST_HEAD=""
+LOCI_HOST_EDIT_UNREAD=""
 _loci_host_adapt_fields() {
     local tool=""
     if loci_json_has tool_name; then
@@ -603,15 +615,16 @@ _loci_host_adapt_fields() {
         *) return 1 ;;
     esac
     case "$LOCI_HOST_PAYLOAD" in '{'*) ;; *) return 1 ;; esac
-    local max="${LOCI_JSON_MAX:-16384}" tail renamed=""
+    local max="${LOCI_JSON_MAX:-16384}" tail renamed="" named=""
     _LOCI_HOST_HEAD="${LOCI_HOST_PAYLOAD:0:$max}"
     tail="${LOCI_HOST_PAYLOAD:$max}"
     # Each gated on the Claude key, spelled out: the Claude name wins. The
     # gate reads the prefix loaded before the turn step's injection, a few
     # dozen characters wider than the head cut here — the one direction that
     # can differ is an extra "Claude key present", which only withholds.
-    if ! loci_json_has file_path && _loci_host_rename path file_path; then
-        renamed="${renamed:+$renamed }path"; fi
+    if loci_json_has file_path; then named=1
+    elif _loci_host_rename path file_path; then
+        renamed="${renamed:+$renamed }path"; named=1; fi
     if ! loci_json_has content && _loci_host_rename file_text content; then
         renamed="${renamed:+$renamed }file_text"; fi
     if ! loci_json_has old_string && _loci_host_rename old_str old_string; then
@@ -624,9 +637,32 @@ _loci_host_adapt_fields() {
     # as a top-level `file_path` at the front (`_loci_host_patch_path`), which
     # is where every shell reader of the path finds it; the CLI reads the same
     # header, and the hunks, out of the whole payload.
+    _LOCI_HOST_STRING=""
     if ! loci_json_has file_path && _loci_host_patch_path; then
         _LOCI_HOST_HEAD="{\"file_path\":\"$_LOCI_HOST_T\",${_LOCI_HOST_HEAD#\{}"
-        renamed="${renamed:+$renamed }patch"
+        renamed="${renamed:+$renamed }patch"; named=1
+    fi
+    # AN EDIT NAMING NO FILE THE GUARD CAN READ (AAD-7811) is told to it in
+    # `LOCI_HOST_EDIT_UNREAD`, which the guard refuses whatever the payload
+    # names — its prefilter would otherwise let the edit go for want of a
+    # `file_path`:
+    #   patch  a string `tool_input` no file of which was listed: a space or a
+    #          newline before `*** Begin Patch`, or no header the walker
+    #          knows. Copilot's patch opens with exactly `*** Begin Patch`.
+    #   path   a payload cut at the head before any file key: a `path` after
+    #          64 KB of `file_text`. Copilot writes `path` first.
+    # Neither is a shape the host sends, so neither refusal is an over-deny
+    # of one. (A second file key past the head behind a first one is the
+    # guard's: its pair screen reads the whole payload for it.) An object
+    # that names no file at all is NOT flagged: such an Edit writes nothing
+    # under Copilot — its apply_patch takes only a string ("apply_patch
+    # requires a string input", Copilot 1.0.91) — and refusing it refused
+    # ordinary payloads the duplicate screen's tests carry (review round 2).
+    if [ -z "$named" ]; then
+        if [ -n "$_LOCI_HOST_STRING" ]; then LOCI_HOST_EDIT_UNREAD=patch
+        elif [ -n "${_LOCI_JSON_TRUNCATED:-}" ]; then LOCI_HOST_EDIT_UNREAD=path; fi
+        [ -z "$LOCI_HOST_EDIT_UNREAD" ] \
+            || loci_log WARN host "fields: $tool names no file this hook can read ($LOCI_HOST_EDIT_UNREAD) — the guard is told"
     fi
     [ -n "$renamed" ] || return 1
     LOCI_HOST_PAYLOAD="$_LOCI_HOST_HEAD$tail"
@@ -695,6 +731,69 @@ _loci_host_json_text() {
     [ -n "$out" ]
 }
 
+# Whitespace as Rust's `trim` reads it (`char::is_whitespace`), in the JSON
+# text of a header line: the escapes `\t` `\f` `\r`, the six-character
+# u-escapes of U+0009-000D, U+0020, U+0085, U+00A0, U+1680, U+2000-200A,
+# U+2028/2029, U+202F, U+205F and U+3000, and the raw UTF-8 of the non-ASCII
+# ones (Copilot's JSON.stringify writes those raw). Not the `\b` escape, and
+# no other non-ASCII byte: `fü` is a name, not padding (review round 3).
+
+# 0 when the JSON text `$1` is whitespace alone (empty included). Bounded:
+# past 64 tokens it answers yes, which is the unread — the refusing — side.
+_loci_host_all_ws() {
+    local LC_ALL=C s="$1" n=0 u
+    while [ "$n" -lt 64 ]; do
+        s="${s#"${s%%[! ]*}"}"
+        case "$s" in
+            '') return 0 ;;
+            '\t'*|'\f'*|'\r'*) s="${s:2}" ;;
+            '\u'????*)
+                u="${s:2:4}"
+                case "$u" in 000[9aAbBcCdD]|0020|0085|00[aA]0|1680|200[0-9aA]|202[89fF]|205[fF]|3000) ;; *) return 1 ;; esac
+                s="${s:6}" ;;
+            $'\xc2\x85'*|$'\xc2\xa0'*) s="${s:2}" ;;
+            $'\xe1\x9a\x80'*|$'\xe2\x81\x9f'*|$'\xe3\x80\x80'*) s="${s:3}" ;;
+            $'\xe2\x80'?*)
+                case "${s:2:1}" in
+                    [$'\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\xa8\xa9\xaf']) s="${s:3}" ;;
+                    *) return 1 ;;
+                esac ;;
+            *) return 1 ;;
+        esac
+        n=$((n + 1))
+    done
+    return 0
+}
+
+# 0 when the JSON text `$1` ENDS in whitespace a trim takes off and the
+# walker does not (it strips spaces and one `\r`). Which escape pair the end
+# is depends on the PARITY of the backslash run before it: `\\t` is a
+# backslash and a `t`, `\\\t` a backslash and a tab. The run is short in any
+# real path, so counting it is cheap.
+_loci_host_ends_unsure() {
+    local LC_ALL=C t="$1" c="" u="" b
+    case "$t" in
+        *$'\xc2\x85'|*$'\xc2\xa0'|*$'\xe1\x9a\x80'|*$'\xe2\x81\x9f'|*$'\xe3\x80\x80') return 0 ;;
+        *$'\xe2\x80'?)
+            case "${t: -1}" in
+                [$'\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\xa8\xa9\xaf']) return 0 ;;
+            esac ;;
+    esac
+    case "$t" in
+        *\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) u="${t: -4}"; t="${t%?????}" ;;
+        *) c="${t: -1}"; t="${t%?}" ;;
+    esac
+    case "$t" in *\\) ;; *) return 1 ;; esac
+    b="${t##*[!\\]}"
+    [ $((${#b} % 2)) -eq 1 ] || return 1
+    if [ -n "$u" ]; then
+        case "$u" in 000[9aAbBcCdD]|0020|0085|00[aA]0|1680|200[0-9aA]|202[89fF]|205[fF]|3000) return 0 ;; esac
+        return 1
+    fi
+    case "$c" in t|f|r) return 0 ;; esac
+    return 1
+}
+
 # The files a patch-shaped `tool_input` names: EVERY header's path, resolved
 # and JSON-escaped as the head spells it, one per line, into
 # `LOCI_HOST_PATCH_FILES` — and the one the hooks measure into `_LOCI_HOST_T`:
@@ -706,9 +805,11 @@ _loci_host_json_text() {
 # header. A relative path (`*** Update File: main.c` was observed beside the
 # absolute form) is joined to the payload's `cwd`, with the cwd's own
 # separator; a Windows drive path or `\\` path is absolute on every host, as
-# the CLI reads it. A `*** Move to:` line is left to the CLI: the file a patch
-# is about is the header's, and the edit of a rename-with-edit is measured
-# under that name. Bounded at 64 headers, all of them read by the contract
+# the CLI reads it. A `*** Move to:` line is a fourth kind, for the GUARD
+# (AAD-7811): the file a rename creates is listed, so a rename onto the
+# recipe is decided as a write to it. It never becomes the measured file —
+# the edit of a rename-with-edit is measured under the header's name, as the
+# CLI reads it. Bounded at 64 headers, all of them read by the contract
 # guard (a patch batches files, and the recipe may be its third) — and the
 # guard is TOLD when the list may be short: `LOCI_HOST_PATCH_TRUNCATED` is set
 # when a header is left past the bound, or when the document was cut at the
@@ -717,9 +818,12 @@ _loci_host_json_text() {
 LOCI_HOST_PATCH_FILES=""
 LOCI_HOST_PATCH_TRUNCATED=""
 _LOCI_HOST_PATCH_MAX=64
+_LOCI_HOST_PATCH_STEPS=1024
+_LOCI_HOST_PATCH_BYTES=16384
+_LOCI_HOST_STRING=""
 _loci_host_patch_path() {
     _LOCI_HOST_T="" LOCI_HOST_PATCH_FILES="" LOCI_HOST_PATCH_TRUNCATED=""
-    local LC_ALL=C rest h seg p kind first="" first_del="" at hit n=0 cwd="" cwd_read=""
+    local LC_ALL=C rest hdr_rest seg line p kind first="" first_del="" n=0 steps=0 bytes=0 cwd="" cwd_read=""
     # Whitespace after the colon tolerated, as `_loci_host_rename` tolerates
     # it: Copilot writes none, a pretty-printed payload does.
     case "$_LOCI_HOST_HEAD" in *'"tool_input":'*) ;; *) return 1 ;; esac
@@ -727,28 +831,80 @@ _loci_host_patch_path() {
     rest="${rest#"${rest%%[![:space:]]*}"}"
     case "$rest" in
         '"*** Begin Patch'*) rest="${rest#\"\*\*\* Begin Patch}" ;;
+        # A string, but not a patch this walker reads: the caller is told.
+        '"'*) _LOCI_HOST_STRING=1; return 1 ;;
         *) return 1 ;;
     esac
+    _LOCI_HOST_STRING=1
+    hdr_rest="$rest"
     while [ "$n" -lt "$_LOCI_HOST_PATCH_MAX" ]; do
-        # The earliest of the three header kinds in what is left.
-        at=-1 hit=""
-        for h in '\n*** Update File: ' '\n*** Add File: ' '\n*** Delete File: '; do
-            case "$rest" in *"$h"*) ;; *) continue ;; esac
-            seg="${rest%%"$h"*}"
-            if [ "$at" -lt 0 ] || [ "${#seg}" -lt "$at" ]; then at="${#seg}"; hit="$h"; fi
-        done
-        [ "$at" -ge 0 ] || break
+        # The next `*** ` in what is left: one scan, to it and no further, so
+        # the walk is linear in the patch. It was one scan of the whole rest
+        # per header KIND per header: 60 headers, a 57 KB hunk and every kind
+        # once past it took 8.3 s on Git Bash (0.3 s now) — past the 5 s
+        # kill, which fails open (AAD-7811 review). Every `*** ` costs a step, so
+        # the steps are bounded too, and a bound reached is an unread patch.
+        seg="${rest%%"*** "*}"
+        [ "${#seg}" -lt "${#rest}" ] || break
+        steps=$((steps + 1))
+        if [ "$steps" -gt "$_LOCI_HOST_PATCH_STEPS" ]; then LOCI_HOST_PATCH_TRUNCATED=1; break; fi
+        rest="${rest:$((${#seg} + 4))}"
+        case "$rest" in
+            'Update File: '*|'Add File: '*|'Delete File: '*|'Move to: '*) ;;
+            *) continue ;;
+        esac
+        # A header starts a line. What stands between the line's start (the
+        # last escape pair `\n`; a CRLF patch's `\r\n` ends the same way) and
+        # the `*** ` decides: nothing — a header; a `+` or `-` — a line the
+        # patch adds or removes (`+*** Add File:` is content); WHITESPACE
+        # alone — a space, a `\t` or `\f` escape, a raw NBSP — is UNREAD,
+        # told to the guard, because Copilot's parser (codex's apply-patch,
+        # whose strings its runtime carries) TRIMS a line before it reads a
+        # header, Unicode whitespace included (AAD-7811 review rounds 1 and
+        # 2: an indented header after an Add hunk was allowed); any other
+        # text makes it content, a header mentioned in prose or in a string
+        # (round 3). A `*** ` with no line start since the last one sits
+        # mid-line: content.
+        line="${seg%\\n*}"
+        [ "${#line}" -lt "${#seg}" ] || continue
+        line="${seg:$((${#line} + 2))}"
+        if [ -n "$line" ]; then
+            ! _loci_host_all_ws "$line" || LOCI_HOST_PATCH_TRUNCATED=1
+            continue
+        fi
         n=$((n + 1))
-        rest="${rest#*"$hit"}"
-        kind="${hit#\\n\*\*\* }"
-        kind="${kind%% *}"
+        kind="${rest%% *}"
+        rest="${rest#*: }"
+        hdr_rest="$rest"
         # A header the walker cannot read — past its escape-pair bound (a
-        # `.\`-padded path has one pair per step), or cut by the head — is an
-        # UNREAD file, not a skipped one: told to the guard.
-        _loci_host_json_text "$rest" n || { LOCI_HOST_PATCH_TRUNCATED=1; continue; }
-        p="$_LOCI_HOST_T"
+        # `.\`-padded path has one pair per step), cut by the head, or longer
+        # than a path can be — is an UNREAD file, not a skipped one: told to
+        # the guard. The walker is handed a 4 KB slice, not the rest of the
+        # head: every escape pair copies what it is handed, and 62 headers of
+        # 200 escapes each in front of a 20 KB hunk cost 10.5 s on Git Bash,
+        # past the 5 s kill (review round 2).
+        _loci_host_json_text "${rest:0:4096}" n || { LOCI_HOST_PATCH_TRUNCATED=1; continue; }
+        # Leading spaces off too: a parser that trims the line reads the
+        # path without them, and a spelling that keeps them names no
+        # guarded file (` .loci` is not `.loci`), so nothing is lost.
+        p="${_LOCI_HOST_T#"${_LOCI_HOST_T%%[! ]*}"}"
+        [ -n "$p" ] || { LOCI_HOST_PATCH_TRUNCATED=1; continue; }
+        # The line's trim takes trailing whitespace of every kind, and the
+        # walker strips only spaces and a `\r`: a path ENDING in an escape
+        # (`\t`, `\f`, the NBSP u-escape) or in raw UTF-8 whitespace may be a
+        # guarded file to the parser and is unread here (review round 2:
+        # `build.yaml\t` was allowed).
+        ! _loci_host_ends_unsure "$p" || { LOCI_HOST_PATCH_TRUNCATED=1; continue; }
+        # And the listed paths are bounded in bytes: route 1 decides each,
+        # and 63 deep ones cost it ~2 s. Past the bound, unread.
+        bytes=$((bytes + ${#p}))
+        [ "$bytes" -le "$_LOCI_HOST_PATCH_BYTES" ] || { LOCI_HOST_PATCH_TRUNCATED=1; break; }
+        # `C:x` — drive-relative — is passed through as written: route 1
+        # reads it at the cwd's drive (AAD-7810), and joined to the cwd it
+        # named no file (`<cwd>\C:.loci/build.yaml`), so a rename onto the
+        # recipe spelled that way was allowed (AAD-7811 review).
         case "$p" in
-            /*|\\\\*|[A-Za-z]:[\\/]*) ;;
+            /*|\\\\*|[A-Za-z]:*) ;;
             *)
                 if [ -z "$cwd_read" ]; then
                     cwd_read=1
@@ -756,7 +912,7 @@ _loci_host_patch_path() {
                         cwd="${_LOCI_HOST_HEAD#*\"cwd\":}"
                         cwd="${cwd#"${cwd%%[![:space:]]*}"}"
                         case "$cwd" in
-                            '"'*) _loci_host_json_text "${cwd#\"}" && cwd="$_LOCI_HOST_T" || cwd="" ;;
+                            '"'*) _loci_host_json_text "${cwd:1:4096}" && cwd="$_LOCI_HOST_T" || cwd="" ;;
                             *) cwd="" ;;
                         esac
                         ;;
@@ -771,15 +927,16 @@ _loci_host_patch_path() {
                 ;;
         esac
         LOCI_HOST_PATCH_FILES="${LOCI_HOST_PATCH_FILES:+$LOCI_HOST_PATCH_FILES$'\n'}$p"
-        if [ "$kind" = Delete ]; then
-            [ -n "$first_del" ] || first_del="$p"
-        else
-            [ -n "$first" ] || first="$p"
-        fi
+        case "$kind" in
+            Move) ;;
+            Delete) [ -n "$first_del" ] || first_del="$p" ;;
+            *) [ -n "$first" ] || first="$p" ;;
+        esac
     done
+    # Past the bound, any header text left is unread — indented or not.
     if [ "$n" -ge "$_LOCI_HOST_PATCH_MAX" ]; then
         case "$rest" in
-            *'\n*** Update File: '*|*'\n*** Add File: '*|*'\n*** Delete File: '*)
+            *'*** Update File: '*|*'*** Add File: '*|*'*** Delete File: '*|*'*** Move to: '*)
                 LOCI_HOST_PATCH_TRUNCATED=1 ;;
         esac
     fi
@@ -789,7 +946,7 @@ _loci_host_patch_path() {
     # hunk is not the end, whatever a lenient patch parser makes of it) — then
     # what was cut is a field after the patch, and every file is listed.
     if [ -n "${_LOCI_JSON_TRUNCATED:-}" ]; then
-        case "$rest" in
+        case "$hdr_rest" in
             *'\n*** End Patch\n"'*|*'\n*** End Patch\r\n"'*|*'\n*** End Patch"'*) ;;
             *) LOCI_HOST_PATCH_TRUNCATED=1 ;;
         esac
@@ -846,14 +1003,19 @@ loci_host_payload_adapt() {
 # `stat`. The message follows, newlines and all. A tag goes into a file name,
 # so its alphabet is `[a-z-]`.
 #
-# TAKEN IS NOT DELETED. The take reads the records and leaves them; the hook
-# deletes them (`loci_host_carry_done`) once something carrying the text has
-# gone out on its stdout — the verb's reply with `LOCI_HOOK_CARRY` in it, or
-# the hook's own document where the verb printed nothing or was not there. A
-# record that could not be delivered waits for the next prompt rather than
-# vanish with a missing `loci`. The Stop hooks run in parallel on their own
-# timeouts, so a writer still running when the next prompt's take happens is
-# carried one prompt late, never lost; a record a later Stop would have
+# TAKEN IS NOT DELETED. The take CLAIMS each record — renames it to
+# `….taken-<pid>-<n>`, then reads the claimed file — and leaves it; the hook
+# deletes exactly the files it claimed (`loci_host_carry_done`) once something
+# carrying the text has gone out on its stdout: the verb's reply with the
+# carry in it, or the hook's own document where the verb printed nothing,
+# printed a reply without it, or was not there. A record that could not be
+# delivered waits for the next prompt, whose take claims the leftover claim
+# again, rather than vanish with a missing `loci`. The Stop hooks run in
+# parallel on their own timeouts, so a writer still running when the next
+# prompt's take happens renames a NEW record into place after the claim, and
+# the done never touches it: carried one prompt late, never lost. (Reading in
+# place and deleting by name, as the first version did, lost a record
+# replaced between the read and the delete.) A record a later Stop would have
 # withdrawn (a draft accepted in between) is taken with the rest, which is
 # the one-turn lag the prompt itself has.
 #
@@ -942,18 +1104,39 @@ loci_host_carry_relay() {
     loci_host_carry_add "$1" "$msg" "${3:-}"
 }
 
-# The session's records, taken: read, fenced, joined into `LOCI_HOST_CARRY`
-# behind the preface — and LEFT ON DISK for `loci_host_carry_done`. Called from
+# The session's records, taken: claimed, read, fenced, joined into
+# `LOCI_HOST_CARRY` behind the preface — and LEFT ON DISK for
+# `loci_host_carry_done`, which removes the files listed in
+# `_LOCI_HOST_CARRY_TAKEN` (one path per line) and nothing else. Called from
 # the `UserPromptSubmit` step once the new turn is on record, so a prompt whose
 # mint failed leaves them for the next. 0 ONLY when there was something to
 # carry. A file whose first line is not an id this file minted is not a record
-# of ours: dropped unread, and deleted now, since nothing will deliver it.
+# of ours: dropped unread, and deleted now, since nothing will deliver it. A
+# claim keeps the record's first line, so `_loci_host_sweep` ages it as it
+# ages the record. Where the rename is refused (a file an antivirus still
+# holds), the record is read where it is and listed by its own name — the old
+# window, for that one file.
+#
+# Two passes over one expansion, split by an empty word: first the claims a
+# killed prompt hook left (older than any record, so said first), then the
+# records. A claim name is never one already on disk — a leftover can carry
+# this very pid (pids are reused, Windows' freely), and `mv -f` onto it would
+# drop it unread (AAD-7835 review).
+_LOCI_HOST_CARRY_TAKEN=""
 _loci_host_carry_take() {
-    LOCI_HOST_CARRY=""
-    local LC_ALL=C f line first body text="" n=0
-    for f in "$_LOCI_HOST_FILE".nudge-*; do
+    LOCI_HOST_CARRY="" _LOCI_HOST_CARRY_TAKEN=""
+    local LC_ALL=C f c line first body text="" n=0 k=0 records=""
+    for f in "$_LOCI_HOST_FILE".nudge-*.taken-* "" "$_LOCI_HOST_FILE".nudge-*; do
+        if [ -z "$f" ]; then records=1; continue; fi
         [ -f "$f" ] || continue
-        case "$f" in *.tmp-*) continue ;; esac
+        case "$f" in
+            *.tmp-*) continue ;;
+            *.taken-*) [ -z "$records" ] || continue ;;
+        esac
+        k=$((k + 1))
+        c="${f%.taken-*}.taken-$$-$k"
+        while [ -e "$c" ]; do k=$((k + 1)); c="${f%.taken-*}.taken-$$-$k"; done
+        mv -f "$f" "$c" 2>/dev/null && f="$c"
         first=1 body=""
         while IFS= read -r line || [ -n "$line" ]; do
             line="${line%"$_LOCI_HOST_CR"}"
@@ -969,6 +1152,7 @@ _loci_host_carry_take() {
             continue
         fi
         text="${text:+$text$'\n'}$_LOCI_HOST_CARRY_OPEN"$'\n'"$body"$'\n'"$_LOCI_HOST_CARRY_CLOSE"
+        _LOCI_HOST_CARRY_TAKEN="${_LOCI_HOST_CARRY_TAKEN:+$_LOCI_HOST_CARRY_TAKEN$'\n'}$f"
         n=$((n + 1))
     done
     [ -n "$text" ] || return 1
@@ -988,19 +1172,45 @@ _loci_host_carry_unlink() {
 # Public API: loci_host_carry_done
 #
 # The records the last take read have been delivered — something carrying the
-# text went out on the hook's stdout — so they go. Outside Copilot, or before
-# any take of this process, nothing.
+# text went out on the hook's stdout — so the files it claimed go, and only
+# those: a record a Stop hook renamed into place after the take is the next
+# prompt's. Outside Copilot, or before any take of this process, nothing.
 loci_host_carry_done() {
     loci_host_copilot || return 1
-    [ -n "$_LOCI_HOST_FILE" ] && [ -n "$LOCI_HOST_CARRY" ] || return 1
-    local f
-    for f in "$_LOCI_HOST_FILE".nudge-*; do
-        [ -f "$f" ] || continue
-        case "$f" in *.tmp-*) continue ;; esac
-        _loci_host_carry_unlink "$f"
+    [ -n "$_LOCI_HOST_CARRY_TAKEN" ] && [ -n "$LOCI_HOST_CARRY" ] || return 1
+    local f rest="$_LOCI_HOST_CARRY_TAKEN"$'\n'
+    while [ -n "$rest" ]; do
+        f="${rest%%$'\n'*}"
+        rest="${rest#*$'\n'}"
+        [ -n "$f" ] && _loci_host_carry_unlink "$f"
     done
+    _LOCI_HOST_CARRY_TAKEN=""
     loci_log INFO host "carry: delivered, records removed"
     return 0
+}
+
+# Public API: loci_host_carry_reply <event> <document>
+#
+# What a hook holding a taken carry prints for the verb's <document>: the
+# document itself when the carry is in it (the CLI appends `LOCI_HOOK_CARRY`
+# under its `[loci] turn=` line since 0.2.63), else ONE document holding the
+# verb's `additionalContext`, if any, with the carry after it. Any output is
+# not proof of delivery: a CLI older than that, a verb that printed nothing
+# or a reply with no context would have had the records deleted unsaid. The
+# opening marker is the test — it has nothing JSON escapes, so it reads the
+# same inside the verb's string. Prints nothing without a carry.
+loci_host_carry_reply() {
+    [ -n "$LOCI_HOST_CARRY" ] || return 1
+    local event="$1" doc="${2:-}" ctx=""
+    case "$doc" in
+        *"$_LOCI_HOST_CARRY_OPEN"*) printf '%s\n' "$doc"; return 0 ;;
+    esac
+    if [ -n "$doc" ] && command -v loci_json_load >/dev/null 2>&1; then
+        loci_json_load "$doc"
+        loci_json_has additionalContext && ctx=$(loci_json_get additionalContext)
+        [ -z "$ctx" ] || loci_log WARN host "carry: the verb's reply did not carry it — appended here (loci older than 0.2.63?)"
+    fi
+    loci_json_hook_output "$event" "${ctx:+$ctx$'\n'}$LOCI_HOST_CARRY"
 }
 
 # ── the session context (AAD-7784) ───────────────────────────────────────────

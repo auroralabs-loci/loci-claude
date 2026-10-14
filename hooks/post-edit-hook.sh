@@ -206,7 +206,11 @@ else
     [ -n "$turn" ]   || turn=$(loci_json_get turn)
     [ -n "$agent" ]  || agent=$(loci_json_get agent)
     [ -n "$_nroot" ] || _nroot=$(loci_json_get cwd)
-    [ -n "$fp" ]     || fp=$(loci_json_get file_path)
+    # The verb's path wherever it has one: it joins a RELATIVE path to the
+    # payload's `cwd` (AAD-7810), where `${fp%/*}` below would otherwise name a
+    # directory under this hook's own — the plugin root, under Copilot.
+    _po_fp=$(loci_json_get file_path)
+    [ -n "$_po_fp" ] && fp="$_po_fp"
 fi
 
 # ── the first-edit nudge ───────────────────────────────────────────────────
@@ -225,14 +229,21 @@ fi
 # THE ALLOW-LIST IS THE POINT, and each excluded value is excluded for its own
 # reason. `unsupported` and `needs_user` are what the CLI records once it has
 # already decided, so pointing at `/loci:init` there sends the user at a question
-# that was asked and answered. `failed` was excluded because the session
-# re-armed such a project and its next analysis routed the coded error. That
-# stopped being true in AAD-7531: nothing arms at session start, a project with
-# no recipe gets `governed: false` from edit-scan and so no reminder either, and
-# a project whose `loci init` recorded `failed` hears nothing until `loci init`
-# writes something else. Whether it should be nudged is AAD-7747's decision, and
-# this arm is where the answer goes. A value this version does not recognise
-# takes the quiet path, because the nudge is a claim and nothing here can check it.
+# that was asked and answered. A value this version does not recognise takes the
+# quiet path, because the nudge is a claim and nothing here can check it.
+#
+# `failed` IS NUDGED, with a line and a marker of its own (AAD-7747). The user
+# ran `/loci:init` and it did not succeed: nothing built yet, no compile
+# database, a build that did not compile. Until AAD-7531 the session re-armed
+# such a project and its next analysis relayed the coded error. Nothing arms at
+# session start any more, and a project with no recipe gets `governed: false`
+# from edit-scan and so no reminder, so without this line LOCI stops measuring a
+# project the user opted into and never says so. Once, like the other line, and
+# on its OWN marker because the usual way a user reaches `/loci:init` is the
+# other line: a shared marker is already spent when the init it led to fails.
+# Beside a recipe `failed` means a stale, invalid or tampered one, and the
+# recipe walk below keeps that quiet; while a valid recipe governs, `loci init`
+# records no refusal at all.
 #
 # The empty case DOES nudge, and that is not an oversight. `loci init` is the only
 # writer of the context file now, so a project it has never seen has no file at all,
@@ -362,21 +373,31 @@ if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
     _nkey=""
     declare -F hash_cwd >/dev/null 2>&1 && { _nkey=$(hash_cwd "$_nroot" 2>/dev/null) || _nkey=""; }
     _nmark="${STATE_DIR}/init-nudge-${_nkey}"
+    # A failed init's own marker. Empty when claimed; only ever claimed.
+    _nfmark="${STATE_DIR}/init-nudge-failed-${_nkey}"
     # WHAT THE MARKER SAYS, in one builtin read and at most one `[ -f ]`:
-    #   empty        this project was nudged; there is nothing left to decide.
+    #   empty        this project was nudged as not initialized. The one thing
+    #                left to decide is a `failed` init since, which `_nfmark`
+    #                answers.
     #   a path       a recipe answered for it. Still there — still answered.
     #                Gone — the project is uninitialized again, so the marker is
     #                stale and the question re-opens.
     # `read` is a builtin and the file is one line, so the steady state of an
     # initialized subdirectory session costs no process at all.
+    _nprev=""
     if [ -n "$_nkey" ] && [ -f "$_nmark" ]; then
-        _nprev=""
         IFS= read -r _nprev < "$_nmark" 2>/dev/null || _nprev=""
         if [ -n "$_nprev" ] && [ ! -f "$_nprev" ]; then
             rm -f "$_nmark" 2>/dev/null || true
         fi
     fi
-    if [ -n "$_nkey" ] && [ ! -e "$_nmark" ]; then
+    # The status is read while a line is still owed: no marker at all, or only
+    # the empty one with `_nfmark` unclaimed. Either way the steady state spawns
+    # nothing: a nudged project that never ran `loci init` has no context file
+    # and pays a few file tests, and one with a context file pays the builtin
+    # read below.
+    if [ -n "$_nkey" ] && { [ ! -e "$_nmark" ] \
+         || { [ -z "$_nprev" ] && [ ! -e "$_nfmark" ]; }; }; then
         # ABSENT AND UNREADABLE ARE NOT THE SAME ANSWER. A bare
         # `init_status // ""` collapses "no file", "not JSON", "not an object"
         # and "a directory at that path" into the one value that nudges — so a
@@ -385,7 +406,22 @@ if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
         # `init_status` is a recorded answer; anything else is `?`, which
         # matches no arm below and stays quiet.
         _nctx="${STATE_DIR}/project-context-${_nkey}.json"
-        if [ -f "$_nctx" ]; then
+        # ONLY `_nfmark` IS OWED once `_nmark` exists, so only a recorded
+        # `failed` can claim anything. A project nudged once and since recorded
+        # `unsupported` (permanent) or `needs_user` reaches this line on every
+        # edit for ever, and the parse below costs two subshells there (three
+        # under bash 3.2) that `main` never spent. A file that does not even
+        # contain the string is settled by one builtin `read` and a pattern;
+        # a false match costs only the parse.
+        _nlook=1
+        if [ -e "$_nmark" ] && [ -f "$_nctx" ]; then
+            _ndoc=""
+            IFS= read -r -d '' _ndoc 2>/dev/null < "$_nctx" || :
+            case "$_ndoc" in *'"failed"'*) ;; *) _nlook="" ;; esac
+        fi
+        if [ -z "$_nlook" ]; then
+            _nstatus="?"
+        elif [ -f "$_nctx" ]; then
             # THE SHAPE IS CHECKED BEFORE THE FIELD IS. `loci_json_is_object`
             # answers two of the four failures above — a truncated or empty file
             # and a JSON array, and a file holding two concatenated objects.
@@ -411,108 +447,132 @@ if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
             _nstatus=""                           # genuinely nothing recorded
         fi
         # A null `init_status` reads as "" above, deliberately: it is the same
-        # claim as an absent key.
+        # claim as an absent key. Each status that nudges claims its own marker,
+        # and one already claimed closes it, as the gate above does for both.
+        _nclaim=""
         case "$_nstatus" in
-            ""|uninitialized)
-                # IS THERE A RECIPE ABOVE THIS SESSION? The status file cannot
-                # say: only `loci init` writes one (session-init has written none
-                # since AAD-7531), so a recipe on disk that `loci init` has not
-                # seen on this machine, or a wiped state directory, leaves no
-                # `init_status` under any key. A subdirectory session in that
-                # state read "nothing recorded" and was told its initialized
-                # project is not initialized.
-                #
-                # TWO STEPS, and the split is the whole point. `_loci_find_recipe`
-                # is the authority — it is the CLI's own walk, with the `$HOME` and
-                # `.git` ceilings that stop it adopting `~/.loci/build.yaml` for
-                # every project under the home directory — but it spends a `stat`
-                # PER LEVEL on those ceilings. Called unconditionally it took this
-                # hook from 2.2 s to 3.6 s median and 5.0 s worst, against a
-                # registered 5 s timeout: measured, 3 of 15 runs were killed, and a
-                # kill here loses the MANDATORY post-edit reminder as well as the
-                # nudge, because the emit is downstream of it. That is the silent
-                # skip this whole file is built to prevent, traded for an advisory
-                # line — a bad bargain in any state.
-                #
-                # So a CANDIDATE SCAN runs first, and it spawns nothing: a
-                # parameter-expansion walk up the tree testing one `[ -f ]` per
-                # level. It decides only whether there is anything to ask the
-                # authority ABOUT. No candidate — the overwhelmingly common case for
-                # a project that has never been initialized — and the authority is
-                # never called, which is what keeps the first edit inside budget.
-                # A candidate, and `_loci_find_recipe` says whether it is one this
-                # session may adopt. The scan is deliberately more permissive than
-                # the rule: it can only cause the question to be ASKED.
-                _nseen=""
-                # THE PHYSICAL PATH, because that is what the authority walks:
-                # `_loci_find_recipe` starts with `cd "$1" && pwd -P`. Walking the LOGICAL
-                # parent chain instead made this scan STRICTER than the rule it is only
-                # allowed to be more permissive than — and a scan that finds nothing never
-                # asks. Reproduced with an ordinary Windows directory junction (no privilege
-                # needed) pointing INTO a project: `outer/link -> real/proj/src`, recipe at
-                # `real/proj/.loci/`, session at `outer/link/drv`. The authority finds it; the
-                # logical walk leaves the project at `outer` and never comes back. That is the
-                # CRITICAL this whole branch exists for, reached through a link. Confirmed the
-                # same way under WSL with a symlink.
-                #
-                # `cd` + `pwd -P` is a SUBSHELL, not an exec, so it costs a fork and no
-                # process. The normalised literal path is the fallback for a directory `cd`
-                # cannot enter, where the scan is no worse than it was.
-                _nreal=$(cd "$_nroot" 2>/dev/null && pwd -P) || _nreal=""
-                _nd="${_nreal:-$_nroot}"
-                # BOTH SEPARATORS. A payload carries `C:\Users\...`; Git Bash resolves that in
-                # a FILE TEST but not in a parameter expansion, so a `/`-only step stopped this
-                # walk dead at the first level. ⚠ a bracket class does not fix it either:
-                # inside a pattern `[/\\]` reads the backslash as escaping the `]`, the class
-                # never closes, and the expansion silently matches nothing. `pwd -P` already
-                # returns forward slashes; this is for the fallback.
-                _nd="${_nd//\\//}"
-                _ni=0
-                _nrecipe=""
-                while [ "$_ni" -lt 64 ]; do
-                    if [ -f "$_nd/.loci/build.yaml" ]; then _nseen=1; break; fi
-                    _nup="${_nd%/*}"
-                    [ "$_nup" != "$_nd" ] && [ -n "$_nup" ] || break
-                    _nd="$_nup"
-                    _ni=$((_ni + 1))
-                done
-                if [ -n "$_nseen" ] && declare -F _loci_find_recipe >/dev/null 2>&1 \
-                   && _nrecipe=$(_loci_find_recipe "$_nroot" 2>/dev/null) \
-                   && [ -n "$_nrecipe" ]; then
-                    # Initialized after all — and the marker RECORDS WHICH FILE
-                    # said so, rather than recording nothing or recording a bare
-                    # "answered".
-                    #
-                    # Nothing was the first attempt, because the answer can stop
-                    # being true: `git clean -xdf` removes a gitignored `.loci/`, a
-                    # branch switch takes it away, a fresh clone never had it, and a
-                    # session that had recorded "initialized" would then be silent
-                    # for ever while a session at the project root still nudged.
-                    # But recording nothing means the AUTHORITY runs again on every
-                    # edit — the scan always finds the same candidate — which is a
-                    # `stat` per level, for ever, in exactly the state the two-step
-                    # was built to make cheap. Measured at +0.7 s to +1.2 s per
-                    # edit; round 1's first-edit cost, made permanent.
-                    #
-                    # The path is the evidence, so the next edit re-checks it with
-                    # ONE `[ -f ]` (below) instead of re-deriving it. The recipe
-                    # going away invalidates the marker, which is the property
-                    # recording nothing was reaching for.
-                    printf '%s\n' "$_nrecipe" > "$_nmark" 2>/dev/null || true
-                # `set -C` is an atomic create-or-fail and the ONLY gate on the
-                # nudge: the test and the claim are one operation, so two subagents
-                # editing inside one turn cannot both win it, an already-claimed
-                # project costs one failed syscall, and a marker that cannot be
-                # WRITTEN (a read-only state dir) yields no nudge at all rather
-                # than one on every edit for ever. A plain `[ -e ]` in front of it
-                # would undo all three — it answers "does it exist", which is not
-                # the question — so there is deliberately nothing in front of it.
-                elif ( set -C; : > "$_nmark" ) 2>/dev/null; then
-                    _nudge_msg="LOCI is not initialized for ${_nroot}; run /loci:init ${_nroot} so LOCI can check your edits."
-                    nudge="$_nudge_msg"
-                fi
-                ;;
+            ""|uninitialized) _nclaim="$_nmark" ;;
+            failed)           _nclaim="$_nfmark" ;;
         esac
+        [ -n "$_nclaim" ] && [ -e "$_nclaim" ] && _nclaim=""
+        if [ -n "$_nclaim" ]; then
+            # IS THERE A RECIPE ABOVE THIS SESSION? The status file cannot
+            # say: only `loci init` writes one (session-init has written none
+            # since AAD-7531), so a recipe on disk that `loci init` has not
+            # seen on this machine, or a wiped state directory, leaves no
+            # `init_status` under any key. A subdirectory session in that
+            # state read "nothing recorded" and was told its initialized
+            # project is not initialized. A `failed` with a recipe above it is
+            # that recipe stale, invalid or tampered — not a missing init — and
+            # takes the same quiet answer.
+            #
+            # TWO STEPS, and the split is the whole point. `_loci_find_recipe`
+            # is the authority — it is the CLI's own walk, with the `$HOME` and
+            # `.git` ceilings that stop it adopting `~/.loci/build.yaml` for
+            # every project under the home directory — but it spends a `stat`
+            # PER LEVEL on those ceilings. Called unconditionally it took this
+            # hook from 2.2 s to 3.6 s median and 5.0 s worst, against a
+            # registered 5 s timeout: measured, 3 of 15 runs were killed, and a
+            # kill here loses the MANDATORY post-edit reminder as well as the
+            # nudge, because the emit is downstream of it. That is the silent
+            # skip this whole file is built to prevent, traded for an advisory
+            # line — a bad bargain in any state.
+            #
+            # So a CANDIDATE SCAN runs first, and it spawns nothing: a
+            # parameter-expansion walk up the tree testing one `[ -f ]` per
+            # level. It decides only whether there is anything to ask the
+            # authority ABOUT. No candidate — the overwhelmingly common case for
+            # a project that has never been initialized — and the authority is
+            # never called, which is what keeps the first edit inside budget.
+            # A candidate, and `_loci_find_recipe` says whether it is one this
+            # session may adopt. The scan is deliberately more permissive than
+            # the rule: it can only cause the question to be ASKED.
+            _nseen=""
+            # THE PHYSICAL PATH, because that is what the authority walks:
+            # `_loci_find_recipe` starts with `cd "$1" && pwd -P`. Walking the LOGICAL
+            # parent chain instead made this scan STRICTER than the rule it is only
+            # allowed to be more permissive than — and a scan that finds nothing never
+            # asks. Reproduced with an ordinary Windows directory junction (no privilege
+            # needed) pointing INTO a project: `outer/link -> real/proj/src`, recipe at
+            # `real/proj/.loci/`, session at `outer/link/drv`. The authority finds it; the
+            # logical walk leaves the project at `outer` and never comes back. That is the
+            # CRITICAL this whole branch exists for, reached through a link. Confirmed the
+            # same way under WSL with a symlink.
+            #
+            # `cd` + `pwd -P` is a SUBSHELL, not an exec, so it costs a fork and no
+            # process. The normalised literal path is the fallback for a directory `cd`
+            # cannot enter, where the scan is no worse than it was.
+            _nreal=$(cd "$_nroot" 2>/dev/null && pwd -P) || _nreal=""
+            _nd="${_nreal:-$_nroot}"
+            # BOTH SEPARATORS. A payload carries `C:\Users\...`; Git Bash resolves that in
+            # a FILE TEST but not in a parameter expansion, so a `/`-only step stopped this
+            # walk dead at the first level. ⚠ a bracket class does not fix it either:
+            # inside a pattern `[/\\]` reads the backslash as escaping the `]`, the class
+            # never closes, and the expansion silently matches nothing. `pwd -P` already
+            # returns forward slashes; this is for the fallback.
+            _nd="${_nd//\\//}"
+            _ni=0
+            _nrecipe=""
+            while [ "$_ni" -lt 64 ]; do
+                if [ -f "$_nd/.loci/build.yaml" ]; then _nseen=1; break; fi
+                _nup="${_nd%/*}"
+                [ "$_nup" != "$_nd" ] && [ -n "$_nup" ] || break
+                _nd="$_nup"
+                _ni=$((_ni + 1))
+            done
+            if [ -n "$_nseen" ] && declare -F _loci_find_recipe >/dev/null 2>&1 \
+               && _nrecipe=$(_loci_find_recipe "$_nroot" 2>/dev/null) \
+               && [ -n "$_nrecipe" ]; then
+                # Initialized after all — and the marker RECORDS WHICH FILE
+                # said so, rather than recording nothing or recording a bare
+                # "answered".
+                #
+                # Nothing was the first attempt, because the answer can stop
+                # being true: `git clean -xdf` removes a gitignored `.loci/`, a
+                # branch switch takes it away, a fresh clone never had it, and a
+                # session that had recorded "initialized" would then be silent
+                # for ever while a session at the project root still nudged.
+                # But recording nothing means the AUTHORITY runs again on every
+                # edit — the scan always finds the same candidate — which is a
+                # `stat` per level, for ever, in exactly the state the two-step
+                # was built to make cheap. Measured at +0.7 s to +1.2 s per
+                # edit; round 1's first-edit cost, made permanent.
+                #
+                # The path is the evidence, so the next edit re-checks it with
+                # ONE `[ -f ]` (below) instead of re-deriving it. The recipe
+                # going away invalidates the marker, which is the property
+                # recording nothing was reaching for.
+                #
+                # `2>/dev/null` FIRST: a failed redirection reports itself on
+                # whatever stderr is when it fails. If the path cannot be
+                # recorded (a directory sits at `_nmark`), a failed init's
+                # marker is claimed silently instead, or this walk would run
+                # again on every edit. The trade, accepted: should that recipe
+                # later go while the status still says `failed`, the line is not
+                # sent — in this broken marker state only, and removing what
+                # sits at `_nmark` and `_nfmark` re-opens both.
+                if ! printf '%s\n' "$_nrecipe" 2>/dev/null > "$_nmark"; then
+                    [ "$_nclaim" = "$_nfmark" ] \
+                        && { ( set -C; : > "$_nfmark" ) 2>/dev/null || :; }
+                fi
+            # `set -C` is an atomic create-or-fail and the ONLY gate on the
+            # nudge: the test and the claim are one operation, so two subagents
+            # editing inside one turn cannot both win it, an already-claimed
+            # project costs one failed syscall, and a marker that cannot be
+            # WRITTEN (a read-only state dir) yields no nudge at all rather
+            # than one on every edit for ever. A plain `[ -e ]` in its place
+            # would undo all three — it answers "does it exist", which is not
+            # the question. The `[ -e ]` above only skips the walk for a claim
+            # already lost; this create is still what decides.
+            elif ( set -C; : > "$_nclaim" ) 2>/dev/null; then
+                if [ "$_nclaim" = "$_nfmark" ]; then
+                    _nudge_msg="The last /loci:init for ${_nroot} did not succeed; run /loci:init ${_nroot} again so LOCI can check your edits."
+                else
+                    _nudge_msg="LOCI is not initialized for ${_nroot}; run /loci:init ${_nroot} so LOCI can check your edits."
+                fi
+                nudge="$_nudge_msg"
+            fi
+        fi
     fi
 fi
 # Nothing measurable and nothing to nudge about is the silence this hook has

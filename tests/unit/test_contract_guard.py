@@ -1354,6 +1354,12 @@ def test_a_command_that_only_documents_the_verb_is_allowed(tmp_path, command):
     'loci contract "accept"',
     "V=accept; loci contract $V",
     'loci "contract" init',
+    # PowerShell's grammar (AAD-7811): Copilot sends a `powershell` call here as
+    # `Bash`, and a backtick is PowerShell's escape — `` `c `` is `c`, so this
+    # RUNS the verb there — while to bash it opens a substitution. The word
+    # never spells `contract`, so the prefilter lets it go. (`--%`, the
+    # stop-parsing token, is no evasion: the verb stays plain and is denied.)
+    "loci contra`ct accept",
 ])
 def test_the_evasions_are_recorded_not_closed(tmp_path, command):
     """This test asserts a decision, not an oversight. Do not "fix" it.
@@ -3090,9 +3096,16 @@ def test_a_spelling_win32_does_not_open_is_still_allowed(tmp_path, rel, suffix, 
     # all on Windows, but never the Contract Envelope.
     # …and PADDED, or the suffix arm answers instead of the walk and the case
     # is measuring an arm that over-denies any path ending in a guarded name.
-    "x/.../.loci/" + _PAD + "contract.yaml",
-    "x/..../.loci/" + _PAD + "contract.yaml",
-    "x/y/....../.loci/" + _PAD + "contract.yaml",
+    #
+    # The dots sit INSIDE `.loci` since AAD-7813, and that is what keeps these
+    # rows discriminating. They were `x/.../.loci/<pad>contract.yaml`, which
+    # IS a guarded file — `<root>/x/...`'s — and the walk now denies a
+    # `.loci/<guarded>` in any project, as the suffix arm always did for the
+    # plain spelling. Here only the WRONG reading of `...` (as `..`) reaches a
+    # guarded file, `.loci/build.yaml`; the right one names `.../build.yaml`.
+    ".loci/x/.../" + _PAD + "build.yaml",
+    ".loci/x/..../" + _PAD + "build.yaml",
+    ".loci/x/y/....../" + _PAD + "build.yaml",
 ])
 def test_an_ordinary_dotted_path_is_allowed(tmp_path, path):
     # The control for the strip: it is not a blanket deny for a dot before a
@@ -3177,14 +3190,11 @@ def test_a_dotted_component_does_not_hide_the_short_name(tmp_path):
     of the whole path rather than inside the walk. Measured with the write
     performed and the guarded file read back.
 
-    ⚠ THE PAYLOAD HAS TO SAY `contract` SOMEWHERE ELSE, and that is a fact
-    about this spelling rather than a convenience for the test. `CONTRA~1.YAM`
-    matches none of the prefilter's arms, so a payload carrying nothing but
-    this path exits ALLOW above route 1 and the guard never resolves anything —
-    which is the same gap `test_a_symlink_that_hides_the_name_is_a_known_gap`
-    records from the other side. What makes it reachable rather than academic
-    is that the content of an edit to a contract-shaped file ordinarily does
-    say the word; F16's own harness had to do this too.
+    ⚠ THE PAYLOAD HAD TO SAY `contract` SOMEWHERE ELSE until AAD-7813:
+    `CONTRA~1.YAM` matched none of the prefilter's arms, so a payload carrying
+    nothing but this path exited ALLOW above route 1. The prefilter now has an
+    arm for an 8.3 tail and route 1 walks a short-named last component, so
+    both payloads below are denied — the second is the one that was not.
     """
     _guarded_tree(tmp_path)
     out = subprocess.run(
@@ -3204,14 +3214,10 @@ def test_a_dotted_component_does_not_hide_the_short_name(tmp_path):
                                   "new_string": "a contract change"}}
         assert _denied(_run(payload, tmp_path)), (
             f"{spelling} was allowed: `-ef` is deciding on the raw spelling "
-            f"only, and it is the ONLY thing route 1 has for a name the "
-            f"basename gate never admits")
-    # …and the control for the paragraph above: without the token in the
-    # payload this never reaches route 1 at all. If that ever changes, the
-    # prefilter has widened and this test is no longer the narrow claim it says.
-    assert _run(_edit(f"{_native_path(tmp_path)}/{spelling}"), tmp_path) is None, (
-        "the prefilter now admits a payload that names no guarded token — "
-        "read the ⚠ above: this test's reachability argument rests on it")
+            f"only, and the basename gate never admits this name")
+    # …and with no guarded token anywhere in the payload (AAD-7813).
+    assert _denied(_run(_edit(f"{_native_path(tmp_path)}/{spelling}"), tmp_path)), (
+        f"{spelling} exited ALLOW at the prefilter: its 8.3 arm is gone")
 
 
 @pytest.mark.parametrize("rel", (".loci/contract.yaml",) + RECIPE_FILES)
@@ -3256,8 +3262,10 @@ def test_a_dot_dot_across_a_link_is_denied_on_either_reading(tmp_path, rel):
 
     # The control, and it has to be padded for the same reason the hole is:
     # neither reading reaches the guarded directory. POSIX resolves it to
-    # <root>/deep/nope/.loci and Win32 to <root>/nope/.loci.
-    safe = f"L/../nope/{head}/{_PAD}{base}"
+    # <root>/deep/nope/.locix and Win32 to <root>/nope/.locix. The `x` is
+    # AAD-7813's: the walk now denies `.loci/<guarded>` in ANY project, and
+    # `nope/.loci/contract.yaml` is one — `nope`'s.
+    safe = f"L/../nope/{head}x/{_PAD}{base}"
     assert _run(_edit(f"{_native_path(tmp_path)}/{safe}"), tmp_path) is None, (
         f"{safe} is not {rel} on either reading — denying on either has become "
         f"denying on neither in particular")

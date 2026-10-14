@@ -323,9 +323,9 @@ judged the right trade.
 - **`NOTE` always carries the figure its `STATUS` is about.** Not only on a
   `CAUTION`, a `FAIL` or a Needs attention, where a reason has always been
   required — on a `PASS` too, because two passing rows on one entry name are
-  otherwise indistinguishable. Every worked example in the corpus already does
-  this; it is written down here so the closed vocabulary above is enough on its
-  own.
+  otherwise indistinguishable.
+- **Times and energies as `measure` writes them**, yours too (`2.14 ns`,
+  `1.24 µs`, `0.52 nWs`); compute from raw values.
 - **A word with no cause cannot be acted on.** An entry's declared `severity` is
   **not rendered** — not in a column, not in NOTE. It decides how loudly a breach
   is surfaced, and on a `FAIL` `STATUS` already carries that.

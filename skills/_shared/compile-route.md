@@ -28,9 +28,9 @@ to live in prose here and in the two reflex skills, and they drifted.
 **Never re-derive a figure by hand.** A number you computed yourself is a different
 measurement from the one the run record holds, and the two will disagree in the
 report. Read `data.paths.<fn>` from `measure`: `ns`, the `blocks` the figure was
-computed on, `lower_bound` and its `reasons`, and `energy_uws` where it is present.
+computed on, `lower_bound` and its `reasons`, and `energy_nws` where it is present.
 Energy is reported only where the contract bounds it, or where the project has no
-contract at all — an absent `energy_uws` is a signal nobody asked for, not a
+contract at all — an absent `energy_nws` is a signal nobody asked for, not a
 measurement that failed, and it is never reconstructed from the timing figure.
 
 `lower_bound: true` is reported, never resolved: prefix the figure with `≥`, put the
@@ -67,8 +67,8 @@ For skills that compile the analyzed source themselves (preflight, post-edit).
 The compile call resolves the project from `--source` and compiles for its recipe's
 target (house rules, **Resolving the project**): no call before it, no
 `--loci-target`. Take `<project_root>` and `<project-context>` from its answer for
-the calls after it. `not_resolved`: ask which project. Any other code
-(`not_initialized`, `recipe_invalid`, `recipe_tampered`, …): its row.
+the calls after it. `not_resolved`: [the user names it](house-rules.md#not-resolved).
+Any other code (`not_initialized`, `recipe_invalid`, `recipe_tampered`, …): its row.
 
 Compile the affected source(s) with `loci build compile` — do **not** reuse an
 existing `.o`/`.elf` from the project's own build. LOCI needs the compiler,
@@ -141,8 +141,7 @@ neighbour's command — relay its `reason`.
 Before it names none — the edit knows which functions it reached, the artifacts do not.
 So `prepare` narrows the touched set to what `--functions` names, and to nothing when it
 names nothing: per-function requests are dropped rather than fanned out over every
-function in the unit, which used to judge untouched neighbours against their own
-scoped bounds. The unit is listed in `data.unscoped_units` and in the manifest as
+function in the unit. The unit is listed in `data.unscoped_units` and in the manifest as
 `{artifact, source, functions}` — the functions that live in it, none of which was
 measured — and every entry scoped to one of them says so, its `reason` ending in the
 `withheld` sentence. A caller that knows the names states them: `--functions` is scope,

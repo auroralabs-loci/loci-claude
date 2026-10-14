@@ -990,8 +990,9 @@ def test_a_real_tool_response_error_is_still_a_failure(tmp_path):
 #     "once per project" is only true if the marker really is keyed per project and
 #     really does survive a session;
 #   * lying — nudging `/loci:init` in a project the CLI already recorded as
-#     `unsupported` (or is about to re-arm from `failed`) is a claim about a
-#     question that was asked and answered;
+#     `unsupported` or `needs_user` is a claim about a question that was asked
+#     and answered (a `failed` init is the exception: AAD-7747 nudges it, once,
+#     with a line of its own);
 #   * hiding — a nudge that only rides along with the post-edit reminder never
 #     reaches the user whose first edit happened to be comment-only.
 # ---------------------------------------------------------------------------
@@ -1050,31 +1051,34 @@ def test_a_project_with_a_recipe_is_never_nudged_and_never_looked_up(tmp_path):
     assert _markers(state) == []
 
 
-def test_a_recipe_in_a_project_whose_state_says_uninitialized_still_wins(tmp_path):
+@pytest.mark.parametrize("status", ["uninitialized", "failed"])
+def test_a_recipe_in_a_project_whose_state_says_uninitialized_still_wins(
+        tmp_path, status):
     """The gate and the status test must not disagree. A recipe on disk with no
     recorded status is a real state (`initialized_degraded` — the state dir was
     wiped, or `loci init` has not seen this checkout), and "LOCI is not
-    initialized" would be false in it."""
+    initialized" would be false in it. A `failed` beside a recipe is that recipe
+    stale, invalid or tampered, which is not a missing init either."""
     r = _run(tmp_path, _C_EDIT, stub=_MEASURABLE, recipe=True,
-             init_status="uninitialized")
+             init_status=status)
 
     assert not _nudged(r), f"nudged beside a recipe: {r.context!r}"
 
 
-@pytest.mark.parametrize("status", ["ok", "unsupported", "needs_user", "failed",
+@pytest.mark.parametrize("status", ["ok", "unsupported", "needs_user",
                                     "a_value_this_version_never_heard_of"])
-def test_only_an_uninitialized_status_nudges(tmp_path, status):
+def test_a_decided_or_unknown_status_is_not_nudged(tmp_path, status):
     """An allow-list, and each exclusion has its own reason.
 
     `ok` is initialized. `unsupported` and `needs_user` are what the CLI records
     once it has already decided, so `/loci:init` sends the user at a question that
-    was asked and answered. `failed` is the interesting one: it was excluded
-    because session-init re-armed the project and its next analysis routed the
-    coded error. Nothing arms at session start since AAD-7531, so this pins the
-    current behaviour (a `failed` project with no recipe hears nothing), and
-    AAD-7747 decides whether it should be nudged. An unrecognised value takes the
-    same quiet path, because the nudge is a claim and nothing in a hook can check
-    it."""
+    was asked and answered. An unrecognised value takes the same quiet path,
+    because the nudge is a claim and nothing in a hook can check it.
+
+    `failed` used to be in this list, for a reason that stopped being true:
+    session-init re-armed such a project and its next analysis relayed the coded
+    error. Nothing arms at session start since AAD-7531, so AAD-7747 moved it to
+    a nudge of its own (the tests below)."""
     r = _run(tmp_path, _C_EDIT, stub=_MEASURABLE, recipe=False, init_status=status)
 
     assert not _nudged(r), f"init_status={status!r} nudged: {r.context!r}"
@@ -1082,6 +1086,126 @@ def test_only_an_uninitialized_status_nudges(tmp_path, status):
         f"init_status={status!r} burned the marker without nudging, so the "
         "project can never be nudged once it becomes uninitialized"
     )
+
+
+# A failed init (AAD-7747). `loci init` records `failed` when it could not
+# demonstrate a recipe: nothing built yet, no compile database, a build that did
+# not compile. With no recipe, edit-scan answers `governed: false` and the
+# reminder is off, and since AAD-7531 nothing re-arms the project at session
+# start. The user opted in by running `/loci:init`, so without a line of its own
+# LOCI stops measuring their project and never says so.
+_FAILED_LINE = "The last /loci:init for "
+
+
+@_BOTH_HOSTS
+def test_a_failed_init_with_no_recipe_is_nudged_once(tmp_path):
+    stub = _governed_stub(False)
+    first = _run(tmp_path, _C_EDIT, stub=stub, recipe=False, init_status="failed")
+    second = _run(tmp_path, _C_EDIT, stub=stub, recipe=False, init_status="failed")
+
+    assert _nudged(first), f"a failed init was not nudged: {first.out!r}"
+    assert first.context.startswith("[loci] " + _FAILED_LINE), first.context
+    assert "did not succeed" in first.context
+    # The user ran /loci:init; "not initialized" reads as if they never had.
+    assert "not initialized" not in first.context, first.context
+    assert first.system_message is not None and _FAILED_LINE in first.system_message
+    assert _markers(tmp_path / "state") == [
+        f"init-nudge-failed-{_ctx_key(tmp_path)}"
+    ], "the failed nudge did not claim a marker of its own"
+    assert second.out == "", f"the failed nudge repeated: {second.out!r}"
+
+
+@_BOTH_HOSTS
+def test_a_failed_init_after_the_first_nudge_is_still_nudged_once(tmp_path):
+    """The usual order of events, and why the marker is not shared. The first
+    edit says "not initialized", the user runs `/loci:init`, and it fails. One
+    shared marker would already be spent by then, and the project would hear
+    nothing."""
+    stub = _governed_stub(False)
+    before = _run(tmp_path, _C_EDIT, stub=stub, recipe=False)
+    # `loci init` ran in between and recorded its refusal.
+    after = _run(tmp_path, _C_EDIT, stub=stub, recipe=False, init_status="failed")
+    again = _run(tmp_path, _C_EDIT, stub=stub, recipe=False, init_status="failed")
+
+    assert _nudged(before) and "LOCI is not initialized" in before.context
+    assert _nudged(after), f"silent after the init failed: {after.out!r}"
+    assert _FAILED_LINE in after.context
+    assert again.out == "", f"the failed nudge repeated: {again.out!r}"
+    key = _ctx_key(tmp_path)
+    assert _markers(tmp_path / "state") == sorted(
+        [f"init-nudge-{key}", f"init-nudge-failed-{key}"])
+
+
+def test_a_failed_init_under_a_recipe_above_the_session_is_quiet(tmp_path):
+    """Under a recipe, `failed` is that recipe stale, invalid or tampered, which is
+    not a missing init. The walk answers it, and the marker records the recipe
+    that did, so the next edit costs one `[ -f ]` and not another walk."""
+    project = tmp_path / "proj"
+    (project / ".loci").mkdir(parents=True)
+    (project / ".loci" / "build.yaml").write_text("version: 1\\n", encoding="utf-8")
+    (project / ".git").mkdir()
+    session = project / "src" / "drv"
+    session.mkdir(parents=True)
+
+    payload = {**_C_EDIT, "cwd": _to_bash_path(session)}
+    r = _run(tmp_path, payload, stub=_MEASURABLE, recipe=False, project=session,
+             init_status="failed")
+
+    assert not _nudged(r), f"nudged under a recipe: {r.context!r}"
+    assert _markers(tmp_path / "state") == [f"init-nudge-{_ctx_key(session)}"]
+
+
+def test_a_decided_status_after_the_first_nudge_still_leaves_failed_owed(tmp_path):
+    """Nudged, then `/loci:init` recorded `unsupported`, then later `failed`.
+
+    Once the first marker exists only a `failed` can claim anything, so the hook
+    settles every other status with a builtin read and a pattern rather than
+    the parse (which forks on every edit, for ever, in a state `unsupported`
+    makes permanent). That shortcut must not swallow the `failed` that comes
+    after it, nor spend the failed marker on a status that is not one."""
+    stub = _governed_stub(False)
+    first = _run(tmp_path, _C_EDIT, stub=stub, recipe=False)
+    decided = _run(tmp_path, _C_EDIT, stub=stub, recipe=False,
+                   init_status="unsupported")
+    key = _ctx_key(tmp_path)
+    after_decided = _markers(tmp_path / "state")
+    failed = _run(tmp_path, _C_EDIT, stub=stub, recipe=False, init_status="failed")
+
+    assert _nudged(first)
+    assert decided.out == "", f"an unsupported project was nudged: {decided.out!r}"
+    assert after_decided == [f"init-nudge-{key}"], (
+        f"the failed marker was spent on `unsupported`: {after_decided}")
+    assert _nudged(failed) and _FAILED_LINE in failed.context, failed.out
+
+
+def test_a_failed_init_whose_recipe_path_cannot_be_recorded_closes_quietly(tmp_path):
+    """A directory at the first marker's path (a reachable state, see
+    `test_a_marker_path_that_is_a_directory_yields_no_nudge`) cannot hold the
+    recipe path the walk found. The failed marker is claimed instead, without a
+    nudge, so the walk does not run again on every edit; and the failed
+    redirection says nothing on stderr. The accepted cost: if the recipe later
+    goes while the status still says `failed`, this project is not nudged. That
+    is confined to this broken marker state."""
+    project = tmp_path / "proj"
+    (project / ".loci").mkdir(parents=True)
+    (project / ".loci" / "build.yaml").write_text("version: 1\\n", encoding="utf-8")
+    (project / ".git").mkdir()
+    session = project / "src" / "drv"
+    session.mkdir(parents=True)
+    state = tmp_path / "state"
+    state.mkdir()
+    key = _ctx_key(session)
+    (state / f"init-nudge-{key}").mkdir()
+
+    payload = {**_C_EDIT, "cwd": _to_bash_path(session)}
+    r = _run(tmp_path, payload, stub=_MEASURABLE, recipe=False, project=session,
+             init_status="failed", state_dir=state)
+
+    assert not _nudged(r), f"nudged under a recipe: {r.context!r}"
+    assert "Is a directory" not in r.stderr, r.stderr
+    failed_marker = state / f"init-nudge-failed-{key}"
+    assert failed_marker.is_file() and failed_marker.read_bytes() == b"", (
+        "the failed marker was not claimed, so the walk runs on every edit")
 
 
 def test_a_context_file_with_no_init_status_nudges(tmp_path):
@@ -1299,10 +1423,12 @@ def test_a_marker_path_that_is_a_directory_yields_no_nudge(tmp_path):
     assert r.context is not None and "loci-post-edit" in r.context
 
 
-def test_two_concurrent_edits_produce_exactly_one_nudge(tmp_path):
+@pytest.mark.parametrize("status", [None, "failed"], ids=["no-context", "failed"])
+def test_two_concurrent_edits_produce_exactly_one_nudge(tmp_path, status):
     """Two subagents editing inside one turn is an ordinary shape, and both hooks
     run against the same state directory at the same time. `set -C` is `O_EXCL`, so
-    the race has a winner rather than two."""
+    the race has a winner rather than two — for a failed init's marker as much as
+    for the first one."""
     from concurrent.futures import ThreadPoolExecutor
 
     state = tmp_path / "state"
@@ -1315,6 +1441,9 @@ def test_two_concurrent_edits_produce_exactly_one_nudge(tmp_path):
                     encoding="utf-8")
     stub.chmod(0o755)
     state.mkdir()
+    if status is not None:
+        (state / f"project-context-{_ctx_key(project)}.json").write_text(
+            json.dumps({"init_status": status}), encoding="utf-8")
 
     def once() -> str:
         proc = subprocess.run(
@@ -1337,12 +1466,16 @@ def test_two_concurrent_edits_produce_exactly_one_nudge(tmp_path):
     assert len(_markers(state)) == 1
 
 
-def test_the_nudge_says_what_to_run_and_stays_short(tmp_path):
+@pytest.mark.parametrize("status, says", [("uninitialized", "is not initialized"),
+                                          ("failed", "did not succeed")])
+def test_the_nudge_says_what_to_run_and_stays_short(tmp_path, status, says):
     """It is one line in a context block the model pays for on every edit. The
     task's byte budget is ~200 B added; the sentence has to name the skill or it is
-    a complaint rather than a next step."""
+    a complaint rather than a next step. A failed init's line is held to the same
+    budget."""
     r = _run(tmp_path, _C_EDIT, stub=_NOT_MEASURABLE, recipe=False,
-             init_status="uninitialized")
+             init_status=status)
+    assert says in r.context, f"measured the wrong line: {r.context!r}"
 
     # The project path is data, not sentence, so it is measured out — in both of
     # its spellings. The hook prints the path this fixture hands it (the
@@ -1652,7 +1785,9 @@ def _allow_writes(directory: Path) -> None:
         directory.chmod(0o755)
 
 
-def test_a_state_directory_that_denies_writes_yields_no_nudge_at_all(tmp_path):
+@pytest.mark.parametrize("status", ["uninitialized", "failed"])
+def test_a_state_directory_that_denies_writes_yields_no_nudge_at_all(tmp_path,
+                                                                     status):
     """THE reason the claim is `set -C` and not `[ -e ]` then write.
 
     A test-then-create reads "absent" every time on a state directory that cannot
@@ -1670,7 +1805,7 @@ def test_a_state_directory_that_denies_writes_yields_no_nudge_at_all(tmp_path):
     # READ and cannot WRITE — which is what a restored CI cache or a
     # wrong-ownership home directory actually looks like.
     (state / f"project-context-{_ctx_key(tmp_path)}.json").write_text(
-        json.dumps({"init_status": "uninitialized"}), encoding="utf-8")
+        json.dumps({"init_status": status}), encoding="utf-8")
     if not _deny_writes(state):
         pytest.skip("could not make the state directory refuse writes")
     try:
@@ -1784,6 +1919,59 @@ def _run_plugin(plugin: Path, payload: dict, home: Path, state: Path,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
+
+
+def _plugin_with_a_spying_parse(tmp_path: Path) -> tuple[Path, Path]:
+    """A plugin copy whose context parse records that it ran.
+
+    `loci_json_is_object` is the parse's first step and has no other caller in
+    the hook after `setup-steps.sh` is sourced, so wrapping it there watches the
+    parse and nothing else. The wrapper still answers through the original, so a
+    status the parse must read is still read."""
+    plugin, _ = _plugin_with_a_spying_walk(tmp_path)
+    spy = tmp_path / "parse-was-called"
+    steps = plugin / "lib" / "setup-steps.sh"
+    lib = steps.read_text(encoding="utf-8")
+    lib += ('\neval "_spied_$(declare -f loci_json_is_object)"\n'
+            'loci_json_is_object() {\n'
+            f'    printf x >> "{_to_bash_path(spy)}"\n'
+            '    _spied_loci_json_is_object "$@"\n'
+            '}\n')
+    steps.write_text(lib, encoding="utf-8", newline="\n")
+    return plugin, spy
+
+
+def test_a_settled_status_is_not_parsed_on_every_edit(tmp_path):
+    """AAD-7747, pinned on behaviour rather than on a stopwatch.
+
+    Once a project has had the first nudge, a `failed` init's line is still owed,
+    so every later edit reaches the status read. A project that then recorded
+    `unsupported` (permanent) or `needs_user` stays in that state for ever, and
+    the parse costs two subshells per edit there that `main` never spent. A file
+    that does not contain `"failed"` cannot be one, and must be settled without
+    the parse. The control after it is the non-vacuity check: a `failed` status
+    IS parsed, and nudged."""
+    plugin, spy = _plugin_with_a_spying_parse(tmp_path)
+    project = tmp_path / "proj"
+    project.mkdir()
+    home, state = tmp_path / "home", tmp_path / "state"
+    payload = {**_C_EDIT, "cwd": _to_bash_path(project)}
+    ctx = state / f"project-context-{_ctx_key(project)}.json"
+
+    assert _NUDGE_TEXT in _run_plugin(plugin, payload, home, state)
+    ctx.write_text(json.dumps({"init_status": "unsupported"}), encoding="utf-8")
+    settled = _run_plugin(plugin, payload, home, state)
+
+    assert _NUDGE_TEXT not in settled, settled
+    assert not spy.exists(), (
+        "a status that cannot be `failed` was parsed; that is two subshells on "
+        "every edit, for ever, of a project LOCI will not serve")
+
+    ctx.write_text(json.dumps({"init_status": "failed"}), encoding="utf-8")
+    failed = _run_plugin(plugin, payload, home, state)
+
+    assert _FAILED_LINE in failed, failed
+    assert spy.exists(), "the control never reached the parse, so it proves nothing"
 
 
 @_BOTH_HOSTS

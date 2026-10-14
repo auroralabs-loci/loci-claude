@@ -104,7 +104,7 @@ Rules, in order of how often they are got wrong:
   |---|---|
   | `stack_depth`, `stack_frame_size`, `rom_size`, `ram_size` | `B` |
   | `hot_path_time`, `worst_path_time` | `ns` |
-  | `energy` | `uWs` |
+  | `energy` | `nWs` (other energy units convert) |
 - **Never draft `exec_time`**, and **tell the user to migrate an existing one.**
   Draft `hot_path_time` for the normal case, `worst_path_time` for the worst case.
   `loci contract lint` reports the old spelling, and the entry is **not enforced
@@ -118,9 +118,9 @@ Rules, in order of how often they are got wrong:
   cover the whole call tree. If the user's sentence is about end-to-end latency
   through the callees, say that LOCI does not measure it and confirm the limit
   they mean is the function's own blocks.
-  `energy` shares that basis — exec-trace's `energy_uws` is self-scoped too — so
-  an energy bound off an exec-trace figure is wrong the same way. The memory and
-  stack signals have no such split and need no such heads-up.
+  `energy` shares that basis (exec-trace's `energy_nws` is self-scoped too), so
+  an energy bound off an exec-trace figure is wrong the same way. Memory and stack
+  signals need no such heads-up.
 - **Pick `kind` from the intent** — **required on every entry that has a
   `bound`**, and rejected without one: "must stay under / must never exceed" →
   `budget`; "must not regress more than" → `regression` (with

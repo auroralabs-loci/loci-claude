@@ -40,6 +40,10 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 
+#: The `version` a staged plugin's manifest carries (`_stage_plugin`), which the
+#: hook reports as `loci version:`. Any value works; it need not track the pin.
+STAGED_VERSION = "0.2.74"
+
 CLAUDE_EDIT_SENTENCE = "After an Edit/Write to a C/C++/Rust/Go source"
 CLAUDE_PERMISSION_SENTENCE = (
     "outside the working directory — Claude Code prompts the user for permission "
@@ -55,16 +59,20 @@ COPILOT_PLAN_CLAUSE = ("In plan mode (a [[PLAN]] prompt), when the user describe
                        "C/C++/Rust/Go logic in a project a LOCI recipe governs, you MUST "
                        "invoke loci:loci-preflight on the functions it changes and the "
                        "existing callees of its new code (a new function changes its "
-                       "caller) before proposing edits.")
+                       "caller) before proposing edits. Outside plan mode: never, "
+                       "whatever the wording.")
 NOTICE_OPEN = "--- LOCI notice ---"
 NOTICE_CLOSE = "--- end of LOCI notice ---"
 
 #: What the Copilot rewrites may add to the block, measured against the Claude
 #: Code block of the same run: the one `host:` line and the edit-tool words
 #: (AAD-7784, +75 B net of the shorter path sentence) and the preflight clause
-#: of the auto-run rule (AAD-7787, +100 B). The bytes are paid on every Copilot
-#: session start, so they are bounded like the rest of the block
-#: (test_project_detection_gate's budget covers the Claude Code half).
+#: of the auto-run rule (AAD-7787, +100 B) with its negative half (AAD-7803,
+#: +48 B; the block measures 28 B larger on WSL than on Windows, so a +57 B
+#: clause passed here and failed there at 262). The bytes are paid on every
+#: Copilot session start, so they are
+#: bounded like the rest of the block (test_session_init_block's budget
+#: covers the Claude Code half).
 HOST_LINE_ALLOWANCE = 260
 
 
@@ -126,6 +134,22 @@ def _stage_plugin(d: Path, version: str) -> Path:
     return d
 
 
+def _pinned_cli_shim(d: Path) -> Path:
+    """A `loci` answering the pinned `--version`: a CLI behind the pin adds the
+    version-skew notice, so the developer's own `loci` would decide these tests."""
+    m = re.search(r'^LOCI_CLI_VERSION="([^"]+)"',
+                  (PLUGIN_ROOT / "lib" / "setup-steps.sh").read_text(encoding="utf-8"),
+                  re.M)
+    assert m, "lib/setup-steps.sh no longer declares LOCI_CLI_VERSION"
+    d.mkdir(parents=True, exist_ok=True)
+    shim = d / "loci"
+    shim.write_text(
+        '#!/bin/bash\ncase "$1" in\n  --version) echo "loci %s" ;;\n  *) exit 1 ;;\nesac\n'
+        % m.group(1), encoding="utf-8", newline="\n")
+    shim.chmod(0o755)
+    return d
+
+
 def _payload(source: str | None = "new", session: str = "sess-1") -> str:
     doc = {"hook_event_name": "SessionStart", "session_id": session,
            "timestamp": "2026-10-01T11:54:04.356Z", "cwd": "C:\\proj"}
@@ -141,6 +165,8 @@ def _run(plugin: Path, home: Path, *, copilot: bool, payload: str | None = None,
         **os.environ,
         "HOME": _to_bash_path(home),
         "LOCI_STATE_DIR": _to_bash_path(home / ".loci" / "state"),
+        "PATH": f"{_to_bash_path(_pinned_cli_shim(home.parent / 'clishim'))}:"
+                f"{os.environ.get('PATH', '')}",
     }
     env.pop("COPILOT_CLI", None)
     env.pop("COPILOT_PLUGIN_ROOT", None)
@@ -220,11 +246,11 @@ def test_copilot_plugin_dir_for_an_installed_plugin_and_a_plugin_dir_checkout(tm
     # other. Under Copilot `$0` is built from the same exported root.)
 
     projects = tmp_path / "Projects"
-    checkout = _stage_plugin(projects / "loci-claude-dev", "0.2.74")
+    checkout = _stage_plugin(projects / "loci-claude-dev", STAGED_VERSION)
     _stage_plugin(projects / "9.9.9", "9.9.9")        # a neighbour the scan would take
     ctx = _doc(_run(checkout, home, copilot=True, payload=_payload()))["additionalContext"]
     assert _line(ctx, "plugin dir:") == f"plugin dir: {_bash_spelling(checkout)}"
-    assert "loci version: 0.2.74" in ctx
+    assert f"loci version: {STAGED_VERSION}" in ctx
     # …and that neighbour IS what the scan answers without the host's word, which
     # is why the exported root wins under Copilot.
     claude = _nested(_doc(_run(checkout, home, copilot=False)))
@@ -237,7 +263,7 @@ def test_copilot_with_no_usable_exported_root_falls_back_to_the_hooks_own_dir(tm
     and the hook's own location stands in — never an empty `plugin dir:`."""
     home = tmp_path / "home"
     home.mkdir()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     ctx = _doc(_run(plugin, home, copilot=True, payload=_payload(),
                     plugin_root=tmp_path / "gone"))["additionalContext"]
     assert _line(ctx, "plugin dir:") == f"plugin dir: {_to_bash_path(plugin)}"
@@ -254,7 +280,7 @@ def test_copilot_context_names_the_host_and_its_tools_and_never_claude_code(tmp_
     home.mkdir()
     (home / ".loci").mkdir()
     (home / ".loci" / ".welcome-shown").touch()          # the context alone
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     doc = _doc(_run(plugin, home, copilot=True, payload=_payload()))
     ctx = doc["additionalContext"]
 
@@ -282,13 +308,18 @@ def test_the_preflight_clause_is_host_shaped(tmp_path):
     the prompt, so the Copilot rule names the prefix; and it says what preflight
     runs on, because "its existing callees" read as nothing for a new function
     that calls nothing (a live `--plan` run skipped on that reading, while the
-    plan modified the caller). Claude Code's clause is byte for byte the one it
-    has always been — `[[PLAN]]` is a Copilot word and never reaches Claude."""
+    plan modified the caller). AAD-7803 added the clause's negative half for
+    Copilot alone: gpt-5.6-sol read the positive rule plus the skill's trigger
+    words as "invoke on these words" and ran preflight outside plan mode, so
+    the Copilot rule now says never outside it. Claude Code's clause is byte
+    for byte the one it has always been — `[[PLAN]]` and the negative half
+    never reach Claude's session-init block (the skill description, which both
+    hosts load, carries Claude's negative half)."""
     home = tmp_path / "home"
     home.mkdir()
     (home / ".loci").mkdir()
     (home / ".loci" / ".welcome-shown").touch()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     copilot = _doc(_run(plugin, home, copilot=True, payload=_payload()))["additionalContext"]
     claude = _nested(_doc(_run(plugin, home, copilot=False)))
     rule = _line(copilot, "LOCI auto-run rules:")
@@ -296,17 +327,20 @@ def test_the_preflight_clause_is_host_shaped(tmp_path):
     assert "(a new function changes its caller)" in rule
     assert "In /plan mode" not in rule
     assert "on its existing callees" not in rule
+    assert "before proposing edits. Outside plan mode: never, whatever the wording. After an edit/create" in rule
     claude_rule = _line(claude, "LOCI auto-run rules:")
     assert CLAUDE_PLAN_CLAUSE in claude_rule
+    assert "before proposing edits. After an Edit/Write" in claude_rule
     assert "[[PLAN]]" not in claude
     assert "changes its caller" not in claude
+    assert "Outside plan mode: never" not in claude
 
 
 @needs_bash
 def test_copilot_host_line_is_unversioned_when_the_host_exports_no_version(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     ctx = _doc(_run(plugin, home, copilot=True, payload=_payload(),
                     version=""))["additionalContext"]
     assert _line(ctx, "host:").startswith("host: GitHub Copilot CLI. ")
@@ -320,7 +354,7 @@ def test_claude_code_context_is_the_text_it_has_always_been(tmp_path):
     parity gate (`tools/claude-parity.sh`); this pins the sentences."""
     home = tmp_path / "home"
     home.mkdir()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     doc = _doc(_run(plugin, home, copilot=False))
     ctx = _nested(doc)
     assert CLAUDE_EDIT_SENTENCE in ctx
@@ -348,7 +382,7 @@ def test_copilot_block_costs_at_most_the_host_line(tmp_path):
     home.mkdir()
     (home / ".loci").mkdir()
     (home / ".loci" / ".welcome-shown").touch()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     claude = _nested(_doc(_run(plugin, home, copilot=False)))
     copilot = _doc(_run(plugin, home, copilot=True, payload=_payload()))["additionalContext"]
     assert NOTICE_OPEN not in copilot
@@ -371,7 +405,7 @@ def test_copilot_welcome_rides_in_the_context_as_a_fenced_notice(tmp_path):
     marker is written as under Claude Code, so the second session has none."""
     home = tmp_path / "home"
     home.mkdir()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     doc = _doc(_run(plugin, home, copilot=True, payload=_payload()))
     ctx = doc["additionalContext"]
     assert "systemMessage" not in doc, (
@@ -405,7 +439,7 @@ def test_copilot_install_banner_rides_in_the_context_too(tmp_path):
     state.mkdir()
     (state / "loci-cli-status.json").write_text(json.dumps(
         {"status": "failed", "log": _to_bash_path(state / "loci-cli-install.log")}))
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     empty = tmp_path / "empty-bin"          # neither `uv` nor `loci` on the PATH the hook sees
     empty.mkdir()
     doc = _doc(_run(plugin, home, copilot=True, payload=_payload(),
@@ -429,7 +463,7 @@ def test_copilot_resumed_session_gets_no_context_and_launches_nothing(tmp_path):
     `source` values of a first start run the whole hook."""
     home = tmp_path / "home"
     home.mkdir()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     marker = home / ".loci" / ".welcome-shown"
     # Dev mode, so the hook and the detached installer log at INFO into the
     # state dir: the installer's `start`/`end` lines are the evidence of a
@@ -474,7 +508,7 @@ def test_copilot_unreadable_payload_takes_the_first_start_path(tmp_path):
     """No payload, or one with no `source`: the path that cannot lose anything."""
     home = tmp_path / "home"
     home.mkdir()
-    plugin = _stage_plugin(tmp_path / "plugin", "0.2.74")
+    plugin = _stage_plugin(tmp_path / "plugin", STAGED_VERSION)
     for payload in ("", "not json", _payload(None)):
         doc = _doc(_run(plugin, home, copilot=True, payload=payload))
         assert "LOCI auto-run rules:" in doc["additionalContext"], payload

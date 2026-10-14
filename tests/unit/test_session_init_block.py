@@ -1,21 +1,12 @@
-"""The cheap gate, and the one session block that no longer depends on it.
+"""The SessionStart block, which no longer depends on the directory it starts in.
 
-Two false positives are the reason this file exists. A documentation repo armed
-as an ``armv7e-m`` C++ project, and the plugin's own repo armed as ``armv6-m``:
-both came from *anchors the old gate accepted as evidence* — LOCI's own
-``.loci-build/`` cache, deep source sweeps that counted fixture ``.c`` files, an
-architecture read off a stray ELF, and a target inferred from a cross-compiler
-on ``PATH``. None of those is a statement about the directory.
-
-Since T08 (report §6.3) the gate accepts only a build the project **declares** —
-a root build file, or a vendor project file within two levels — and it owns the
-arming decision by itself. The scan that used to run below it — compilers on
-PATH, ELFs, a guessed target, left in the keyed file as cascade hints for a CLI
-too old to read a recipe — is gone since T14: the CLI's cascade is gone, so the
-hints have no reader, and `detect-project.sh` IS the gate.
-
-Session start no longer consults the gate (AAD-7531): every directory gets the
-same block, and the gate stays on disk with no caller but these tests.
+Session start used to arm on a project gate, `lib/detect-project.sh`: a build
+the directory declares at its root or two levels down. AAD-7531 stopped
+consulting it, so every directory gets the same block and a project is one
+`loci init` has recorded; AAD-7745 deleted the script and the tests that ran
+it. What is pinned here is the block itself: that it is the same everywhere,
+its byte budgets, the CLI-version states it reports, the recipe walk, and
+what it advertises.
 """
 
 from __future__ import annotations
@@ -68,27 +59,6 @@ def _to_bash_path(p: Path) -> str:
     return s
 
 
-def _alt_spelling(p: Path) -> str | None:
-    """The SAME directory under a different absolute name, or None.
-
-    Git Bash mounts `%TEMP%` at `/tmp`, so everything pytest puts under the
-    temp directory has two names — and until this helper existed every fixture
-    handed the hook a `HOME` and a cwd spelled the same way, so a `$HOME` guard
-    that only works when they agree passed the whole suite. It did not work: an
-    optimisation comparing the two paths' last components shipped for one
-    commit and re-armed `~/Downloads` off a dotfiles repo.
-    """
-    if sys.platform != "win32":
-        return None
-    import tempfile
-    real = Path(tempfile.gettempdir()).resolve()
-    try:
-        rel = Path(p).resolve().relative_to(real)
-    except ValueError:
-        return None
-    return "/tmp/" + rel.as_posix()
-
-
 def _env(home: Path, **extra: str) -> dict:
     return {
         **os.environ,
@@ -98,41 +68,18 @@ def _env(home: Path, **extra: str) -> dict:
     }
 
 
-def _detect(target: Path, home: Path) -> dict:
-    args = [_find_bash(), _to_bash_path(PLUGIN_ROOT / "lib" / "detect-project.sh"),
-            _to_bash_path(target)]
-    res = subprocess.run(args, env=_env(home), capture_output=True, text=True,
-                         encoding="utf-8", errors="replace", timeout=60)
-    assert res.returncode == 0, f"detect-project.sh exited {res.returncode}\n{res.stderr}"
-    return json.loads(res.stdout)
-
-
 class Session:
-    """One session-init run: its hook payload and its log."""
+    """One session-init run: its hook payload."""
 
-    def __init__(self, payload: dict, state: Path):
+    def __init__(self, payload: dict):
         self.payload = payload
-        self.state = state
 
     @property
     def ctx(self) -> str:
         return self.payload["hookSpecificOutput"]["additionalContext"]
 
-    @property
-    def log(self) -> str:
-        path = self.state / "loci.log"
-        return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-
-    @property
-    def detector_ran(self) -> bool:
-        return "start: detect-project" in self.log
-
 
 def _run_session_init(cwd: Path, home: Path, **extra: str) -> Session:
-    state = home / ".loci" / "state"
-    # A fresh log per run, so `detector_ran` answers about THIS run.
-    if (state / "loci.log").is_file():
-        (state / "loci.log").unlink()
     res = subprocess.run(
         [_find_bash(), _to_bash_path(PLUGIN_ROOT / "hooks" / "session-init.sh")],
         env=_env(home, LOCI_ENV="dev", **extra),
@@ -146,7 +93,7 @@ def _run_session_init(cwd: Path, home: Path, **extra: str) -> Session:
         timeout=60, stdin=subprocess.DEVNULL,
     )
     assert res.returncode == 0, f"session-init.sh exited {res.returncode}\n{res.stderr}"
-    return Session(json.loads(res.stdout), state)
+    return Session(json.loads(res.stdout))
 
 
 def _cli_shim(dirpath: Path, version: str) -> Path:
@@ -219,656 +166,6 @@ needs_tools = pytest.mark.skipif(
 )
 
 
-# ── the gate: what counts as evidence ───────────────────────────────────────
-
-@needs_tools
-def test_empty_dir_is_no_project(tmp_path):
-    """An empty dir must not inherit a project identity from the host's
-    compiler and architecture."""
-    target = tmp_path / "empty"
-    target.mkdir()
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-    assert "loci_target" not in info
-
-
-@needs_tools
-def test_root_build_file_is_the_evidence(tmp_path):
-    """Each of the eleven root build files declares a build on its own."""
-    # Numbered, not named after the file: `proj-Makefile` and `proj-makefile`
-    # are ONE directory on a case-insensitive filesystem, which is every
-    # Windows one — and `Makefile`/`makefile` are two distinct entries in the
-    # list under test.
-    for i, name in enumerate(("Makefile", "makefile", "GNUmakefile",
-                              "CMakeLists.txt", "Cargo.toml", "meson.build",
-                              "BUILD", "WORKSPACE", "conanfile.txt",
-                              "conanfile.py", "vcpkg.json")):
-        target = tmp_path / f"proj-{i}"
-        target.mkdir()
-        (target / name).write_text("")
-        info = _detect(target, tmp_path / "home")
-        assert info["detection_status"] == "ok", f"{name} did not count as evidence"
-
-
-@needs_tools
-def test_vendor_project_file_two_levels_down_arms(tmp_path):
-    """``firmware/app.uvprojx`` repos have no root build file and must still
-    arm — the one depth-2 inference the gate kept."""
-    target = tmp_path / "repo"
-    (target / "firmware").mkdir(parents=True)
-    (target / "firmware" / "app.uvprojx").write_text("<Project/>")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "ok"
-
-
-@needs_tools
-def test_loci_build_cache_is_not_evidence(tmp_path):
-    """THE DOCS-REPO FALSE POSITIVE. ``.loci-build/`` only exists because LOCI
-    ran here once; treating that as proof the directory is a project is how a
-    Markdown repo came to be armed as an armv7e-m C++ project. Inverted from
-    the pre-T08 assertion on purpose."""
-    target = tmp_path / "docs"
-    (target / ".loci-build" / "armv6-m").mkdir(parents=True)
-    (target / ".loci-build" / "armv6-m" / "mod.o").write_bytes(b"\x7fELF")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-    assert "loci_target" not in info
-
-
-@needs_tools
-def test_the_new_build_root_is_not_evidence_either(tmp_path):
-    """The same false positive under the directory's new name.
-
-    ``.loci-build/`` was dropped as an arming anchor because it only exists where
-    LOCI already ran, and the layout move gives that cache a second spelling. A
-    gate that answered ``no_project`` for one and ``ok`` for the other would
-    re-arm the docs repo the moment its CLI upgraded — and the compat stub means
-    a post-move project has BOTH, so the pair is the shape to test."""
-    target = tmp_path / "docs"
-    (target / ".loci" / "build" / "objects" / "armv6-m").mkdir(parents=True)
-    (target / ".loci" / "build" / "objects" / "armv6-m" / "mod.o").write_bytes(b"\x7fELF")
-    (target / ".loci-build").mkdir()
-    (target / ".loci-build" / ".gitignore").write_text("*\n")
-
-    info = _detect(target, tmp_path / "home")
-
-    assert info["detection_status"] == "no_project"
-    assert "loci_target" not in info
-
-
-@needs_tools
-def test_fixture_sources_and_elfs_are_not_evidence(tmp_path):
-    """THE PLUGIN-REPO FALSE POSITIVE. A repo whose C files and ELFs are test
-    fixtures declares no build, and the deep sweep that counted them is gone."""
-    target = tmp_path / "tooling"
-    (target / ".git").mkdir(parents=True)
-    (target / "tests" / "fixtures").mkdir(parents=True)
-    (target / "tests" / "fixtures" / "blink.c").write_text("int main(){}")
-    (target / "tests" / "fixtures" / "kernel.elf").write_bytes(b"\x7fELF")
-    (target / "README.md").write_text("# docs")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_loose_sources_without_a_build_file_do_not_arm(tmp_path):
-    """Sources in CWD used to be enough. They are not: nothing says how they
-    build, which is the question ``/loci:init`` exists to answer."""
-    target = tmp_path / "loose"
-    target.mkdir()
-    (target / "main.c").write_text("int main(){}")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_git_repo_with_deep_sources_does_not_arm_without_a_build_file(tmp_path):
-    """The maxdepth-6 sweep inside a repo is gone with the rest of them."""
-    target = tmp_path / "repo"
-    (target / ".git").mkdir(parents=True)
-    (target / "src" / "app").mkdir(parents=True)
-    (target / "src" / "app" / "main.c").write_text("int main(){}")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_repo_with_submodules_and_a_root_build_file_is_ok(tmp_path):
-    """A repo whose sources live in submodules is still ONE project — and now
-    it is the root build file that says so."""
-    target = tmp_path / "repo"
-    (target / ".git").mkdir(parents=True)
-    (target / "CMakeLists.txt").write_text("project(x)")
-    (target / "sdk").mkdir()
-    (target / "sdk" / ".git").write_text("gitdir: ../.git/modules/sdk")
-    (target / "sdk" / "drv.c").write_text("int f(){}")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "ok"
-
-
-@needs_tools
-def test_a_build_file_one_level_down_arms_its_repo(tmp_path):
-    """The commonest firmware-monorepo layout there is: `docs/` beside
-    `firmware/CMakeLists.txt`. Checking only the root turned it inactive under
-    a sentence — "no build file declares a build in this directory" — that was
-    simply false."""
-    target = tmp_path / "repo"
-    (target / ".git").mkdir(parents=True)
-    (target / "docs").mkdir()
-    (target / "firmware" / "src").mkdir(parents=True)
-    (target / "firmware" / "CMakeLists.txt").write_text("project(fw)")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_a_session_inside_a_repo_finds_the_root_build_file(tmp_path):
-    """`cd repo/src/drivers && claude` is an ordinary way to start work, and
-    the repo's `Makefile` two levels up is still what builds the file about to
-    be edited. The gate climbs to the checkout root — the same climb, with the
-    same stops, that the recipe walk makes, so the two cannot disagree about
-    which directory is the project."""
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-    (repo / "Makefile").write_text("all:\n\ttrue\n")
-    sub_dir = repo / "src" / "drivers"
-    sub_dir.mkdir(parents=True)
-    assert _detect(sub_dir, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_a_repo_with_no_build_file_does_not_arm_its_subdirectories(tmp_path):
-    """The counterpoint to the checkout-root climb, and the mutation that
-    proved it was unguarded: dropping the `_has_root_build_file "$_root"` test
-    from that arm makes EVERY subdirectory of EVERY git checkout arm — being
-    inside a repo is not evidence, the repo declaring a build is."""
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-    (repo / "README.md").write_text("# notes")
-    deep = repo / "src" / "drivers"
-    deep.mkdir(parents=True)
-    for d in (repo, repo / "src", deep):
-        assert _detect(d, tmp_path / "home")["detection_status"] == "no_project", (
-            f"{d} armed without any build file in the checkout")
-
-
-@needs_tools
-def test_a_docs_makefile_is_not_this_projects_build(tmp_path):
-    """`sphinx-quickstart` writes `docs/Makefile` into every Python repo it
-    touches. Reading a depth-2 build file without asking WHOSE build it is
-    re-opens the false-positive class one directory over."""
-    target = tmp_path / "pyproj"
-    (target / ".git").mkdir(parents=True)
-    (target / "docs").mkdir()
-    (target / "docs" / "Makefile").write_text("html:\n\t@sphinx-build .\n")
-    (target / "pyproject.toml").write_text('[project]\nname="x"\n')
-    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project"
-
-
-@needs_tools
-@pytest.mark.parametrize("subdir", [
-    "docs", "doc", "Documentation", "test", "tests", "example", "examples",
-    "sample", "samples", "bench", "benchmarks", "contrib", "scripts", "www",
-    "web", "site",
-])
-def test_a_build_file_in_a_non_project_subdirectory_is_not_evidence(tmp_path, subdir):
-    """Every name in the prune list, not just the one that motivated it: a
-    mutation that deleted fifteen of the sixteen left the whole suite green,
-    and `test/CMakeLists.txt` or `examples/Makefile` then armed a repo with no
-    compiled code of its own."""
-    target = tmp_path / f"proj-{subdir}"
-    (target / ".git").mkdir(parents=True)
-    (target / subdir).mkdir()
-    (target / subdir / "Makefile").write_text("all:\n\ttrue\n")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project", (
-        f"a build file in {subdir}/ counted as this project's own build")
-
-
-@needs_tools
-def test_the_prune_does_not_fire_on_the_projects_own_top_folder(tmp_path):
-    """`find`'s prune applies to the START directory too, so a checkout whose
-    own basename happened to be `tests` or `docs` or `web` had its entire
-    depth-2 walk pruned at the root — the same repo arming or not depending on
-    what its top folder was called, under a sentence that was flatly false."""
-    for name in ("tests", "docs", "web"):
-        target = tmp_path / name
-        (target / ".git").mkdir(parents=True)
-        (target / "firmware").mkdir()
-        (target / "firmware" / "CMakeLists.txt").write_text("project(fw)")
-        assert _detect(target, tmp_path / "home")["detection_status"] == "ok", (
-            f"a repo whose top folder is called {name!r} pruned itself away")
-
-
-@needs_tools
-def test_a_dependencys_build_file_is_not_evidence(tmp_path):
-    """A vendored `Cargo.toml`/`CMakeLists.txt` declares a DEPENDENCY's build.
-    The prune list is what says so, and stripping it back to `.git` left the
-    whole suite green."""
-    for vendor in ("node_modules", "vendor", "third_party", ".venv", "target"):
-        target = tmp_path / f"proj-{vendor}"
-        (target / ".git").mkdir(parents=True)
-        (target / vendor).mkdir()
-        (target / vendor / "Cargo.toml").write_text("[package]")
-        assert _detect(target, tmp_path / "home")["detection_status"] == "no_project", (
-            f"a build file inside {vendor}/ counted as this project's")
-
-
-@needs_tools
-def test_a_dotfiles_repo_does_not_arm_the_home_tree(tmp_path):
-    """`~/.git` plus `~/Makefile` is an ordinary way to keep dotfiles. The
-    checkout-root climb tested `.git` BEFORE the $HOME stop, so every directory
-    under home — `~/Downloads`, an empty one — came back armed, with the
-    MANDATORY auto-run rules, while the recipe walk correctly refused the same
-    tree. Two walks, one directory, opposite answers."""
-    home = tmp_path / "home"
-    (home / ".git").mkdir(parents=True)
-    (home / "Makefile").write_text("all:\n\ttrue\n")
-    for name in ("Downloads", "Documents"):
-        (home / name).mkdir()
-        assert _detect(home / name, home)["detection_status"] == "no_project", (
-            f"~/{name} armed off the dotfiles repo in $HOME")
-    # And $HOME itself, which declares the build, still does.
-    assert _detect(home, home)["detection_status"] == "ok"
-
-
-@needs_tools
-@pytest.mark.parametrize("marker", ["platformio.ini", "west.yml", "west.yaml", "build.ninja"])
-@pytest.mark.parametrize("depth", ["root", "one-down"])
-def test_the_other_compdb_routes_count_as_evidence(tmp_path, marker, depth):
-    """At the root, and one level down — the nested walk is the same question
-    asked of `firmware/`, and it once knew `west.yml` but not `west.yaml`."""
-    target = tmp_path / "proj"
-    where = target if depth == "root" else target / "fw"
-    where.mkdir(parents=True)
-    if depth == "one-down":
-        (target / ".git").mkdir()
-    (where / marker).write_text("# build\n")
-    (where / "main.c").write_text("int main(){}")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-# ── colcon (ROS 2) workspace roots ──────────────────────────────────────────
-#
-# A workspace root declares no build of its own: the packages are under `src/`
-# and colcon's output is under `build/ install/ log/`. Reproduced on a real ROS
-# workspace — the session went inactive AT the workspace root, the directory a
-# ROS developer opens, under a sentence saying no build file declares a build
-# here, while `cd src/<pkg>` armed fine off the package's own `CMakeLists.txt`.
-# The package's file is at depth 3 and the nested walk stops at 2.
-
-def _a_colcon_package(root: Path, rel: str = "src/loci_demo") -> Path:
-    pkg = root / rel
-    pkg.mkdir(parents=True)
-    (pkg / "package.xml").write_text(
-        "<package format=\"3\"><name>loci_demo</name></package>\n")
-    (pkg / "CMakeLists.txt").write_text("project(loci_demo)\n")
-    return pkg
-
-
-def _colcon_output(root: Path, stamp: str = "build/COLCON_IGNORE") -> None:
-    for name in ("build", "install", "log"):
-        (root / name).mkdir(parents=True, exist_ok=True)
-    marker = root / stamp
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    # A directory where colcon keeps a symlink (`log/latest_build`): `-e`
-    # answers the same for both, and an unelevated Windows runner cannot make a
-    # symlink at all.
-    marker.mkdir() if marker.name == "latest_build" else marker.write_text("")
-
-
-@needs_tools
-@pytest.mark.parametrize("repo", [False, True])
-def test_a_colcon_workspace_root_is_a_project(tmp_path, repo):
-    """With and without a `.git` at the root — it was `no_project` both ways,
-    and the two take different routes through the gate."""
-    target = tmp_path / "ws"
-    _a_colcon_package(target)
-    _colcon_output(target)
-    if repo:
-        (target / ".git").mkdir()
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_an_unbuilt_colcon_workspace_is_a_project(tmp_path):
-    """Cloned and not yet built is when a session is most likely to be opened,
-    and there is no `build/` to recognise it by."""
-    target = tmp_path / "ws"
-    _a_colcon_package(target)
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_a_vcs_imported_workspace_is_a_project(tmp_path):
-    """`vcs import` from a `.repos` file produces `src/<repo>/<pkg>/` — the
-    commonest way a real workspace is assembled, one level deeper again."""
-    target = tmp_path / "ws"
-    _a_colcon_package(target, "src/aurora_robot/loci_demo")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_the_walk_under_src_is_bounded(tmp_path):
-    """Three levels under `src/`, not "somewhere under it". This walk runs on
-    every session start, beside the one above it."""
-    target = tmp_path / "ws"
-    _a_colcon_package(target, "src/a/b/c/loci_demo")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_a_built_workspace_with_no_packages_left_is_a_project(tmp_path):
-    """`src/` emptied (every package `vcs import`ed and removed) or a build with
-    `--base-paths` elsewhere. colcon's own stamp is what says colcon was here."""
-    target = tmp_path / "ws"
-    (target / "src").mkdir(parents=True)
-    _colcon_output(target)
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-@pytest.mark.parametrize("stamp", ["build/COLCON_IGNORE", "install/COLCON_IGNORE",
-                                   "log/COLCON_IGNORE", "log/latest_build"])
-def test_each_of_colcons_stamps_is_enough(tmp_path, stamp):
-    target = tmp_path / "ws"
-    target.mkdir()
-    _colcon_output(target, stamp)
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_build_install_and_log_without_a_stamp_are_not_evidence(tmp_path):
-    """`build`, `install` and `log` are ordinary directory names. The triple on
-    its own would arm any hand-rolled tree that happens to keep all three."""
-    target = tmp_path / "proj"
-    for name in ("build", "install", "log"):
-        (target / name).mkdir(parents=True)
-    (target / "main.c").write_text("int main(){}")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_a_src_directory_of_text_files_does_not_arm(tmp_path):
-    """The declared-build rule is unchanged: `src/` is not itself evidence."""
-    target = tmp_path / "notes"
-    (target / "src" / "chapter").mkdir(parents=True)
-    (target / "src" / "chapter" / "intro.md").write_text("# hello\n")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_a_container_of_repos_is_not_claimed_by_a_colcon_layout(tmp_path):
-    """Under the SAME guard as the depth-2 inference: a directory holding other
-    people's repos is not one project because one of them keeps a `src/`."""
-    target = tmp_path / "projects"
-    for name in ("repo-a", "repo-b"):
-        (target / name / ".git").mkdir(parents=True)
-    _a_colcon_package(target)
-    assert _detect(target, tmp_path / "home")["detection_status"] == "multi_project"
-
-
-@needs_tools
-def test_the_home_tree_is_not_claimed_by_a_colcon_layout(tmp_path):
-    """$HOME is excluded from this inference for the reason it is excluded from
-    the other one: a single `~/src/<pkg>/package.xml` would claim every
-    directory in the home tree."""
-    home = tmp_path / "home"
-    _a_colcon_package(home)
-    assert _detect(home, home)["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_a_package_directory_still_arms_on_its_own(tmp_path):
-    """It always did — off the package's own root `CMakeLists.txt` — and the
-    workspace rule must not have taken that away. `loci init` there is what
-    reports where the workspace is."""
-    target = tmp_path / "ws"
-    pkg = _a_colcon_package(target)
-    _colcon_output(target)
-    assert _detect(pkg, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_a_container_is_not_claimed_by_one_childs_vendor_file(tmp_path):
-    """A directory holding three unrelated repos is not one project because one
-    of them keeps a `.uvprojx`. The depth-2 inference is only allowed where
-    nothing else owns the file."""
-    target = tmp_path / "projects"
-    for name in ("fw", "docs", "other"):
-        (target / name / ".git").mkdir(parents=True)
-    (target / "fw" / "app.uvprojx").write_text("<Project/>")
-    assert _detect(target, tmp_path / "home")["detection_status"] == "multi_project"
-
-
-@needs_tools
-def test_container_of_git_repos_is_multi_project(tmp_path):
-    target = tmp_path / "projects"
-    for name in ("repo-a", "repo-b"):
-        (target / name / ".git").mkdir(parents=True)
-        (target / name / "main.c").write_text("int main(){}")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "multi_project"
-    assert len(info["subproject_roots"]) == 2
-
-
-@needs_tools
-def test_container_of_build_file_projects_is_multi_project(tmp_path):
-    target = tmp_path / "projects"
-    (target / "proj-a").mkdir(parents=True)
-    (target / "proj-a" / "Cargo.toml").write_text("[package]")
-    (target / "proj-b").mkdir(parents=True)
-    (target / "proj-b" / "CMakeLists.txt").write_text("")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "multi_project"
-
-
-@needs_tools
-def test_a_container_with_its_own_build_file_is_a_project(tmp_path):
-    """A workspace root — a Cargo workspace, a CMake super-project — has member
-    directories that look like subprojects and IS one project. Declared
-    evidence wins over the container heuristic."""
-    target = tmp_path / "workspace"
-    target.mkdir()
-    (target / "Cargo.toml").write_text("[workspace]\nmembers=['a','b']")
-    for name in ("a", "b"):
-        (target / name).mkdir()
-        (target / name / "Cargo.toml").write_text("[package]")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "ok"
-
-
-@needs_tools
-def test_single_foreign_subrepo_is_no_project(tmp_path):
-    target = tmp_path / "wrapper"
-    (target / "repo" / ".git").mkdir(parents=True)
-    (target / "repo" / "Makefile").write_text("all:\n\ttrue\n")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-
-
-@needs_tools
-def test_repo_subdir_with_submodules_is_not_multi_project(tmp_path):
-    """A repo SUBDIR whose children are submodules is one project's interior,
-    not a container of independent projects — the worktree walk must find the
-    ``.git`` in the ancestor. What it must never be is ``multi_project``."""
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-    target = repo / "firmware"
-    for name in ("sdk", "rtos"):
-        (target / name).mkdir(parents=True)
-        (target / name / ".git").write_text(f"gitdir: ../../.git/modules/{name}")
-        (target / name / "Makefile").write_text("all:\n\ttrue\n")
-    # `ok`, not `multi_project`, and that is the whole claim: submodules are one
-    # project's parts. They declare builds, and this directory is inside the
-    # checkout that owns them, so the depth-2 rule reads those as its own.
-    assert _detect(target, tmp_path / "home")["detection_status"] == "ok"
-
-
-@needs_tools
-def test_home_dir_is_not_claimed_by_a_stray_vendor_file(tmp_path):
-    """$HOME keeps downloads two levels down, which is exactly the depth the
-    vendor-file check looks at — so one ``~/Downloads/demo.uvprojx`` would claim
-    the entire home tree. Only $HOME itself is excluded from that inference."""
-    home = tmp_path / "home"
-    (home / "Downloads").mkdir(parents=True)
-    (home / "Downloads" / "STM32_demo.uvprojx").write_text("<Project/>")
-    info = _detect(home, home)
-    assert info["detection_status"] == "no_project"
-
-
-@needs_tools
-@pytest.mark.parametrize("spell_home,spell_cwd", [(False, True), (True, False)])
-def test_the_home_guards_hold_when_the_two_paths_are_spelled_differently(
-        tmp_path, spell_home, spell_cwd):
-    """One directory, two absolute names — the case the inode compare exists
-    for, and the case no fixture used to construct.
-
-    Both guards are exercised: the gate's `$HOME` exclusion (a stray
-    `~/Downloads/demo.uvprojx` must not claim the home tree) and the
-    checkout-root climb (`~/.git` + `~/Makefile`, a dotfiles repo, must not arm
-    every directory under it).
-    """
-    home = tmp_path / "home"
-    (home / "Downloads").mkdir(parents=True)
-    (home / "Downloads" / "demo.uvprojx").write_text("<Project/>")
-
-    alt_home, alt_probe = _alt_spelling(home), _alt_spelling(home)
-    if alt_home is None:
-        pytest.skip("no second spelling for the temp directory on this platform")
-
-    env_home = alt_home if spell_home else _to_bash_path(home)
-    probe = alt_probe if spell_cwd else _to_bash_path(home)
-    res = subprocess.run(
-        [_find_bash(), _to_bash_path(PLUGIN_ROOT / "lib" / "detect-project.sh"), probe],
-        env={**os.environ, "HOME": env_home,
-             "LOCI_STATE_DIR": _to_bash_path(home / ".loci" / "state")},
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-    assert res.returncode == 0, res.stderr
-    assert json.loads(res.stdout)["detection_status"] == "no_project", (
-        f"the $HOME guard missed a second spelling (HOME={env_home}, cwd={probe})")
-
-    # …and the dotfiles-repo climb, same two spellings.
-    (home / ".git").mkdir()
-    (home / "Makefile").write_text("all:\n\ttrue\n")
-    (home / "empty").mkdir()
-    probe_sub = (alt_probe + "/empty") if spell_cwd else _to_bash_path(home / "empty")
-    res = subprocess.run(
-        [_find_bash(), _to_bash_path(PLUGIN_ROOT / "lib" / "detect-project.sh"), probe_sub],
-        env={**os.environ, "HOME": env_home,
-             "LOCI_STATE_DIR": _to_bash_path(home / ".loci" / "state")},
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-    assert res.returncode == 0, res.stderr
-    assert json.loads(res.stdout)["detection_status"] == "no_project", (
-        f"a dotfiles repo armed a subdirectory of $HOME under a second spelling "
-        f"(HOME={env_home}, cwd={probe_sub})")
-
-
-@needs_tools
-def test_home_dir_with_own_build_file_is_still_ok(tmp_path):
-    """The $HOME exclusion only blocks the inference path — hard evidence in
-    ~ itself still counts."""
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "Makefile").write_text("all:\n\ttrue\n")
-    (home / "main.c").write_text("int main(){}")
-    info = _detect(home, home)
-    assert info["detection_status"] == "ok"
-
-
-@needs_tools
-def test_dir_under_home_with_a_vendor_file_still_arms(tmp_path):
-    """Only $HOME itself is excluded; an ordinary directory below it keeps the
-    depth-2 vendor inference."""
-    home = tmp_path / "home"
-    target = home / "work" / "fw"
-    (target / "firmware").mkdir(parents=True)
-    (target / "firmware" / "app.uvprojx").write_text("<Project/>")
-    info = _detect(target, home)
-    assert info["detection_status"] == "ok"
-
-
-@needs_tools
-def test_git_repo_without_c_sources_is_no_project(tmp_path):
-    target = tmp_path / "repo"
-    (target / ".git").mkdir(parents=True)
-    (target / "index.js").write_text("console.log(1)")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-
-
-# ── the emit ────────────────────────────────────────────────────────────────
-
-@needs_tools
-def test_the_emit_carries_exactly_the_surviving_fields(tmp_path):
-    """Two fields since T14: the gate's verdict and, for a container, the
-    sub-project roots. The eight the scan used to fill beside them — and the ten
-    report §6.3's audit dropped before that — are gone and stay gone. Both
-    directions matter: a field that comes back is the scan returning under
-    another name, and a surviving field that disappears is `session-init.sh`
-    losing the verdict it arms on."""
-    target = tmp_path / "proj"
-    target.mkdir()
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    (target / "main.c").write_text("int main(){}")
-    info = _detect(target, tmp_path / "home")
-
-    assert set(info) == {"subproject_roots", "detection_status"}, (
-        f"detect-project.sh's emit drifted: {sorted(info)}")
-    assert info["detection_status"] == "ok"
-    for dead in ("compiler", "compiler_path", "build_system", "architecture",
-                 "elf_files", "loci_artifacts", "build_dirs", "loci_target",
-                 "build_compiler", "language_stack", "project_type",
-                 "source_files", "binaries", "asm_files", "cross_compilers",
-                 "loci_compatible", "detected_at", "scan_depth"):
-        assert dead not in info
-
-
-@needs_tools
-def test_the_arguments_are_one_directory_and_nothing_else(tmp_path):
-    """One directory, checked. `--force-scan` — the flag the eval harness used to
-    bypass the gate for the artifact hints — went with the scan (T14), and a
-    caller still passing it is refused loudly rather than quietly handed a
-    verdict it did not ask for: the harness stages a recipe now, and a stale copy
-    of it must learn that from an exit 2, not from an eval that measures
-    nothing."""
-    target = tmp_path / "fixture"
-    target.mkdir()
-    (target / "kernel.elf").write_bytes(b"\x7fELF")
-    (target / "Makefile").write_text("all:\n\ttrue\n")
-    script = _to_bash_path(PLUGIN_ROOT / "lib" / "detect-project.sh")
-
-    def run(*args):
-        return subprocess.run([_find_bash(), script, *args], env=_env(tmp_path / "home"),
-                              capture_output=True, text=True, timeout=60)
-
-    ok = run(_to_bash_path(target))
-    assert ok.returncode == 0, ok.stderr
-    assert json.loads(ok.stdout)["detection_status"] == "ok"
-
-    for bad in (("--force-scan", _to_bash_path(target)),
-                (_to_bash_path(target), "--force-scan"),
-                ("--nonsense", _to_bash_path(target)),
-                (_to_bash_path(target), _to_bash_path(target)),
-                (_to_bash_path(target / "nope"),)):
-        res = run(*bad)
-        assert res.returncode == 2, f"{bad} was accepted: {res.stdout[:200]}"
-        assert not res.stdout.strip(), "a refused invocation still emitted a verdict"
-
-
-@needs_tools
-def test_nothing_bypasses_the_gate(tmp_path):
-    """An ELF and a source with no declared build is `no_project`, and there is
-    no flag that says otherwise. The harness that needed artifact hints out of
-    such a tree stages a recipe instead (`run_evals.sh`), because since T14 the
-    hints it wanted do not exist: nothing reads them."""
-    target = tmp_path / "fixture"
-    target.mkdir()
-    (target / "kernel.elf").write_bytes(b"\x7fELF")
-    (target / "blink.c").write_text("int main(){}")
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "no_project"
-    assert "elf_files" not in info and "loci_artifacts" not in info
-
-
 # ── the session blocks ──────────────────────────────────────────────────────
 
 @needs_tools
@@ -902,7 +199,6 @@ def test_every_session_gets_the_same_project_free_block(tmp_path):
         home = tmp_path / f"home-{name}"
         home.mkdir()
         s = _run_session_init(target, home, **env)
-        assert not s.detector_ran, name
         assert not list((home / ".loci" / "state").glob("project-context-*.json")), name
         blocks[name] = s.ctx
 
@@ -1375,13 +671,40 @@ def test_a_broken_cli_is_reported_in_a_docs_repo(tmp_path):
 
 # ── the recipe walk ─────────────────────────────────────────────────────────
 
-def _find_recipe(start: Path, home: Path) -> str:
+def _find_recipe(start: Path, home: Path, *, start_as: str | None = None,
+                 home_as: str | None = None) -> str:
+    """`_loci_find_recipe` from `start` under `home`; `start_as`/`home_as` hand
+    the walk a different absolute name for the same directory."""
     lib = _to_bash_path(PLUGIN_ROOT / "lib" / "setup-steps.sh")
+    env = _env(home)
+    if home_as:
+        env["HOME"] = home_as
     res = subprocess.run(
         [_find_bash(), "-c", f'. "{lib}" && _loci_find_recipe "$1" || true', "_",
-         _to_bash_path(start)],
-        env=_env(home), capture_output=True, text=True, encoding="utf-8", timeout=30)
+         start_as or _to_bash_path(start)],
+        env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
     return res.stdout.strip()
+
+
+def _alt_spelling(p: Path) -> str | None:
+    """The SAME directory under a different absolute name, or None.
+
+    Git Bash mounts `%TEMP%` at `/tmp`, so everything pytest puts under the
+    temp directory has two names — and until this helper existed every fixture
+    handed the hook a `HOME` and a cwd spelled the same way, so a `$HOME` guard
+    that only works when they agree passed the whole suite. It did not work: an
+    optimisation comparing the two paths' last components shipped for one
+    commit and re-armed `~/Downloads` off a dotfiles repo.
+    """
+    if sys.platform != "win32":
+        return None
+    import tempfile
+    real = Path(tempfile.gettempdir()).resolve()
+    try:
+        rel = Path(p).resolve().relative_to(real)
+    except ValueError:
+        return None
+    return "/tmp/" + rel.as_posix()
 
 
 @needs_tools
@@ -1422,6 +745,42 @@ def test_a_recipe_in_home_is_never_adopted(tmp_path):
     target.mkdir()
 
     assert _find_recipe(target, home) == ""
+
+
+@needs_tools
+@pytest.mark.parametrize("spell_home,spell_start", [(False, True), (True, False)])
+def test_a_recipe_in_home_is_never_adopted_under_a_second_spelling(
+        tmp_path, spell_home, spell_start):
+    """One directory, two absolute names: the case the walk's inode compare
+    exists for. `pwd -P` keeps whichever spelling it was given, so the string
+    compare against `$HOME` misses and only the inode stops the walk; a
+    basename short-circuit in front of it once adopted `~/.loci/build.yaml`.
+    The deleted gate's tests (AAD-7745) were the only ones that built this."""
+    home = tmp_path / "home"
+    (home / ".loci").mkdir(parents=True)
+    (home / ".loci" / "build.yaml").write_text("schema_version: 1\n")
+    target = home / "scratch"
+    target.mkdir()
+    alt = _alt_spelling(home)
+    if alt is None:
+        pytest.skip("no second spelling for the temp directory on this platform")
+    assert alt != _to_bash_path(home)
+    # Positive control: bash can walk from the second spelling at all. The walk
+    # answers "" for a start it cannot `cd` into, which is the answer below too.
+    sibling = home / "sibling"
+    (sibling / ".loci").mkdir(parents=True)
+    (sibling / ".loci" / "build.yaml").write_text("schema_version: 1\n")
+    assert _find_recipe(sibling, home, start_as=alt + "/sibling").endswith(
+        "/sibling/.loci/build.yaml"), "the second spelling is not a directory bash can enter"
+
+    found = _find_recipe(
+        target, home,
+        start_as=(alt + "/scratch") if spell_start else None,
+        home_as=alt if spell_home else None)
+    assert found == "", (
+        f"the walk adopted {found} under a second spelling of $HOME "
+        f"(HOME spelled {'/tmp' if spell_home else 'natively'}, start spelled "
+        f"{'/tmp' if spell_start else 'natively'})")
 
 
 # ── advertisements ──────────────────────────────────────────────────────────
@@ -1534,63 +893,6 @@ def test_the_version_gate_table_keeps_all_four_rows_and_their_qualifiers():
     assert "no advisory **and** no `loci CLI version:` line" in table, (
         "row 2 no longer excludes the unknown-version marker, so two rows match "
         "the state row 3 exists for")
-
-
-# ── Go trees at the gate ─────────────────────────────────────────────────────
-#
-# Classification — "is this tree's build Go, or is the `go.mod` a code
-# generator's?" — is `loci init`'s alone since T14 (`init_evidence.detect_build_system`,
-# tested in the CLI). The plugin's second answer to that question went with the
-# scan, and with it the drift two answers guarantee — three T15 review rounds'
-# worth. What the plugin still decides is ARMING, and every one of these shapes
-# must arm: each declares a build at its root, and a session that stays inactive
-# on a Go module is the defect T15 opened with.
-
-def _go_tree(root: Path, files) -> Path:
-    for rel in files:
-        p = root / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n", encoding="utf-8")
-    return root
-
-
-#: Real shapes from T15's defects and their controls. What each one IS is the
-#: CLI's to say (a cgo binding is Go; C firmware with a code generator's `go.mod`
-#: is make; cmake outranks everything); that each one ARMS is this gate's.
-_GO_SHAPES = [
-    ("a pure Go module", ["go.mod", "main.go"]),
-    ("a cgo binding, C beside its Go",
-     ["go.mod", "sdl/sdl.go", "sdl/audio.go", "sdl/render.go", "sdl/bridge.c",
-      "sdl/sdl.h", "sdl/audio.h", "sdl/video.h"]),
-    ("a Go module shipping Plan 9 assembly",
-     ["go.mod", "xor.go", "xor_amd64.s", "xor_arm64.s", "xor_ppc64.s"]),
-    ("C firmware whose go.mod is a code generator's",
-     ["Makefile", "go.mod", "src/main.c", "include/a.h", "include/b.h",
-      "include/c.h", "startup/boot.S", "tools/gen/main.go",
-      "tools/gen/tables.go"]),
-    ("one Go tool beside one C source",
-     ["Makefile", "go.mod", "src/main.c", "tools/gen.go"]),
-    ("uppercase suffixes on both sides",
-     ["Makefile", "go.mod", "src/MAIN.C", "src/UTIL.H", "tools/GEN.GO"]),
-    ("a Go module whose sources are uppercase", ["go.mod", "MAIN.GO"]),
-    ("cmake beside go.mod",
-     ["CMakeLists.txt", "go.mod", "a.go", "b.go", "c.go", "main.c"]),
-    ("a Go module vendoring C",
-     ["go.mod", "main.go", "vendor/dep/a.c", "vendor/dep/b.c",
-      "vendor/dep/c.h"]),
-]
-
-
-@needs_tools
-@pytest.mark.parametrize("name,files", _GO_SHAPES, ids=[s[0] for s in _GO_SHAPES])
-def test_every_go_shape_passes_the_gate(name, files, tmp_path):
-    """The behaviour, not the source text: the real script on a real tree."""
-    target = _go_tree(tmp_path / "proj", files)
-    info = _detect(target, tmp_path / "home")
-    assert info["detection_status"] == "ok", (
-        f"{name}: the gate answered {info['detection_status']!r}; a declared "
-        f"build at the root must arm")
-    assert "build_system" not in info, "the plugin is classifying trees again"
 
 
 # ── AAD-7607: a project whose recipe records a binary and no database ─────

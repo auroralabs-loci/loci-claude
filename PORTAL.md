@@ -33,11 +33,11 @@ Access the LOCI Portal in your browser once you have a LOCI account.
 ## Getting Started
 
 1. Create your LOCI account and open the portal in your browser.
-2. Install the LOCI plugin in Claude Code — see [README](README.md) for setup instructions.
+2. Install the LOCI plugin in your coding agent (Claude Code or GitHub Copilot CLI) — see [README](README.md) for setup instructions.
 3. Run `/loci:init` in your project so LOCI knows how it builds.
-4. Run your first analysis from Claude Code. Results appear in the portal automatically.
+4. Run your first analysis from the agent. Results appear in the portal automatically.
 
-Every Claude Code and Cursor session that runs LOCI analysis is logged, analysed, and visualised in the portal in real time.
+Every agent session that runs LOCI analysis is logged, analysed, and visualised in the portal in real time.
 
 **What stays on your machine.** The build recipe `/loci:init` writes
 (`.loci/build.yaml`) and LOCI's own build output (`.loci/build/`) are local and
@@ -79,7 +79,7 @@ LOCI grounds every result in real execution data — no simulation, no instrumen
 | Metric | Description |
 |--------|-------------|
 | **Timing** | Worst-case and typical execution time per function |
-| **Energy** | Power consumption per call, relevant for battery-constrained devices |
+| **Energy** | Energy used per call, relevant for battery-constrained devices |
 | **Stack depth** | Worst-case stack usage via call-graph traversal |
 | **ROM / RAM** | Binary section breakdown — flash consumption and static RAM usage |
 | **Regressions** | Delta between current and previous build across all metrics |

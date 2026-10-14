@@ -155,10 +155,21 @@ def _run_from(tmp_path: Path, host: Host, hook: str, payload: dict, cwd: Path,
     for d in (home, state, bin_dir):
         d.mkdir(parents=True, exist_ok=True)
     log = home / "calls.log"
+    # One record per call, written in ONE `printf` of ONE newline-free string:
+    # the hook's own `loci --version` and the detached installer's run at the
+    # same time, and two appenders' separate writes interleaved on a loaded
+    # host — the mac-mini's suite read `['--version', '--version']` as one
+    # call's argv and the runs compared unequal (AAD-7806). An O_APPEND write
+    # of one short string lands whole, and bash's line-buffered stdout makes
+    # one write() per NEWLINE — so a newline in the recorded stdin is respelt
+    # `\n` first (`$(cat)` had already dropped a trailing one). Alike in every
+    # run, which is all the comparison needs.
     (bin_dir / "loci").write_text(
         "#!/usr/bin/env bash\n"
-        f'{{ for a in "$@"; do printf "%s\\036" "$a"; done; printf "\\037"; cat; '
-        f'printf "\\035"; }} >> "{_to_bash_path(log)}"\n'
+        'rec=""; for a in "$@"; do rec="${rec}${a}"$\'\\036\'; done\n'
+        'in="$(cat)"; in="${in//$\'\\n\'/\\\\n}"\n'
+        'rec="${rec}"$\'\\037\'"${in}"$\'\\035\'\n'
+        f'printf "%s" "$rec" >> "{_to_bash_path(log)}"\n'
         f"{_OK}\n", encoding="utf-8", newline="\n")
     (bin_dir / "loci").chmod(0o755)
     env = {

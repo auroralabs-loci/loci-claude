@@ -91,8 +91,8 @@ fi
 #     and the `\\` this library parks and restores is exactly that shape.
 #
 # So the portable spelling is an unquoted expansion with the option off. The
-# option name is unknown to bash < 5.2, hence the `2>/dev/null || :` — nine
-# scripts source this file and `lib/detect-project.sh` runs under `set -eu`.
+# option name is unknown to bash < 5.2, hence the `2>/dev/null || :` — every
+# hook sources this file, and `setup/setup.sh` runs under `set -euo pipefail`.
 # The PATTERN side stays quoted; every bash reads a quoted pattern as literal
 # text. Nothing in `hooks/` or `lib/` uses `&` in a replacement (a test pins
 # both halves: no quoted replacement anywhere, and this line present).
@@ -685,8 +685,8 @@ _loci_json_rewrite() {
             for b in "${hh:1:1}" "${hu:1:1}"; do
                 doc="${doc//"$_LOCI_JSON_UPFX$a$b"/$c}"
                 # `if`, not `[ … ] && break`: that leaves the loop body at
-                # status 1 on the turn it does not break, and nine scripts
-                # SOURCE this file — `lib/detect-project.sh` runs `set -eu`.
+                # status 1 on the turn it does not break, and every hook
+                # SOURCES this file — `setup/setup.sh` runs `set -euo pipefail`.
                 if [ "${hh:1:1}" = "${hu:1:1}" ]; then break; fi
             done
             if [ "${hh:0:1}" = "${hu:0:1}" ]; then break; fi
@@ -1049,43 +1049,6 @@ loci_json_kind() {
         true*|false*)  printf 'bool' ;;
         *)             printf 'number' ;;
     esac
-}
-
-# Public API: loci_json_array_len <key> — how many string elements the array at
-# <key> holds. The scan steps over each element's own text, so a `]` inside a
-# path is not read as the array closing.
-#
-# THIS WALK IS QUADRATIC IN THE ELEMENT COUNT and is left that way, measured
-# rather than assumed (F14 scope item 4): 200 elements 0.028 s, 400 0.064 s,
-# 800 0.197 s, and 0.676 s at the 16 KB ceiling. What made that affordable was
-# the PRODUCER, not the reader: the one caller read `subproject_roots` out of
-# `lib/detect-project.sh`, which builds that array behind a `head -20`, and
-# twenty elements is 0.001 s. That caller went with the session-start detector
-# (AAD-7744), so nothing in `hooks/` or `lib/` calls this now (AAD-7745 decides
-# whether it stays). Anyone pointing it at an array a model or a user sizes owes
-# it the same treatment `loci_json_count` got above.
-loci_json_array_len() {
-    if ! _loci_json_seek "$1"; then printf '0'; return 1; fi
-    case "$_LOCI_JSON_AT" in
-        '['*) ;;
-        *) printf '0'; return 1 ;;
-    esac
-    local rest="${_LOCI_JSON_AT#[}" n=0 seg
-    while :; do
-        case "$rest" in
-            *'"'*) ;;
-            *) break ;;
-        esac
-        seg="${rest%%\"*}"
-        case "$seg" in
-            *']'*) break ;;
-        esac
-        rest="${rest:$(( ${#seg} + 1 ))}"
-        seg="${rest%%\"*}"
-        rest="${rest:$(( ${#seg} + 1 ))}"
-        n=$((n + 1))
-    done
-    printf '%s' "$n"
 }
 
 # Public API: loci_json_count <key> [value]

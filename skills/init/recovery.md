@@ -14,9 +14,19 @@ session opened below the project root is a different project.
 | variant | what it does | the rule |
 |---|---|---|
 | `loci init --refresh` | re-derives with the recorded answers as defaults; how a target is switched (`--target=<isa>`), and the recovery `recipe_stale`, `recipe_tampered`, `recipe_invalid` and `compiler_missing` name | `confirmed_by_user` survives only if nothing the user was shown changed; when it drops, `.data.notes` names the fields — ask again, then re-run with `--confirmed`. `--target=auto` re-detects rather than defaulting to the recorded answer. For `recipe_stale`, regenerate the compile database **before** re-running (see `compdb.md`) |
-| `loci init set <key>=<value>` | records one knob: `rust.features`, `rust.no_default_features`, `rust.bin`, `rust.profile`, `go.tags`, `go.gcflags`, `go.ldflags`, `go.package`, `go.tinygo_target`, `go.cgo_enabled`, `fidelity.lto`, `fidelity.unity_build`, `build.compdb.select.prefer_output`, `artifacts.elf`, `artifacts.map`, `staleness.watch`, `env.setup`, and the container toolchain's `build.exec.kind`, `build.exec.image`, `build.exec.container`, `build.exec.compose_service`, `build.exec.compose_file`, `build.exec.compose_project`, `build.exec.platform`, `build.exec.user`, `build.exec.timeout_s`, `build.exec.mounts`, `build.exec.warm`, `build.exec.warm_idle_s`, `build.exec.entrypoint`, and the `build.exec.env.<NAME>` family — the variables a container's toolchain reads, whose names are the project's (`ROS_DOMAIN_ID`, `CC`, `CMAKE_PREFIX_PATH`) rather than LOCI's, so they are a family and not an enumerable key (`container-toolchain.md`) | **confirm the value with the user before invoking**: this replaces hand-editing build config, so the consent is your question, not the flag; `set` does not mark the recipe confirmed. `target` is not settable — `--refresh --target=<isa>` switches it. **A `go.*` knob needs `loci init --refresh` after it**: a Go recipe freezes its knobs into the recorded build command, so `set` alone records a knob that reaches no build |
+| `loci init set <key>=<value>` | records one knob: `rust.features`, `rust.no_default_features`, `rust.bin`, `rust.profile`, `go.tags`, `go.gcflags`, `go.ldflags`, `go.package`, `go.tinygo_target`, `go.cgo_enabled`, `fidelity.lto`, `fidelity.unity_build`, `build.compdb.select.prefer_output`, `artifacts.elf`, `artifacts.map`, `staleness.watch`, `env.setup`, and the container toolchain's `build.exec.kind`, `build.exec.image`, `build.exec.container`, `build.exec.compose_service`, `build.exec.compose_file`, `build.exec.compose_project`, `build.exec.platform`, `build.exec.user`, `build.exec.timeout_s`, `build.exec.mounts`, `build.exec.warm`, `build.exec.warm_idle_s`, `build.exec.entrypoint`, and the `build.exec.env.<NAME>` family — the variables a container's toolchain reads, whose names are the project's (`ROS_DOMAIN_ID`, `CC`, `CMAKE_PREFIX_PATH`) rather than LOCI's, so they are a family and not an enumerable key (`container-toolchain.md`) | **confirm the value with the user before invoking**: this replaces hand-editing build config, so the consent is your question, not the flag; `set` does not mark the recipe confirmed. `target` is not settable — `--refresh --target=<isa>` switches it. **A `go.*` knob needs `loci init --refresh` after it**: a Go recipe freezes its knobs into the recorded build command, so `set` alone records a knob that reaches no build. A wrong binary: [The wrong binary](#wrong-binary) |
 | `loci init add-file <src>` | derives one compile-database entry for a new source from its nearest neighbour | **synthesized** databases only; on a `generated` one it refuses and names the regeneration command in `.error.regen` — which is **null** when the recipe records none, and then the message says only "regenerate it the way this project generates it", so ask rather than invent one |
 | `loci init --from-existing` | forces seeding from the build records LOCI already wrote here | plain init consults them anyway; the flag makes it explicit and *requires* them. A seeded recipe records the compiler installed **now** — possibly a later toolchain than the records the seed came from name — so say which compiler it will use |
+
+<a id="wrong-binary"></a>
+
+## The wrong binary
+
+An `artifact: recorded` note means init chose among several binaries; it names the others
+and how to record one. Put it in the confirmation question. When the user names another:
+`loci init set --project-root "<root>" rust.bin=<name>` on cargo (the artifact follows the
+bin), else `artifacts.elf=<path>`; then ask again. Never choose for them by name or
+timestamp.
 
 ## `init_unsupported`: permanent, but say what "permanent" means
 
@@ -90,10 +100,11 @@ The target question offers a free-form option on purpose, and `--target` takes n
 `nRF52840`) is a normal answer. It comes back as a caller error with **no**
 `error.code`, and the message names the supported set.
 
-Core and family aliases *do* map (`cortex-m4`, `cortex-m33`, `arm64`, `tc3xx`), so pass
-the answer through as given first. An unmapped one means the question was not answered
-— not that it was answered badly — so re-ask that same question once, with the
-supported ISAs shown. That is still one decision, not a second one.
+Core and family aliases *do* map (`cortex-m4`, `cortex-m33`, `tc3xx`; a bare `arm64`
+or `aarch64` to the Cortex-A53's `aarch64`, `neoversev2` or `armv9-a` to
+`neoverse-v2`), so pass the answer through as given first. An unmapped one means
+the question was not answered — not that it was answered badly — so re-ask that same
+question once, with the supported ISAs shown. That is still one decision, not a second one.
 
 ## `arch_mismatch` and `outside_target`: read which one it is
 

@@ -10,9 +10,10 @@ Without running code. No instrumentation. No code changes.
 
 | Requirement | Version | Required for |
 |-------------|---------|-------------|
-| [Claude Code](https://claude.ai/code) | latest | everything |
+| A coding agent: [Claude Code](https://claude.ai/code) or [GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli) | Claude Code: latest. Copilot CLI: 1.0.90 or newer | everything |
 | Python | 3.12+ | the loci CLI (local ELF/build analysis) |
-| [uv](https://docs.astral.sh/uv/) | any | installs the loci CLI as a tool — **install yourself**; the plugin checks for it and, if missing, Claude gives you the install command |
+| [uv](https://docs.astral.sh/uv/) | any | installs the loci CLI as a tool — **install yourself**; the plugin checks for it and, if missing, the agent gives you the install command |
+| Windows only: PowerShell 7 and [Git for Windows](https://gitforwindows.org/), with its `bash` on PATH | — | the hooks under GitHub Copilot CLI (see [Under GitHub Copilot CLI](#under-github-copilot-cli)); Claude Code finds Git Bash on its own |
 | Compiled binaries | `.elf` / `.o` / `.axf` | all skills |
 | Network access to the LOCI backend | — | `exec-trace`, `loci-preflight`, `loci-post-edit` |
 
@@ -22,18 +23,29 @@ Without running code. No instrumentation. No code changes.
 |--------|----------|
 | ARM Cortex-M | `arm-none-eabi-gcc` |
 | ARM Cortex-A | `aarch64-linux-gnu-gcc` |
+| ARM Neoverse V2 (ARMv9-A) | `aarch64-linux-gnu-gcc` or `clang`, with `-mcpu=neoverse-v2` or `-march=armv9-a` |
 | TriCore | `tricore-elf-gcc` |
 | TI ARM | `tiarmclang` or `armcl` |
 | x86/x64 | `g++` or `clang++` |
 
-Skills that work without a cross-compiler or MCP: `/loci:stack-depth`, `/loci:memory-report`, `/loci:control-flow`, `/loci:contract`
+Skills that work without a cross-compiler or the backend: `/loci:stack-depth`, `/loci:memory-report`, `/loci:control-flow`, `/loci:contract`
 
 ## Install
+
+In **Claude Code**:
 
 ```
 /plugin marketplace add auroralabs-loci/loci-claude
 /plugin install loci@loci
 /loci:setup
+```
+
+With **GitHub Copilot CLI**, from a terminal (it reads the same marketplace),
+then `/loci:setup` inside a session:
+
+```
+copilot plugin marketplace add auroralabs-loci/loci-claude
+copilot plugin install loci@loci
 ```
 
 `/loci:setup` installs the `loci` CLI as a `uv` tool and verifies the
@@ -42,13 +54,54 @@ start, so it often finishes on its own; running the skill makes it deterministic
 and names whatever is missing. It is idempotent — run it again any time analysis
 fails with `loci: not found`.
 
+## Under GitHub Copilot CLI
+
+The same plugin serves both hosts: Copilot reads the plugin's `hooks/hooks.json`
+and `skills/` as they are, so everything below about skills, hooks and verdicts
+holds there too. What differs is around the edges:
+
+- **Prerequisites on Windows.** Copilot CLI needs PowerShell 7 (its own
+  requirement), and it hands every hook command to PowerShell, which resolves
+  `bash` through PATH. Add `C:\Program Files\Git\bin` to PATH ahead of
+  `C:\Windows\System32` (a default Git for Windows install adds only `Git\cmd`,
+  and `System32\bash.exe` is the WSL launcher): `where.exe bash` must list Git's
+  first. `Git\bin` holds only `bash`, `sh` and `git`, and its `bash` puts Git's
+  tools on its own PATH; `Git\usr\bin` would also shadow Windows' `find`, `sort`
+  and `timeout` for everything else. Claude Code locates Git Bash itself, so
+  this is a Copilot-only step.
+- **Sign-in.** `! loci login` works the same way: Copilot's `!` prefix runs a
+  command in your shell, which is where the browser flow has to run.
+- **What runs automatically.** The six hooks in the table below fire under Copilot
+  as they do under Claude Code: `loci-preflight` in `/plan` mode (or a `--plan`
+  run), `loci-post-edit` after an edit to C/C++/Rust/Go source, the contract guard
+  on every edit and command. Copilot's subagents inherit the parent turn's id
+  through the `SubagentStart` hook.
+- **Version.** `copilot plugin list` shows the installed version, and
+  `copilot plugin update loci@loci` pulls a newer one from the marketplace. The
+  marketplace serves what the public repository `auroralabs-loci/loci-claude`
+  carries.
+- **Removing it.** `copilot plugin uninstall loci@loci`, then
+  `copilot plugin marketplace remove loci`. On Windows the uninstall has answered
+  `Access is denied` (Copilot CLI 1.0.90 and 1.0.91, with other Copilot sessions
+  open; a fresh profile uninstalls cleanly). If it refuses, quit the other Copilot
+  sessions and retry, or `copilot plugin disable loci@loci` until you can;
+  `copilot plugin marketplace remove loci --force` clears a row the uninstall
+  left behind.
+- **Direct installs.** `copilot plugin install auroralabs-loci/loci-claude` also
+  works, but Copilot prints a deprecation warning for it ("only plugin@marketplace
+  installs will be supported in a future release"), so use the two commands above.
+
+Copilot CLI updates itself; the versions this plugin is verified against are
+1.0.90 and 1.0.91 on Windows 11, which is where the floor in the prerequisites
+table comes from.
+
 ## Quick Start
 
 Sign in once per machine. Every analysis skill is gated on a session, including
 the ones that never reach the backend:
 
 ```
-! loci login          # opens a browser, so it runs in your terminal, not the agent's
+! loci login          # at the agent's prompt: `!` runs it in your shell, which can open a browser
 loci auth status      # must report signed_in
 ```
 
@@ -111,7 +164,7 @@ means for your project.
 
 | Hook | Trigger | Action |
 |------|---------|--------|
-| `SessionStart` | startup, resume | project detection, CLI install, context injection, build-state cleanup |
+| `SessionStart` | startup, resume | CLI install, context injection, build-state cleanup |
 | `UserPromptSubmit` | every prompt | stamps the turn id every measurement is filed under |
 | `PreToolUse` | Edit, Write, Bash | keeps `.loci/contract.yaml` and `.loci/build.yaml` read-only to the agent; `.o` snapshot for delta analysis |
 | `PostToolUse` | Edit, Write, Bash | asks whether the edit can change a compiled function, and reminds `loci-post-edit` if so |
@@ -122,7 +175,7 @@ means for your project.
 
 `loci cockpit` shows what LOCI catches that your coding agent might miss during planning and coding — live, in your terminal, no browser, no sign-in.
 It reads the same measurement store the skills write to, so what it shows is what the session reported.
-Open it in a separate terminal: it takes over the one it runs in, so it will not share a terminal with a Claude Code session.
+Open it in a separate terminal: it takes over the one it runs in, so it will not share a terminal with a coding agent session.
 
 ```
 loci cockpit                      # live TUI
@@ -157,7 +210,7 @@ happens:
 
 1. Check it's on PATH: `command -v loci` and `loci --version`.
 2. If it's missing, the background install may still be running or may have
-   failed — run the `/loci:setup` skill in Claude Code to reinstall and verify
+   failed — run the `/loci:setup` skill in your coding agent to reinstall and verify
    (it's idempotent and repairs whatever's missing), or `loci doctor` once it's
    present.
 3. Confirm `uv` is installed (`command -v uv`); the plugin needs it to install
@@ -169,7 +222,7 @@ Every LOCI analysis skill requires a signed-in session. The local ELF skills
 (`/loci:stack-depth`, `/loci:memory-report`, `/loci:control-flow`) don't reach the backend, but
 the CLI still gates them behind a session. If a skill reports `auth_required`:
 
-1. Run `! loci login` in your terminal, then retry.
+1. Type `! loci login` at the agent's prompt (or `loci login` in a terminal), then retry.
 2. Confirm `loci auth status` shows `signed_in`.
 
 Skills that work signed-out: `/loci:help`, `/loci:setup`, `/loci:bug-report`, `/loci:contract`  
@@ -190,7 +243,7 @@ writes. It is machine-local, so a fresh clone has none until you run it there.
 **Auto-skills didn't fire:**
 
 - `loci-preflight` only runs in `/plan` mode. Make sure you're planning new logic, not just asking a question.
-- `loci-post-edit` Validation only runs after edits to C/C++/Rust source files.
+- `loci-post-edit` only runs after edits to C/C++/Rust/Go source files, or a header they include, in a project a LOCI recipe governs.
 - Both auto-skills require compiled binaries (`.elf`, `.o`, `.axf`) to be present. If your project hasn't been built yet, compile it first.
 
 **On-demand skills didn't respond:**
@@ -200,6 +253,7 @@ writes. It is machine-local, so a fresh clone has none until you run it there.
 - Check that a cross-compiler for your target is installed and on your PATH (`/loci:init` reports which one this project needs):
   - ARM Cortex-M: `arm-none-eabi-gcc`
   - ARM Cortex-A: `aarch64-linux-gnu-gcc`
+  - ARM Neoverse V2 (ARMv9-A): `aarch64-linux-gnu-gcc` or `clang`, with `-mcpu=neoverse-v2` or `-march=armv9-a`
   - TriCore: `tricore-elf-gcc`
 
 **Nothing seems to work:**

@@ -175,7 +175,13 @@ if [ "$rc" -ne 0 ]; then
 else
     loci_json_load "$envelope"
     report=$(loci_json_get report)
-    [ -n "$fp" ]   || fp=$(loci_json_get file_path)
+    # The verb's path, not the payload's, wherever it has one: it joins a
+    # RELATIVE path to the payload's `cwd` (AAD-7810), and the snapshot below
+    # resolves `--source` from this process's directory — under Copilot the
+    # plugin root, so `src/main.c` froze nothing. Claude Code's path is
+    # absolute and comes back as it went in.
+    _pe_fp=$(loci_json_get file_path)
+    [ -n "$_pe_fp" ] && fp="$_pe_fp"
     [ -n "$turn" ] || turn=$(loci_json_get turn)
     [ -n "$root" ] || root=$(loci_json_get cwd)
     _pe_governed=$(loci_json_get governed)

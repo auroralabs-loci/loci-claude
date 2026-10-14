@@ -67,13 +67,13 @@ call, do not run the installer, or you loop.
 
 ## Step 1: the project root, then evidence
 
-**Establish the project root first and pass it to every call.** Both `loci init` and
-`probe` default to the shell's own directory; start from the path the user named or
-the file at hand. Use its git toplevel (`git rev-parse --show-toplevel`; it
-exits non-zero outside a repo, and in a submodule or monorepo can sit above the tree
-that actually builds — the root build files are the check), else the highest directory
-holding them. Then `--project-root "<root>"` on every
-`loci init` below, `probe` and the reference files' commands included.
+**Establish the project root with the user first, and pass it to every call.** Both
+`loci init` and `probe` default to the shell's own directory. A root the user named
+is the root; else run `loci project [--source "<file at hand>"]`, never with an
+earlier call's `--project-root`. `ok` gives it; otherwise ask with the question tool:
+`project_root` (Recommended), each other `candidates[].path`, Other for theirs.
+Then `--project-root "<root>"` on every `loci init` below, `probe` and the reference
+files' commands included; no `.loci/` outside it.
 
 **If a coded refusal sent you here, start with its recovery, not this flow** —
 **[`recovery.md`](recovery.md)** routes all of them, and for `arch_mismatch` /
@@ -176,12 +176,12 @@ Run `loci init --project-root "<root>" [--compdb="<path>" --compdb-kind=<kind>] 
 
 - Options come from `.error.candidates[]`, ordered by evidence class with ties
   alphabetical — the order is not a recommendation; do not present it as one.
-- There are at most four supported ISAs, so the list always fits the question tool's
-  four options with no folding. Name any the user expects and does not see, from
-  `.error.supported`.
+- Five ISAs, four options: name a fifth candidate, and any the user expects and does
+  not see (`.error.supported`), in the question — the free-form answer takes them.
 - `evidence` is one `"; "`-joined string per candidate. Split it and describe each with
   the fact that **names the image** — the ELF or build directory — not necessarily the
-  first. Paths project-relative.
+  first. Paths project-relative. Where `aarch64` and `neoverse-v2` share an image,
+  label each by its timing model.
 
 Then re-invoke with the pick and — answering this question *is* the confirmation —
 `--confirmed`, carrying Step 2's flags and the project root. A free-form answer is
@@ -237,7 +237,7 @@ report can read `confirmed by user: True` one line above a `.data.confirmed_by_u
 
 If `.data.confirmed_by_user` is false, ask once with the question tool (header
 `Recipe`; options **Looks right** / **Wrong target** / **Something else is wrong**),
-the summary in the question so they decide on what they see:
+the summary plus `artifact:` notes:
 
 - **Looks right** → `loci init --project-root "<root>" --confirmed`, plus Step 2's
   flags and any accepted `--accept-tier`: it re-derives, so a dropped flag brings back
@@ -248,7 +248,8 @@ the summary in the question so they decide on what they see:
   answer flags), come back here, and pass **no `--confirmed`**: they said the setup was
   wrong, which is not consent for the next one. No alternative offered →
   `--target=auto` re-detects.
-- **Something else is wrong** → fix that first (usually the database, Step 2).
+- **Something else is wrong** → fix it (database: Step 2; binary:
+  [recovery](recovery.md#wrong-binary)).
 
 **Either of this step's commands can refuse.** `--confirmed` and `--refresh --target=`
 both re-derive, so they meet the same states Step 3 does: take the refusal back to Step

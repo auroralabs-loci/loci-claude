@@ -15,9 +15,7 @@ keep its own verdict — it gets its own row here, its `ENTRY` cell under a `└
 its figures are reused rather than measured again. **Name the child in the
 `Execution fit:` cause only where it moved the word** —
 `Execution fit: **ADJUST PLAN** — stack-depth: 202% of the 2 KB budget on comms_task`.
-A child that changed nothing is not mentioned there; its row already carries its
-figures, and naming every escalation makes the one that decided the answer
-indistinguishable from the ones that did not.
+A child that changed nothing is not mentioned there; its row carries its figures.
 
 *Escalate to `stack-depth`* when — increment R by 1 at trigger:
 - Execution context is ISR, HWI, or interrupt callback, AND call chain
@@ -50,3 +48,21 @@ After memory-report returns, reason over its results — increment R by 1:
 
 **Reason before you report**, and know when a second metered call is justified —
 the pass and the re-query loop, which `SKILL.md` also links directly.
+
+## When to offer a relink
+
+No edit has happened, so there is no Before to protect and a relink loses
+nothing. Read the child's envelope once it returns:
+
+1. **Only when the child landed on the object over a stale link**:
+   `data.artifact.kind` is `object`, `data.artifact.refused` names the recipe's
+   binary, and `data.artifact.before_reason` is `no_edit_this_turn`
+   (`error.before_reason` on a refusal). Any other reason: no offer
+   ([house rules](../_shared/house-rules.md#coded-errors)).
+2. **Plan mode: make `data.artifact.relink` (`error.relink`) the plan's first
+   step**, because the whole-binary figure is unmeasured now and a relink before
+   the first edit lets the edit hook save a current binary for post-edit to compare.
+3. **Otherwise ask once per turn with the question tool**
+   ([house rules](../_shared/house-rules.md#question-tool)); headless, skip.
+4. **Yes:** run it, then the child again with the same `--turn` and
+   `--parent-run`. **No:** keep what the child folded back.

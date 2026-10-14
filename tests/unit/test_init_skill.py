@@ -84,7 +84,6 @@ CONTAINER = SKILL_DIR / "container-toolchain.md"
 REGEN = SKILL_DIR / "compdb-container.md"
 DOCS = (SKILL, BOOTSTRAP, COMPDB, RECOVERY, GO, VOICE, SHARED_VOICE, CONTAINER,
         REGEN)
-DETECT = PLUGIN_ROOT / "lib" / "detect-project.sh"
 INSTALLER_REL = "hooks/ensure-loci-cli.sh"
 
 #: Bytes for `SKILL.md` alone, LF normalised UP to CRLF so the number is the same on
@@ -113,8 +112,8 @@ INSTALLER_REL = "hooks/ensure-loci-cli.sh"
 #: contract is 70 KB. The number below is a tripwire against this skill becoming the
 #: detection prose the initiative deletes — **not** a claim that the criterion is met.
 #:
-#: It has moved six times (12 800 → 15 360 → 16 384 → 16 640 → 16 896 → 17 664), once
-#: per review round.
+#: It has moved seven times (12 800 → 15 360 → 16 384 → 16 640 → 16 896 → 17 664 →
+#: 17 792), the first six once per review round.
 #: The first three admitted rules a reviewer had just reproduced a wrong outcome
 #: without; the fourth is Step 4's `loci cockpit` close-out line, which the owner asked
 #: for and which is a report instruction rather than procedure, so it belongs here and
@@ -128,11 +127,15 @@ INSTALLER_REL = "hooks/ensure-loci-cli.sh"
 #: caveat, then the setup. Both are decisions about what the user is told, which is why
 #: they are here; the vocabulary, the checklist shape and the close-out rules went to
 #: `voice.md`, several times what they would have cost inline.
+#: The seventh is the `neoverse-v2` target: a fifth ISA broke "at most four, no
+#: folding", so Step 3's question states the fold, and an aarch64 build that names no
+#: core offers two targets for one image, labelled by timing model. Both decide what
+#: the one question shows, so they stay inline.
 #: Recording that rather than quietly restating the latest
 #: figure: a budget an author keeps raising is evidence about the budget, and the
 #: completion log escalates it as the one unmet acceptance criterion rather than
 #: treating the constant as the answer.
-SIZE_BUDGET = 17 * 1024 + 256
+SIZE_BUDGET = 17 * 1024 + 384
 
 #: Terminated comments, and an unterminated one, which hides the rest of the file.
 _COMMENTS = (re.compile(r"<!--.*?-->", re.S), re.compile(r"<!--.*\Z", re.S))
@@ -474,16 +477,18 @@ def test_the_declared_verb_list_is_the_parser_own():
     assert not extra, f"INIT_VERBS names verbs the CLI does not ship: {extra}"
 
 
-def test_the_only_loci_verbs_the_docs_invoke_are_init_login_doctor_and_cockpit():
+def test_the_only_loci_verbs_the_docs_invoke_are_init_login_doctor_project_and_cockpit():
     """A scope guard: these files record build facts. A `loci timing` or
     `loci build compile` here means the skill has stopped being the init skill.
     `cockpit` is named but never invoked — it is one of the three commands the user
-    runs, and a fresh recipe is when there is first something in it to see."""
+    runs, and a fresh recipe is when there is first something in it to see. `project`
+    is the CLI's read-only root resolver, which Step 1 asks for the candidates
+    (AAD-7807)."""
     verbs: set[str] = set()
     for path in DOCS:
         verbs |= {m.group(1) for m in re.finditer(r"loci ([a-z][a-z0-9-]*)",
                                                   _flat(path))}
-    extra = sorted(verbs - {"init", "login", "doctor", "cockpit"})
+    extra = sorted(verbs - {"init", "login", "doctor", "project", "cockpit"})
     assert not extra, f"unexpected `loci` verbs: {extra}"
 
 
@@ -617,10 +622,10 @@ def test_the_seeded_state_disjuncts_are_the_cli_ones():
 #: `lib/detect-project.sh`), frozen when T14 deleted the scan. Together with the
 #: bare driver names below they are the ladder these lints keep out of the docs:
 #: a skill that names one is telling the model to go and find a compiler, which
-#: is the recipe's job. Frozen rather than read, because the file no longer
-#: probes anything — and a list read from a file that has none is empty, which
-#: is the silent green `test_the_cascade_compiler_list_is_not_empty` exists to
-#: refuse.
+#: is the recipe's job. Frozen rather than read, because the file is deleted
+#: (AAD-7745) and probed nothing for long before that — and a list read from a
+#: file that has none is empty, which is the silent green
+#: `test_the_cascade_compiler_list_is_not_empty` exists to refuse.
 _SCAN_PROBES = frozenset({
     "aarch64-linux-gnu-g++", "aarch64-linux-gnu-gcc",
     "aarch64-unknown-linux-gnu-g++", "aarch64-unknown-linux-gnu-gcc",
@@ -648,12 +653,66 @@ def _cascade_compilers() -> set[str]:
     }
 
 
+def _plugin_shell() -> list[Path]:
+    """Every shell script the plugin runs: the hooks, the libraries they source,
+    and the installer."""
+    return sorted([*(PLUGIN_ROOT / "hooks").glob("*.sh"),
+                   *(PLUGIN_ROOT / "lib").glob("*.sh"),
+                   *(PLUGIN_ROOT / "setup").glob("*.sh")])
+
+
+#: A driver behind a target triple the frozen list does not spell out, such as
+#: `aarch64-none-linux-gnu-gcc` (the toolchain the CLI learned in AAD-7769) or
+#: `arm-linux-gnueabihf-g++`.
+_DRIVER = r"(?:gcc|g\+\+|clang\+\+|clang)"
+_TRIPLE_DRIVER = rf"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*-{_DRIVER}"
+
+
+def _compiler_names(text: str) -> list[str]:
+    """Each compiler named as a whole word on a line that is not a comment: the
+    cascade's names, `armclang`, `clang-cl`, bare `cc`/`c++`, any triple-prefixed
+    driver, and a driver behind a variable triple (`"${triple}-gcc"`). Each may
+    carry a version (`gcc-13`, `"clang-$v"`) and `.exe` (the pre-T14 Windows
+    probe spelled every candidate `…/bin/<name>.exe`). A variable named after a
+    compiler (`$cc`, `${armcc}`) is not a name, so it is not counted."""
+    extra = {"armclang", "clang-cl", "cc", "c++"}
+    alt = "|".join(re.escape(n) for n in
+                   sorted(_cascade_compilers() | extra, key=len, reverse=True))
+    version = r"(?:-(?:\d+(?:\.\d+)*|\$\{?\w+\}?))?"
+    word = re.compile(
+        rf"(?<![\w+.-])(?:\$\{{?\w+\}}?-{_DRIVER}"
+        rf"|(?<!\$)(?<!\$\{{)(?:{_TRIPLE_DRIVER}|{alt})){version}(?:\.exe)?(?![\w+.-])")
+    return [m.group(0) for line in text.splitlines()
+            if not line.lstrip().startswith("#")
+            for m in word.finditer(line)]
+
+
 def test_the_cascade_compiler_list_is_not_empty():
     """Guards the tests below against passing on an empty list — and pins that
-    the list is frozen for the right reason: the detector probes nothing now."""
+    the list is frozen for the right reason: nothing the plugin runs names a
+    compiler. Held over every script rather than the detector that used to probe
+    PATH (deleted, AAD-7745), and by NAME rather than by `command -v`, so a
+    ladder that loops over a list and probes `"$cc"` is caught as well."""
     assert len(_script_probes()) >= 10, sorted(_script_probes())
-    assert "command -v" not in DETECT.read_text(encoding="utf-8"), (
-        "detect-project.sh probes PATH again; the ladder is back in the plugin")
+    # The screen sees both shapes of a ladder, or its green below means nothing.
+    assert _compiler_names("command -v arm-none-eabi-gcc") == ["arm-none-eabi-gcc"]
+    assert _compiler_names('for c in clang++ g++; do command -v "$c"; done') == [
+        "clang++", "g++"]
+    assert not _compiler_names("    # command -v gcc")
+    assert _compiler_names('[ -x "$d/bin/tiarmclang.exe" ]') == ["tiarmclang.exe"]
+    assert _compiler_names("aarch64-none-linux-gnu-gcc --version") == [
+        "aarch64-none-linux-gnu-gcc"]
+    assert _compiler_names('gcc-13 -v; command -v "clang-$v" clang-cl cc c++') == [
+        "gcc-13", "clang-$v", "clang-cl", "cc", "c++"]
+    assert _compiler_names('command -v "${triple}-gcc"') == ["${triple}-gcc"]
+    assert not _compiler_names('best_n=$armcc; echo "$cc" ${icc}')
+    scripts = _plugin_shell()
+    assert len(scripts) >= 15, [p.name for p in scripts]
+    hits = [f"{p.relative_to(PLUGIN_ROOT).as_posix()}: {name}"
+            for p in scripts for name in _compiler_names(p.read_text(encoding="utf-8"))]
+    assert not hits, (
+        "a script the plugin runs names a compiler, so the ladder is back in the "
+        "plugin — finding the compiler is the recipe's job:\n  " + "\n  ".join(hits))
 
 
 def test_the_heading_scans_see_an_indented_heading():
@@ -1132,12 +1191,11 @@ def test_step_1_establishes_and_passes_the_project_root():
     `compdbs: []` — so the skill asked to reconfigure a build tree in a directory with
     no CMakeLists.txt."""
     step1 = _section("Step 1")
-    assert re.search(r"\*\*Establish the project root first and pass it to every call",
-                     step1), (
+    assert re.search(r"\*\*Establish the project root with the user first, and pass it "
+                     r"to every call", step1), (
         "the imperative was unpinned: replacing it with \"the current directory is "
         "fine\" left every other phrase in the paragraph intact and all tests green")
     assert "--project-root" in step1
-    assert re.search(r"git rev-parse --show-toplevel", step1)
     assert re.search(r"shell's own directory", step1), "say what the default is"
     assert re.search(r"`probe` and the reference files' commands included"
                      r"|probe.{0,40}included", step1), (
@@ -1155,15 +1213,16 @@ def test_step_1_establishes_and_passes_the_project_root():
                         f"{line.strip()!r}")
 
 
-def test_the_root_rule_names_where_the_git_toplevel_is_wrong():
-    """`git rev-parse --show-toplevel` exits 128 outside a repo (with output only on
-    stderr), and in a submodule or a monorepo it can sit above the tree that actually
-    builds — which is the shape `compdb.md`'s `direct` row exists for."""
+def test_step_1_takes_the_root_from_the_cli_and_the_user():
+    """AAD-7807: the agent reused a root an earlier skill had guessed, skipped the
+    toplevel check, and made `.loci/build/` there before init — one example
+    directory instead of the checkout the user meant."""
     step1 = _section("Step 1")
-    assert re.search(r"exits non-zero outside a repo", step1)
-    assert re.search(r"submodule\s*or monorepo", step1)
-    assert re.search(r"root build files are the\s*check|highest directory holding",
-                     step1)
+    assert re.search(r"loci project \[--source", step1), "the CLI resolves, not the agent"
+    assert re.search(r"never with an\s+earlier call's `--project-root`", step1)
+    assert re.search(r"`project_root` \(Recommended\)", step1)
+    assert "candidates[]" in step1 and "Other" in step1, "the user may name their own"
+    assert re.search(r"no `\.loci/` outside it", step1)
 
 
 def test_step_1_sends_a_coded_refusal_to_its_recovery_first():
@@ -1474,9 +1533,15 @@ def test_the_unsupported_caveat_distinguishes_permanent_from_unbuilt():
 def test_the_one_question_is_one_and_the_option_cap_is_stated():
     step3 = _section("Step 3")
     assert re.search(r"[Ee]xactly one question-tool call", step3)
-    assert "at most four supported ISAs" in step3, (
-        "state why the list always fits: four supported ISAs, so no fold is needed")
-    assert "no folding" in step3
+    # Five supported ISAs since neoverse-v2, and `candidates()` returns one per
+    # target, so a question can carry five against the tool's four options.
+    assert "Five ISAs, four options" in step3, (
+        "state the cap: five candidates can come back, the tool takes four")
+    assert "name a fifth candidate" in step3 and "free-form answer takes them" in step3, (
+        "say how the fifth is folded: named in the question, answered free-form")
+    assert "label each by its timing model" in step3, (
+        "an aarch64 build naming no core offers aarch64 and neoverse-v2 for one "
+        "image; the label is the timing model, not the image")
     assert "order is not a recommendation" in step3, (
         "candidates tie alphabetically inside an evidence class")
     assert re.search(r'`"; "`-joined', step3), (
@@ -1912,6 +1977,10 @@ CONTRADICTIONS: tuple[tuple[Path, str, str, str], ...] = (
     (RECOVERY, "The four variants",
      r"invoke `set` first|mention it afterwards|without asking first",
      "reverses the `set` consent rule the task names as binding"),
+    (RECOVERY, "The wrong binary",
+     r"(?:pick|take|keep) the (?:newest|latest|most recent)|choose (?:it|one) yourself|"
+     r"set it (?:yourself|without asking)",
+     "licenses choosing the binary for the user — the wolfSSL test program"),
     (RECOVERY, "Seeding from LOCI's own records", r"non-null",
      "restores the null test that is true of every project"),
     (RECOVERY, "A free-form target answer",

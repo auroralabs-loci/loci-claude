@@ -21,7 +21,7 @@ Run `loci project`, passing `--project-root` if the user named one, and read the
 file its `context_file` names — that is `<project-context>`. Extract `git_branch`
 for the report header. No file there means this project has no recorded history:
 say so and stop — offering `/loci:init <project_root>` when the answer was
-`not_initialized`. `not_resolved`: ask which project.
+`not_initialized`. `not_resolved`: [the user names it](../_shared/house-rules.md#not-resolved).
 
 ## Step 1: Retrieve trend summary
 

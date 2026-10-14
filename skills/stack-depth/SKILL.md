@@ -68,7 +68,7 @@ no other skill measures them.
 ```
 loci analyse stack --turn "<turn-id>" --caller stack-depth \
     [--project-root <the project the user named>] [--entry-functions <fn>[,<fn>]] \
-    [--elf <path>]
+    [--elf <path>] [--source <file the user named>]
 ```
 
 Its `data.project_root` and `data.context_file` are `<project_root>` and
@@ -77,11 +77,10 @@ Its `data.project_root` and `data.context_file` are `<project_root>` and
 - `--turn` and `--caller` are **required**; without either the verb refuses and
   nothing is measured. `<turn-id>` comes from the shared **The turn id: one
   convention, every skill** section — never invented here.
-- `--elf` only when the user named a binary. Otherwise the verb takes the
-  recipe's recorded artifact (`artifacts.elf`) when it is on disk, else ranks the
-  candidates itself, discards anything older than its sources, and falls back to
-  an object only for the questions an object can answer. `data.artifact.via` says
-  which of the three happened: `named`, `recipe`, or `ranked`.
+- `--elf` only when the user named a binary; otherwise the verb picks it
+  ([The artifact a run measures](../_shared/house-rules.md#the-artifact)).
+- `--source` only when the user named a source file and no binary: it finds the
+  project, never what is measured.
 - `--entry-functions` only when the user named the roots.
 
 **Branch on `.ok` first, and only then on the exit code.** On `ok:false` the
@@ -98,16 +97,16 @@ judges nothing and cannot breach. An advisory breach
 (`severity: caution`) exits `0` and is reported in the rows just the same.
 
 **On `ok:false`, read `error` — there is no `data` to read.** `1` — the analysis
-itself failed: no
-artifact qualified, or a stage broke. The refusal reasons are in
-`error.message` on this envelope, not in `data.artifact.refused` — that field
-exists only on an `ok:true` run. Surface the message verbatim rather than
-hunting for a binary yourself.
-A refusal that carries an `error.code` (`not_initialized`, `recipe_stale`,
-`recipe_tampered`, …) is one of the eleven coded errors: report the code and the one
-recovery the shared table gives it, and stop — except `not_initialized`, which branches:
-follow its row. Never
-work around a coded refusal in this turn.
+itself failed: no artifact qualified (`no_artifact`, routed by `error.reason` through
+**[When nothing qualifies](../_shared/house-rules.md#no-artifact)**), a root is
+missing (`function_not_found`) or inlined
+([`function_inlined`](../_shared/house-rules.md#function-inlined)), or a stage
+broke. The reasons are in `error.message`, not `data.artifact.refused`; surface it
+verbatim, never hunting for a binary yourself. Any other `error.code`
+(`not_initialized`, `recipe_stale`, `recipe_tampered`, …) is one of the eleven coded
+errors: report the code and the shared table's one recovery, and stop — except
+`not_initialized`, which branches: follow its row. Never work around a coded
+refusal in this turn.
 
 The envelope carries:
 
@@ -115,8 +114,9 @@ The envelope carries:
   (`elf` | `object`), `built`, `freshness`, `via` (how it was chosen), `scope` on
   an object, and `recipe` — the block the `Recipe:` line below is rendered from;
   absent when no recipe governs the project.
-- `data.detail` — `cycles`, `unknown_callees`, `indirect_call_sites`, and the
-  per-run `summary`.
+- `data.detail` — `cycles`, `unknown_callees`, `indirect_call_sites` (the
+  analysed functions' reach), the per-run `summary`, and `whole_binary`, the
+  same three for the whole binary, present when an entry bounds them.
 - `data.detail.stack_analysis` — **the figures Step 4 reports**, keyed by entry
   function: `worst_case_depth`, `frame_size`, `average_depth`, `worst_case_path`,
   `per_function_frames` and that function's own `warnings`. This is the whole source
@@ -142,8 +142,7 @@ The envelope carries:
   is one contract entry, so two requirements draw two rows. The field stays in
   the envelope, unused. You compose the table — from `data.judgements`, which is
   what each row is drawn from. Do not recompute a percentage, re-map an icon, or
-  reword a note, and never substitute reasoning of your own for a bound the verb
-  already compared.
+  reword a note.
   **On a `project` envelope you render these** — they are the user's own requirements
   answered, so the verdict is theirs to hear back. Quote the requirement from
   `judgements[].text`, and never substitute reasoning of your own for a bound the
@@ -195,8 +194,9 @@ loci stats record --run <data.run> --project-root "<project_root>" \
     --context-file "<project-context>" --recursion-unjudged "<why>"
 ```
 
-`data.detail.no_source` holds cycles and indirect sites in code with no source to
-read: never classify or guess them, and name them in a Note only where they matter.
+`no_source`, in `data.detail` and in `whole_binary`, holds cycles and sites with no
+source to read: never classify or guess them, and name them in a Note only where
+they matter.
 Use the classification only to qualify whether the depth is a lower bound.
 
 Never guess `0`.
@@ -291,8 +291,8 @@ full rule; this is what it comes to for this skill:
   does not delete it**, because a caveat nobody can see is not a caveat:
   `validated: unvalidated` → `validated unvalidated — these flags are a claim, not
   a demonstrated one`, or the shared contract's `artifact_only` wording when that
-  field is `true`; `confirmed_by_user: false` → `not confirmed by anyone
-  (written by --auto)`, with `/loci:init` as what clears it; and `via` reading
+  field is `true`; `confirmed_by_user: false` → `not confirmed by anyone`,
+  with `/loci:init` as what clears it; and `via` reading
   `named` — the user's own binary, which this recipe did not build
   — → append `— measured <name>, which this recipe did not build`, so the line
   cannot be read as a claim about that binary's flags. `via: ranked` beside
@@ -344,7 +344,8 @@ bound**, not a worst case, and the real depth can only be larger. So:
   relocatable object every `bl` is an unapplied relocation, so a 4144-byte real
   depth reads as 8 bytes, with nothing set to warn you. Report only `frame_size`
   from that artifact, label it "own frame", and never present an object's
-  `worst_case_depth` or any verdict drawn from one. The verb already routes it —
+  `worst_case_depth` or any verdict drawn from one; escalated, it folds back the
+  object form, never a depth. The verb already routes it —
   `data.requests` carries `stack_depth` as `unmeasurable` there — and scope, not
   a soundness flag, is what limits the case.
 
@@ -535,16 +536,15 @@ to the parent skill a one-line summary in the form:
 <bound> B)` only when a contract entry supplied the bound. On a lower-bound run
 every figure takes a `≥`: `stack: ≥<worst_case_depth> B — CAUTION, lower bound:
 <cause>`, or `— PASS, a minimum as before: <cause>` where a checkpoint carried it.
+On an object there is no depth and no word: `stack: unmeasured on object — own
+frame <frame_size> B, <reason>`, the reason `relink not run` where
+`data.artifact.before_saved` is `true`, else `data.artifact.before_reason`.
 The word is this run's own composed verdict — `PASS` / `CAUTION` / `FAIL` — handed
 back unchanged. **The parent does not inherit it**: this run keeps
 its own record and gets its own row in the parent's table, drawn under a `└ ` in
 the `ENTRY` cell, with its figures. The parent reuses these figures rather than
-measuring them again, or one investigation is metered twice, and it names this
-run in its own cause sentence **only where these figures moved its verdict** —
-`Verdict: **CAUTION** — stack-depth: 202% of the 2 KB budget on comms_task`.
-Where they did not, the parent says nothing about the escalation: naming it on
-every run makes the one that decided the answer indistinguishable from the ones
-that did not.
+measuring them again, or one investigation is metered twice, and names this run
+in its own cause sentence only where they moved its verdict.
 
 Hand back a second line whenever the run measured the structural signals at all —
 the parent's `Safety` row is judged from it, and it is the only thing that
@@ -554,7 +554,9 @@ carries these counts across:
 safety: recursion_cycles 0 · indirect_calls 2 · unknown_callees 0 · unbounded_recursion 0 — indirect calls in uart_isr, no entry covers them
 ```
 
-Name every signal the run measured, each with its count. **Close with the entry's
+Name every signal the run measured, each with its count, from
+`data.detail.whole_binary` when the run has it; without it, the counts are only the
+analysed functions' reach, so say so (`in <fn>'s reach`). **Close with the entry's
 word where one covers a signal, and with what you make of the counts where none
 does** — the four are measured whether or not anyone asked, so a count is a fact
 and not a requirement. A zero is worth stating either way. On an object, or when a
@@ -566,10 +568,7 @@ standalone run does, with `--caller stack-depth`, before handing back the
 fold-back line. The verb writes both the run record and the per-function
 measurement rows; the fold-back goes to the *parent*, and the parent has no stack
 field of its own — so a depth reported only through fold-back would be judged,
-shown to the user, and then lost. That gap is not hypothetical: a post-edit
-escalation once judged `quicksort` at 8352 B against a 4096 B bound while the
-newest stack figure on disk stayed at the 3152 B a standalone run had recorded 74
-minutes earlier, and the cockpit costed the older figure and drew the row green.
+shown to the user, and then lost.
 
 ## Step 5: record it
 
@@ -639,11 +638,10 @@ parent a one-line summary for fold-back:
 stack: <worst_case_depth> B [(<usage_pct>% of <bound> B)] — <closing word>
 stack: ≥<worst_case_depth> B [(≥<usage_pct>% of <bound> B)] — CAUTION, lower bound: <cause>
 stack: ≥<worst_case_depth> B [(≥<usage_pct>% of <bound> B)] — PASS, a minimum as before: <cause>
+stack: unmeasured on object — own frame <frame_size> B, <reason>
 ```
 
 The second form whenever the depth is a lower bound, the third where a checkpoint
-carried it; both figures take the `≥`.
-The parenthetical appears only when a contract entry supplied the bound. The
-closing word is this run's own composed verdict, handed back unchanged. Add
-the `safety:` line from **Escalation fold-back** above whenever the run measured
-the structural signals, which is every run.
+carried it; both figures take the `≥`. The fourth on an object; `<reason>`, the
+parenthetical and the closing word are as **Escalation fold-back** above states,
+and so is the `safety:` line, which every run adds.

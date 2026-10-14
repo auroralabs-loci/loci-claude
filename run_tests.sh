@@ -21,6 +21,20 @@
 # `claude` on PATH, a privileged account, a slow machine) stub, skip or
 # budget so such a clone is green. `bash run_tests.sh`: the file is tracked
 # without the executable bit, and a Linux or macOS checkout refuses `./`.
+#
+# Beside it, two release gates run a real coding agent and so live outside
+# pytest (RELEASING.md lists them, per host, before a release):
+#   bash tools/claude-parity.sh        one headless Claude Code turn on a Cortex-M
+#       fixture, ten checks on what a Claude session gets from the hooks (context,
+#       turn stamp, pre-scan, post-edit reminder, recipe deny, stop nudge, no hook
+#       error) — the Copilot Epic's (AAD-7779) "Claude Code behaviour is unchanged" gate.
+#   bash tests/acceptance/copilot_smoke.sh      the same deliverables under GitHub
+#       Copilot CLI, twelve checks on Copilot's process log, the session JSONL,
+#       the plugin's log and the turn tree (AAD-7793); `--negative-control` proves
+#       the gate catches a broken launcher. Both need a signed-in `loci` and
+#       arm-none-eabi-gcc; the first a signed-in `claude`, the second a signed-in
+#       `copilot`. `tests/unit/test_copilot_smoke_script.py` holds the smoke's
+#       checks to recorded logs without either.
 
 set -euo pipefail
 

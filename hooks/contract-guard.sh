@@ -81,6 +81,7 @@ esac
 command -v loci_log >/dev/null 2>&1 \
     || { loci_log() { :; }; loci_log_session_from_payload() { :; }; }
 command -v loci_host_adapt >/dev/null 2>&1 || loci_host_adapt() { return 1; }
+command -v loci_host_copilot >/dev/null 2>&1 || loci_host_copilot() { return 1; }
 
 # `cat`, with a builtin fallback — the third form tried here, and the reasons
 # matter because two plausible ones are wrong. `IFS= read -r -d ''` forks
@@ -214,18 +215,54 @@ trap 'loci_log INFO contract-guard "end: verdict=$_cg_verdict (hook rc=$?)"' EXI
 # spell a guarded name — all three are ASCII throughout — and reaching it costs
 # the `\u` arm above. `\U0063` is not JSON at all: `json.loads` rejects the
 # document, so it names no file.
+#
+# ⚠ UNDER COPILOT A PAYLOAD SPELLING BOTH `"path"` AND `"file_path"` IS NEVER
+# ALLOWED HERE (AAD-7810). The adapter leaves neither renamed, the three arms
+# above need `"file_path"` IN FRONT of the guarded name, and Copilot writes
+# `path` — so `{"path":"<recipe>","file_path":"main.c"}` exited ALLOW at this
+# line, plain spelling and all. It goes on to the path-pair screen below the
+# field read, which refuses it whatever it names — and on a cut payload over
+# the whole text (AAD-7811), as the duplicate screen reads a second
+# `file_path` there (AAD-7813). Two one-star globs, forkless;
+# an edit's content cannot match them, because a quote inside a JSON string is
+# escaped.
+#
+# ⚠ AND AN EDIT THE ADAPTER COULD NAME NO FILE OF IS NEVER ALLOWED HERE EITHER
+# (AAD-7811): `LOCI_HOST_EDIT_UNREAD` is a string `tool_input` it could not read
+# as a patch, or a payload cut at the head before any file key. Either may
+# write a guarded file under a spelling no arm below sees, so it goes on to the
+# refusal below the field read. Read only under Copilot, so an inherited
+# variable cannot reach Claude Code's path.
+_cg_pair="" _cg_unread=""
+if loci_host_copilot; then
+    case "$payload" in
+        *'"path"'*) case "$payload" in *'"file_path"'*) _cg_pair=1 ;; esac ;;
+    esac
+    _cg_unread="${LOCI_HOST_EDIT_UNREAD:-}"
+fi
 case "$payload" in
     *contract*) ;;
     *'"file_path"'*[Cc][Oo][Nn][Tt][Rr][Aa][Cc][Tt].[Yy][Aa][Mm][Ll]*) ;;
     *'"file_path"'*[Bb][Uu][Ii][Ll][Dd].[Yy][Aa][Mm][Ll]*) ;;
     *'"file_path"'*[Ff][Ll][Aa][Gg][Ss].[Jj][Ss][Oo][Nn]*) ;;
+    # THE NTFS 8.3 SHORT NAME (AAD-7813): `.loci\BUILD~1.YAM`, `CONTRA~1.YAM`
+    # and `FLAGS~1.JSO` open the guarded files and carry none of the names
+    # above, so every one of them exited ALLOW here, on both hosts and in a
+    # patch header too, while route 1 denies them once reached. The arm is the
+    # SHAPE of the numeric tail — `~`, a digit 1-9, then a digit, a dot, a
+    # separator or the value's end — so a C `~0`, `~1u` or `~1;` in an edit's
+    # content stays at zero work. What it does admit is a Windows temp path
+    # (`C:\Users\RUNNER~1\…`), which pays the field read and three `-ef` stats
+    # and no fork: route 1 walks only a LAST component of that shape.
+    *'"file_path"'*'~'[1-9][0-9./\\\"]*) ;;
     # An apply_patch (AAD-7788) whose headers the adapter could not read
     # injects no `file_path` and may still name a guarded file: the two arms
     # above need the key in front, so the patch's own opening stands in.
+    # (One that names no file at all is `_cg_unread`'s, below — AAD-7811.)
     *'*** Begin Patch'*[Bb][Uu][Ii][Ll][Dd].[Yy][Aa][Mm][Ll]*) ;;
     *'*** Begin Patch'*[Ff][Ll][Aa][Gg][Ss].[Jj][Ss][Oo][Nn]*) ;;
     *'\u00'*) ;;
-    *) _cg_verdict="allow (prefilter: no guarded token)"; exit 0 ;;
+    *) [ -n "$_cg_pair$_cg_unread" ] || { _cg_verdict="allow (prefilter: no guarded token)"; exit 0; } ;;
 esac
 
 deny() {
@@ -241,6 +278,7 @@ deny() {
 # the reason as an ARGUMENT rather than as a format, so that claim is about the
 # JSON, not about printf.
 REASON_DUPLICATE_FMT="This payload uses the JSON name '%s' twice as a key, and that is a question with two answers: JSON leaves a duplicate name to the parser, so this guard and the tool that performs the write do not have to agree on which one they are reading — and a guard whose verdict is about a different write is not a guard. Nothing produced this by serialising an object; send one '%s' and the decision is unambiguous."
+REASON_PATH_PAIR="This tool call names its file twice — as 'path' and 'file_path', or as two 'path' keys — so this guard and the tool that performs the write do not have to agree on which file it is, and a guard whose verdict is about a different write is not a guard. Send the one 'path' the tool reads and the decision is unambiguous."
 REASON_FILE="The Contract Envelope (.loci/contract.yaml) is read-only to you. It states the bounds your work is judged against, so only the user changes it. Draft the change instead: echo '<entry json>' | loci contract draft add   then hand the user exactly this line to run: ! loci contract accept"
 REASON_UNREAD="This tool call's file_path did not close inside the 4 KB this guard reads under bash 3.2 (stock macOS), so it cannot be checked against the guarded files and is refused. Spell the path plainly — no escapes, no ./ padding, under 1 KB — or install bash 4+ (brew install bash) for the full guard."
 REASON_VERB="That verb writes the Contract Envelope, which is the user's to apply. Draft with 'loci contract draft add|edit|disable|enable', then hand the user this line to run: ! loci contract accept"
@@ -250,7 +288,8 @@ REASON_VERB="That verb writes the Contract Envelope, which is the user's to appl
 # just advertising its own bypass with one extra step.
 REASON_RECIPE="The build recipe (.loci/build.yaml) is written by 'loci init', never edited. It records the target ISA, compiler and flags every LOCI measurement is made with, so an edit here changes what your own numbers mean — and the recipe's integrity record turns a hand edit into a 'recipe_tampered' refusal for every file in the project, not just this one. Ask the user first, then record the knob: loci init set <key>=<value>   (switch targets with: loci init --refresh --target=<isa>)"
 REASON_FLAGS="That flag pin (.loci/build/flags.json) is the user's own, and a 'replace' pin OUTRANKS the recipe — so it is not yours to write either. Ask the user, then record the knob in the recipe: loci init set <key>=<value>   (e.g. loci init set rust.features=max-pure). If they want a raw flag pin instead, hand them the file and let them edit it themselves."
-REASON_PATCH_UNREAD="This patch names files past what this guard could read (more than 64 file headers, or a patch longer than the 64 KB it reads — 4 KB under bash 3.2), so not every file in it can be checked against the guarded files and it is refused. Send the edit as one file per patch, or a shorter patch."
+REASON_PATCH_UNREAD="This patch names files past what this guard could read (more than 64 file headers, a patch longer than the 64 KB it reads — 4 KB under bash 3.2 — more paths that look like a guarded file than it can check in time, or text that does not open with '*** Begin Patch' and a file header), so not every file in it can be checked against the guarded files and it is refused. Send the edit as one file per patch, or a shorter patch."
+REASON_PATH_UNREAD="This tool call names no path this guard could read in the first 64 KB it reads (4 KB under bash 3.2) — the path is missing, comes after the content, or is longer than any real path — so it cannot be checked against the guarded files and is refused. Send the file's path first in the tool call, spelled plainly."
 
 # Above this many bytes of command text, route 2 stops tokenising and falls back
 # to the SUBSTRING test it replaced. Tokenising is more work per byte than that
@@ -432,10 +471,13 @@ fi
 # reason tells the model exactly what to change. Pinned in
 # `test_a_nested_name_is_refused_too_and_that_is_deliberate`.
 #
-# ⚠ AND IT IS BOUNDED BY `LOCI_JSON_MAX` LIKE EVERY OTHER READ HERE. A second
-# `file_path` past the 64 KB prefix is invisible to this check exactly as it is
-# to the field read above it — the truncation door, older than this and
-# unchanged by it, and the reason `cmd` has its own fallback twenty lines up.
+# ⚠ AND IT IS BOUNDED BY `LOCI_JSON_MAX` LIKE EVERY OTHER READ HERE, so a
+# second `file_path` past the 64 KB prefix is invisible to it — and the field
+# read takes the FIRST, where the tool takes the last. On a cut payload two
+# globs over the WHOLE text answer for `file_path` instead (AAD-7813), each
+# name as a key — a colon or JSON whitespace after it — as the path-pair
+# screen below reads `path`. A second `command` past the head needs no such screen:
+# a cut `command` already falls back to the whole payload, both copies in it.
 if command -v loci_json_dup >/dev/null 2>&1; then
     for _cg_dup in file_path command; do
         if loci_json_dup "$_cg_dup"; then
@@ -446,6 +488,87 @@ if command -v loci_json_dup >/dev/null 2>&1; then
             deny "$_cg_reason"
         fi
     done
+fi
+if [ -n "${_LOCI_JSON_TRUNCATED:-}" ]; then
+    case "$payload" in
+        *'"file_path"'[:[:space:]]*'"file_path"'[:[:space:]]*)
+            _cg_what="duplicate file_path"
+            loci_log WARN contract-guard "duplicate JSON name past the head: file_path"
+            # shellcheck disable=SC2059
+            printf -v _cg_reason "$REASON_DUPLICATE_FMT" file_path file_path
+            deny "$_cg_reason" ;;
+    esac
+fi
+# ⚠ AND UNDER COPILOT, `path` IS A THIRD SPELLING OF THE SAME QUESTION
+# (AAD-7810). The adapter renames Copilot's `path` to `file_path` only where no
+# `file_path` is in use and only its first key, so a `path` still here after it
+# is either a `file_path`+`path` pair or a second `path` — and the guard reads
+# `file_path` while Copilot writes `path`. At `81bbdc3` both shapes, with the
+# recipe as the `path`, were allowed. Gated on `loci_host_copilot`: a Claude Code
+# Edit or Write never carries `path`, and its payload is read as before.
+#
+# PAST THE HEAD TOO (AAD-7811 review): `loci_json_has` reads the 64 KB prefix,
+# so a decoy file key in front — `file_path`, or a nested `path` the adapter
+# renamed — and the recipe as a `path` behind 64 KB of `file_text` read as one
+# harmless name and were allowed (from 5 KB under bash 3). On a cut payload
+# two globs over the WHOLE text decide instead, each name as a KEY — a colon
+# or JSON whitespace after it (AAD-7813 review; Copilot's own serialiser
+# writes the colon right after it). Inside a
+# string value no name can match, its quotes being escaped; and a value that
+# IS the name (`"old_str":"path"`) has no colon after it (review round 2: the
+# prefilter's colonless `_cg_pair` refused that edit).
+_cg_keys=""
+if [ -n "$_cg_pair" ] && [ -n "${_LOCI_JSON_TRUNCATED:-}" ]; then
+    case "$payload" in
+        *'"path"'[:[:space:]]*)
+            case "$payload" in *'"file_path"'[:[:space:]]*) _cg_keys=1 ;; esac ;;
+    esac
+fi
+if loci_host_copilot && command -v loci_json_has >/dev/null 2>&1 \
+    && { [ -n "$_cg_keys" ] || { loci_json_has path && loci_json_has file_path; }; }; then
+    _cg_what="path pair"
+    loci_log WARN contract-guard "file_path and path both present"
+    deny "$REASON_PATH_PAIR"
+fi
+# ⚠ AND UNDER COPILOT, AN EDIT WHOSE FILE THIS GUARD CANNOT READ IS REFUSED ON
+# EVERY BASH (AAD-7811), as bash 3 refuses one above. Copilot's key order inside
+# `tool_input` is the model's, so a `path` behind 64 KB of `file_text` was out of
+# the head the adapter renames in, no route ran, and the write was allowed —
+# the bash-3 rule did not reach it, being gated on bash 3 and on `"file_path"`.
+# Three shapes: the adapter's two (`_cg_unread`, named where it is set: a
+# string it could not read as a patch, an object naming no file key in the
+# head) and a `file_path` whose value the cut left open, which the field read
+# answers empty. A decoy key in front of a late one is the pair screen's,
+# above. Under Claude Code `_cg_unread` is empty and nothing here runs.
+case "$_cg_unread" in
+    patch) _cg_what="unread patch"; deny "$REASON_PATCH_UNREAD" ;;
+    path) _cg_what="unread path"; deny "$REASON_PATH_UNREAD" ;;
+esac
+# ⚠ AND ON EITHER HOST, A `file_path` THE HEAD DID NOT READ IS REFUSED
+# (AAD-7813). This was Copilot's alone, and Claude Code had both doors:
+#
+#   * the KEY past the head — `{"content":<70 KB>,"file_path":<recipe>}` —
+#     where the field read finds no `file_path` and route 1 never runs. The
+#     key order inside `tool_input` is the model's on both hosts.
+#   * the VALUE past it, which `main` called unreachable because no host opens
+#     a 64 KB path. Measured false on Windows: Node writes
+#     `<root>` + `/`x70000 + `.loci/build.yaml` to the recipe, since its
+#     `toNamespacedPath` RESOLVES the path, separators collapsed, before the
+#     OS sees a length.
+#
+# The key is read over the WHOLE text, as a key — a colon or JSON whitespace
+# after it — so it is found past the head and never inside a string value,
+# where its quotes are escaped. A Bash payload has no such key. What it over-denies is a
+# content-first edit past 64 KB that the prefilter admitted, which the reason
+# answers by asking for the path first.
+if [ -n "${_LOCI_JSON_TRUNCATED:-}" ] && [ -z "$fp" ]; then
+    case "$payload" in
+        *'"file_path"'[:[:space:]]*) _cg_what="unread path"; deny "$REASON_PATH_UNREAD" ;;
+    esac
+    if command -v loci_json_has >/dev/null 2>&1 && loci_json_has file_path; then
+        _cg_what="unread path"
+        deny "$REASON_PATH_UNREAD"
+    fi
 fi
 
 # ── route 1: a direct write to one of the guarded files ──────────────────────
@@ -855,6 +978,10 @@ _guarded_match() (
         _gm_t=$_w_tail
         _gm_ld=$_gm_d
         _gm_lt=$_gm_t
+        # The SPELLED pair, for `_gm_names`: the names the walk descended
+        # through as the path wrote them, not as `cd -P` resolved them.
+        _gm_sd=$_w_desc
+        _gm_st=$_w_tail
         [ -n "$_w_phys" ] || return 0
         # Two spellings of the collapsed path are not ones a `cd` accepts:
         # empty is the filesystem root, and a bare `C:` is the drive's.
@@ -862,7 +989,7 @@ _guarded_match() (
         case $_gm_lp in "") _gm_lp=/ ;; [A-Za-z]:) _gm_lp=$_gm_lp/ ;; esac
         _walk "$_gm_lp"
         case $? in
-            0) _gm_ld=$PWD; _gm_lt=$_w_tail ;;
+            0) _gm_ld=$PWD; _gm_lt=$_w_tail; _gm_sd=$_w_desc; _gm_st=$_w_tail ;;
             2) return 2 ;;
             # It could not reach its own anchor. Keep the POSIX pair rather
             # than propagating, because rc 1 out of here is "this is not that
@@ -873,6 +1000,60 @@ _guarded_match() (
         esac
     }
 
+    # Does (directory $1, tail $2) name the guarded $3 in ANY project — is it
+    # `<some dir>/.loci/build.yaml` once walked? (AAD-7813.) The suffix arms in
+    # `_route1_hit` already deny a plain `.loci/build.yaml` in another checkout,
+    # and this is the same policy for the spellings only the walk can read, so
+    # it is not a new over-deny. What it closes is every case where `$root` is
+    # not the project the write lands in: a non-git session whose `cwd` is a
+    # subdirectory (the root falls back to that `cwd`), and a repository whose
+    # `.loci/` lives in a subproject while `CLAUDE_PROJECT_DIR` names the
+    # repository — `../.loci/./build.yaml` and `fw/.loci/./build.yaml` were
+    # ALLOWED on `main`, under both hosts.
+    #
+    # Matched from the END. The tail's components are TEXT (they do not exist,
+    # bar the last, which may be a file) and fold case under `nocasematch` as
+    # the suffix arms do. A one-component tail is also matched by `-ef` against
+    # its sibling, which is what reads an NTFS 8.3 name (`BUILD~1.YAM`). The
+    # components the tail runs out of are DIRECTORIES the walk stood in, so
+    # each is matched by identity with the parent's entry of that name — which
+    # reads `LOCI~1`, a case variant, and a junction alike.
+    #
+    # ⚠ AND IT IS ASKED OF THE SPELLED DIRECTORY TOO (AAD-7813 review). The
+    # walk's directory came from `cd -P`, so a `.loci` that is itself a link —
+    # to `store/p2data`, say — is `store/p2data` there, and its parent has no
+    # `.loci` to be identical with: all of fix 3 was ALLOWED through one. The
+    # spelled text keeps the name (`…/proj2/.loci`), and its `${…%/*}` is the
+    # parent Win32 pops to, which is what opens.
+    _gm_names() {
+        _gn_d=$1 _gn_t=$2 _gn_g=/$3
+        #
+        # ⚠ NO `${t##*/}` ON THE TAIL. It is 0.77 s on a 60 KB name, and the
+        # first draft of this took it seven times on one path: 9.5 s, past the
+        # 5 s kill, which fails OPEN. A suffix glob and `%/*` are linear.
+        while [ -n "$_gn_t" ]; do
+            [ -n "$_gn_g" ] || return 0
+            _gn_b=${_gn_g##*/}
+            if ! [[ $_gn_t == */"$_gn_b" ]]; then
+                # Only a name an 8.3 alias can be — one component of at most
+                # 12 characters holding `~` and a digit — so no `stat` here
+                # canonicalises a long string (0.24 s each at 64 KB). A longer
+                # name is not an alias, so its text was the whole answer.
+                [ "${#_gn_t}" -le 13 ] || return 1
+                case $_gn_t in /*/*) return 1 ;; *'~'[1-9]*) ;; *) return 1 ;; esac
+                [ "$_gn_d$_gn_t" -ef "$_gn_d/$_gn_b" ] || return 1
+            fi
+            _gn_t=${_gn_t%/*}
+            _gn_g=${_gn_g%/*}
+        done
+        while [ -n "$_gn_g" ]; do
+            [ -n "$_gn_d" ] && [ "$_gn_d" -ef "${_gn_d%/*}/${_gn_g##*/}" ] || return 1
+            _gn_d=${_gn_d%/*}
+            _gn_g=${_gn_g%/*}
+        done
+        return 0
+    }
+
     _gm_walk2 "$_gm_fp"
     case $? in
         0) ;;
@@ -881,6 +1062,16 @@ _guarded_match() (
     esac
     _gm_dir=$_gm_d   ; _gm_tail=$_gm_t
     _gm_ldir=$_gm_ld ; _gm_ltail=$_gm_lt
+    _gm_sdir=$_gm_sd ; _gm_stail=$_gm_st
+    for _gm_g; do
+        if _gm_names "$_gm_dir" "$_gm_tail" "$_gm_g" ||
+           _gm_names "$_gm_ldir" "$_gm_ltail" "$_gm_g" ||
+           _gm_names "$_gm_sdir" "$_gm_stail" "$_gm_g"
+        then
+            printf '%s' "$_gm_g"
+            return 0
+        fi
+    done
     for _gm_g; do
         # The bound applies to THIS side too, and it has to answer the same way
         # or the file's own claim about it is false: swallowing rc 2 as "not
@@ -925,7 +1116,7 @@ _w_dots=""     # $1 as Win32 spells it: one trailing dot off every component
 #     <root>/.loci./contract.yaml        opens the Contract Envelope
 #     <root>/.loci/build./flags.json     opens the flag pin
 #     <root>/.loci./CONTRA~1.YAM         opens it too — the 8.3 short name,
-#                                        which no basename gate below admits
+#                                        which only `-ef` and the 8.3 gate read
 #     <root>/.loci../contract.yaml       ENOENT  ← a RUN of dots is not stripped
 #     <root>/.loci..../contract.yaml     ENOENT
 #     <root>/.loci /contract.yaml        ENOENT  ← nor is a trailing SPACE
@@ -1019,7 +1210,8 @@ _route1_hit() {
         case $1 in */"$_g"|"$_g"|"./$_g") _hit=$_g; return 0 ;; esac
     done
     # Past the arms, nothing resolves to a guarded file without carrying that
-    # file's own basename — a link that does not is caught by the `-ef` above,
+    # file's own basename or an 8.3 alias of it (the second gate, below) — a
+    # link that does neither is caught by the `-ef` above,
     # and `test_a_symlink_that_hides_the_name_is_a_known_gap` pins what is left
     # (a link the payload-level prefilter never admits). So this is the whole of
     # route 1 for a payload that merely says `contract` somewhere: no subshell,
@@ -1027,6 +1219,18 @@ _route1_hit() {
     for _g in $_ROUTE1_GUARDED; do
         case $1 in
             *"${_g##*/}"*)
+                # A PATCH'S FORKS ARE BUDGETED (AAD-7811 review rounds 3-5):
+                # each walk is a subshell, ~85 ms on Git Bash and more for a
+                # long path or root, and one header can take four readings —
+                # so 63 headers `.loci/build.yaml.<n>` and then the recipe
+                # took 5.5 s, past the 5 s kill, which fails open. Charged
+                # HERE, at the fork, so no case folding the ambient locale
+                # does (Git Bash folds U+0130 to `i`) and no reading escapes
+                # the count. Past the budget the patch is refused as unread
+                # — a bound that DENIES, and outside this function, whose
+                # only length test may never be one
+                # (`test_the_ef_arm_carries_no_length_test`).
+                _cg_charge_fork "$1" "$2"
                 _hit=$(_guarded_match "$1" "$2" $_ROUTE1_GUARDED)
                 # 2 is `_ROUTE1_MAX_SEGMENTS`: too long to walk inside the
                 # budget, so deny it under the name it actually carries
@@ -1035,7 +1239,36 @@ _route1_hit() {
                 return 0 ;;
         esac
     done
+    # AN 8.3 SHORT NAME carries no guarded basename either (AAD-7813), and the
+    # `-ef` above answers for it only under `$root` — so a LAST component of
+    # that shape is walked too, where `_gm_names` reads it by `-ef` against its
+    # sibling. Over `_ROUTE1_MAX_SEGMENTS` it names no file to deny under, so
+    # it is refused as unread, the way an over-long path is.
+    if _cg_short_name "$1"; then
+        _cg_charge_fork "$1" "$2"
+        _hit=$(_guarded_match "$1" "$2" $_ROUTE1_GUARDED)
+        if [ $? -eq 2 ]; then
+            _cg_what="unread path"
+            deny "$REASON_PATH_UNREAD"
+        fi
+    fi
     return 0
+}
+
+# 0 when the LAST component of $1 has an 8.3 alias's shape: at most 12
+# characters, a `~` and a digit 1-9 among them. Read from the last 14 bytes
+# under C, which is O(1): `${1##*/}` is 0.77 s on a 60 KB name (AAD-7813).
+# A function of its own because `_route1_hit` may carry no length test
+# (`test_the_ef_arm_carries_no_length_test`).
+_cg_short_name() {
+    case $1 in *'~'[1-9]*) ;; *) return 1 ;; esac
+    LC_ALL=C
+    _cg_sn=/$1
+    [ "${#_cg_sn}" -le 14 ] || _cg_sn=${_cg_sn: -14}
+    LC_ALL="$_LC_AMBIENT"
+    case $_cg_sn in */*) _cg_sn=${_cg_sn##*/} ;; *) return 1 ;; esac
+    case $_cg_sn in *'~'[1-9]*) return 0 ;; esac
+    return 1
 }
 
 # Case-insensitive throughout, via `nocasematch` — a SHELL OPTION, not a `tr`.
@@ -1081,6 +1314,11 @@ _route1() {
         fi
         [ -n "$_cg_root_raw" ] || _cg_root_raw="${cwd:-$PWD}"
     fi
+    # This root is one side of the walk's comparison, not the only one: the
+    # walk also denies a path that names `.loci/<guarded>` in any project
+    # (`_gm_names`, AAD-7813), so a root that is a subdirectory — no git, no
+    # `CLAUDE_PROJECT_DIR` — or a repository whose `.loci/` lives in a
+    # subproject no longer opens a door.
     root="$_cg_root_raw"
 
     # A real payload carries the native spelling (`C:\proj\.loci\build.yaml`) —
@@ -1090,8 +1328,135 @@ _route1() {
     # drive-path conversion. Forkless. (A backslash is a legal filename character
     # on POSIX, so this over-denies a file literally named `a\.loci\build.yaml`
     # there — the same direction this guard errs in everywhere else.)
-    fp="${fp//\\//}"
+    _cg_fp="${fp//\\//}"
     root="${root//\\//}"
+
+    # A WIN32 NAMESPACE PREFIX comes off before anything below reads the path
+    # as absolute or relative (AAD-7813 review): the `//` collapse in
+    # `_route1_read` turned `//?/C:/…` into `/?/C:/…`, which names nothing
+    # the walk can stand in, so every 8.3 and linked spelling behind one was
+    # ALLOWED — on `main` too — and Node opens each as the guarded file. HERE
+    # so that a volume path, which comes out root-relative, gets the cwd
+    # drive's reading below. See `_cg_unprefix`.
+    _cg_unprefix "$_cg_fp"; _cg_fp=$_cg_np
+    _cg_unprefix "$root";   root=$_cg_np
+
+    # A RELATIVE PATH IS THE SESSION'S, anchored at the payload's `cwd` — the
+    # directory the tool resolves it against — and never at this hook's own,
+    # which is a different directory under Copilot: it runs every hook from the
+    # PLUGIN root. Anchored there, `.loci/./build.yaml` was walked as the
+    # plugin's recipe, matched nothing, and Copilot wrote the project's (AAD-7810:
+    # seven spellings past the suffix arms, all three guarded files, ALLOWED at
+    # `81bbdc3`). Here rather than in `_walk`'s anchor because `-ef` in
+    # `_route1_hit` reads the path too, and a relative name-hiding link is
+    # resolved from the same wrong place. No `cwd` keeps the old anchor, `$PWD`.
+    #
+    # Two Win32 spellings are relative too, and both were ALLOWED on `main`
+    # under either host, plain spellings included (AAD-7810 review):
+    #
+    #   * DRIVE-RELATIVE, `C:.loci/build.yaml` — the `cwd` of that drive. Taken
+    #     as the session's `cwd` when it is on that drive, else as the drive's
+    #     root, which is what Node's `path.win32.resolve` answers with no per-drive
+    #     directory to consult. Only where `cwd` is a drive path: on POSIX
+    #     `C:.loci` is an ordinary name and the join below is the right reading.
+    #   * ROOT-RELATIVE, `\Users\…\.loci\.\build.yaml` — the `cwd`'s drive. MSYS
+    #     walks `/Users` under its own install root, so this is a SECOND reading
+    #     (`_cg_alt`), not a replacement: `/c/proj/…`, the Git Bash spelling, is
+    #     an absolute path there and keeps its first one. Deny on either.
+    #
+    # ⚠ AND UNDER CLAUDE CODE THE `$PWD` READING IS KEPT BESIDE IT. The hook's
+    # directory is the session's there, so the two anchors are one directory and
+    # this costs one `-ef`; where they differ, `main` decided by `$PWD`, and
+    # replacing that reading would ALLOW what `main` denied (`.loci/./build.yaml`
+    # with a payload `cwd` of `<proj>/src`). Under Copilot `$PWD` is the plugin
+    # root, which no tool resolves against, so it is not read twice there.
+    _cg_alt=""
+    _cg_cwd="${cwd//\\//}"
+    if [ -n "$_cg_cwd" ]; then
+        case $_cg_fp in
+            //*|[A-Za-z]:/*) ;;
+            /*)
+                case $_cg_cwd in
+                    [A-Za-z]:/*) _cg_alt="${_cg_cwd%%:*}:$_cg_fp" ;;
+                esac
+                ;;
+            [A-Za-z]:*)
+                case $_cg_cwd in
+                    [A-Za-z]:/*)
+                        shopt -s nocasematch
+                        if [[ "${_cg_fp%%:*}" == "${_cg_cwd%%:*}" ]]; then
+                            _cg_fp="${_cg_cwd%/}/${_cg_fp#?:}"
+                        else
+                            _cg_fp="${_cg_fp%%:*}:/${_cg_fp#?:}"
+                        fi
+                        shopt -u nocasematch
+                        ;;
+                    *) _cg_fp="$_cg_cwd/$_cg_fp" ;;
+                esac
+                ;;
+            *)
+                if ! loci_host_copilot && ! [ "$_cg_cwd" -ef "$PWD" ]; then
+                    _cg_alt="$_cg_fp"
+                fi
+                _cg_fp="$_cg_cwd/$_cg_fp"
+                ;;
+        esac
+    fi
+    _route1_read "$_cg_fp"
+    [ -n "$_cg_alt" ] && _route1_read "$_cg_alt"
+    return 0
+}
+
+# $1 with any Win32 namespace prefix taken off, into `_cg_np` (AAD-7813
+# review). Each names the file behind it, and Node opens every one:
+#
+#     //?/C:/…   //./C:/…   /??/C:/…        → C:/…
+#     //?/UNC/host/share/…                   → //host/share/…
+#     //?/GLOBALROOT/??/C:/… (DosDevices/, Global??/ alike) → C:/…
+#     //host/C$/…  — an administrative share → C:/…
+#     //?/Volume{GUID}/…, //?/GLOBALROOT/Device/HarddiskVolume3/…  → /…
+#
+# The share is read as THIS machine's drive whatever the host is named: a hook
+# cannot tell `localhost`, `127.0.0.1` or the machine's own name from another
+# machine's, and reading a remote one as local over-denies only a path that
+# names a guarded file. A VOLUME has no drive letter a hook can learn without
+# a fork (`mountvol`), so it comes out root-relative, and `_route1` reads a
+# root-relative path on the session cwd's drive — the volume nearly every
+# project is on. The input is backslash-masked already; the prefixes fold
+# case, as Win32 folds them. Prefixes nest (`//?/UNC/localhost/C$/…`), so
+# this repeats, a bounded number of times.
+_cg_unprefix() {
+    _cg_np=$1
+    for _cg_i in 1 2 3 4; do
+        case $_cg_np in
+            //[?.]/[Uu][Nn][Cc]/*) _cg_np=//${_cg_np:8} ;;
+            //[?.]/[Vv][Oo][Ll][Uu][Mm][Ee]'{'*'}/'*) _cg_np=/${_cg_np#//?/*\}/}; return 0 ;;
+            //[?.]/[Gg][Ll][Oo][Bb][Aa][Ll][Rr][Oo][Oo][Tt]/*)
+                _cg_nr=${_cg_np:15}
+                case $_cg_nr in
+                    '??/'*|[Dd][Oo][Ss][Dd][Ee][Vv][Ii][Cc][Ee][Ss]/*|[Gg][Ll][Oo][Bb][Aa][Ll]'??/'*)
+                        _cg_np=${_cg_nr#*/} ;;
+                    [Dd][Ee][Vv][Ii][Cc][Ee]/?*/*) _cg_np=/${_cg_nr#*/*/}; return 0 ;;
+                    *) return 0 ;;
+                esac ;;
+            //[?.]/*|'/??/'*) _cg_np=${_cg_np:4} ;;
+            //?*/?*)
+                _cg_nr=${_cg_np#//*/}
+                case $_cg_nr in
+                    [A-Za-z]'$') _cg_np="${_cg_nr%?}:/" ;;
+                    [A-Za-z]'$/'*) _cg_np="${_cg_nr%%\$*}:/${_cg_nr#??/}" ;;
+                    *) return 0 ;;
+                esac ;;
+            *) return 0 ;;
+        esac
+    done
+}
+
+# One reading of the path, decided against `root`: a deny exits inside, and
+# the locale is C again on the way out. `_route1` calls it once per reading.
+_route1_read() {
+    LC_ALL="$_LC_AMBIENT"
+    fp="$1"
 
     # A LEADING `//` IS A NETWORK LOOKUP, and both things route 1 does with a
     # path — one `-ef`, one `cd -P` — take it. Measured here: 2.83 s of a 5 s
@@ -1102,7 +1467,7 @@ _route1() {
     # same rules. A project that really is on a share is then compared without
     # the share being physically resolved, which is symmetric and therefore
     # still decides correctly; `realpath` never resolved it either, it just
-    # rewrote the text.
+    # rewrote the text. (A Win32 namespace prefix is off by now: `_route1`.)
     while :; do case $fp in //*) fp="${fp#/}" ;; *) break ;; esac; done
     while :; do case $root in //*) root="${root#/}" ;; *) break ;; esac; done
 
@@ -1243,6 +1608,26 @@ _route1() {
 # unescaper does it — and decided as route 1 decides the single `file_path`.
 # A deny exits inside `_route1`; a `read` loop and not a pipe, so that it does.
 # Otherwise the one path the payload carries, as always.
+#
+# The walks route 1 forks for a patch are charged in `_route1_hit`, here: one
+# unit per walk plus one per 256 bytes of path AND root, since a walk descends
+# both, and a long root — the payload's `cwd` when there is no git checkout and
+# no `CLAUDE_PROJECT_DIR` — padded with `x/..` made 24 cheap-looking walks cost
+# 19 s (review round 5). Past `_CG_PATCH_FORKS` units the patch is refused as
+# unread: 12 ordinary files whose names merely hold a guarded one
+# (`cloudbuild.yaml`, `featureFlags.json`) still pass. And a backstop for what
+# a byte count cannot see: once the hook has run three seconds (`SECONDS`,
+# bash 3 has it too) the next walk refuses, so no cost shape reaches the 5 s
+# kill through this loop. Copilot only: a Claude Code payload names one file.
+_CG_PATCH_FORKS=12
+_cg_forks=0
+_cg_charge_fork() {
+    [ -n "${LOCI_HOST_PATCH_FILES:-}" ] || return 0
+    _cg_forks=$((_cg_forks + 1 + (${#1} + ${#2}) / 256))
+    [ "$_cg_forks" -le "$_CG_PATCH_FORKS" ] && [ "${SECONDS:-0}" -lt 3 ] && return 0
+    _cg_what="unread patch"
+    deny "$REASON_PATCH_UNREAD"
+}
 if [ -n "${LOCI_HOST_PATCH_FILES:-}" ] && command -v loci_json_load >/dev/null 2>&1; then
     while IFS= read -r _cg_pf || [ -n "$_cg_pf" ]; do
         [ -n "$_cg_pf" ] || continue

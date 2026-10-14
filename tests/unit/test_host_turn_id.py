@@ -315,6 +315,20 @@ def test_the_minted_alphabet_is_path_and_flag_safe(tmp_path):
         assert turn == turn.lower()
 
 
+def test_a_payload_that_is_not_an_object_is_refused_before_the_mint(tmp_path):
+    """The id is injected at the front of the object, so a document that does
+    not open with `{` gets none — and is refused BEFORE a mint. Refused after
+    it, the new id was on record (and the Stop carry taken) for a turn no verb
+    stamped, and every later hook of the session resolved that id (AAD-7835)."""
+    state = _state(tmp_path)
+    before = _adapt(tmp_path, _payload("UserPromptSubmit"), state_dir=state)
+    assert before.changed
+    recorded = _turn_file(state).read_text(encoding="utf-8")
+    odd = _adapt(tmp_path, " " + json.dumps(_payload("UserPromptSubmit")), state_dir=state)
+    assert not odd.changed and odd.prompt_id == ""
+    assert _turn_file(state).read_text(encoding="utf-8") == recorded, "a refused prompt minted"
+
+
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0,
                     reason="a read-only directory is a POSIX permission; root ignores it")
 def test_a_mint_that_cannot_be_recorded_injects_nothing_and_ends_the_stale_record(tmp_path):
@@ -502,6 +516,15 @@ def _run_hook(tmp_path: Path, hook: str, payload: dict, *, copilot: bool = True,
         "PATH": f"{_to_bash_path(home / '.local' / 'bin')}:/usr/bin:/bin:/usr/local/bin",
         "HOME": _to_bash_path(home),
         "LOCI_STATE_DIR": _to_bash_path(state),
+        # The environment is built from nothing, so conftest's _LOCI_BOOTSTRAP
+        # does not reach the hook unless it is spelled here. Without it a
+        # session-init run launches the detached installer for real: the stub
+        # `loci` answers `--version` with an envelope, so the CLI is "not at
+        # the pin" and `uv tool install loci-tools==<pin>` runs into the
+        # fixture home — a network install per run, which left three of them
+        # going for 18-35 min on the mac-mini and turned its 5-minute suite
+        # into a 50-minute one (AAD-7806).
+        "_LOCI_BOOTSTRAP": "1",
     }
     if project is not None:
         env["CLAUDE_PROJECT_DIR"] = _to_bash_path(project)
@@ -865,6 +888,26 @@ def test_a_marker_past_the_wait_is_dropped_and_the_prompt_mints(tmp_path):
     assert child.prompt_id != parent.prompt_id, "a fresh turn, not the parent's"
     assert "agent_id" not in child.doc
     assert _markers(state) == [], "the stale marker is dropped where it is met"
+
+
+def test_the_wait_is_seconds_not_a_minute(tmp_path):
+    """The probe saw 0.6 s between `SubagentStart` and the child's prompt, and
+    the wait is the width of the one hole the header names (a new session in
+    the same cwd inherits an unclaimed marker's turn) — so a marker 30 s old,
+    which a 60 s window still handed on, is a spawn that never came (AAD-7835).
+    One inside the wait is still claimed."""
+    state = _state(tmp_path)
+    parent = _adapt(tmp_path, _payload("UserPromptSubmit", PARENT), state_dir=state)
+    (state / f"turn-{PARENT}.child-old").write_text(
+        f"cp-{int(time.time()) - 30}-abc\n{PARENT}\n{_CWD}\n", encoding="utf-8", newline="\n")
+    other = _adapt(tmp_path, _payload("UserPromptSubmit", CHILD), state_dir=state)
+    assert other.prompt_id != parent.prompt_id
+    assert _markers(state) == []
+    (state / f"turn-{PARENT}.child-new").write_text(
+        f"cp-{int(time.time()) - 2}-abc\n{PARENT}\n{_CWD}\n", encoding="utf-8", newline="\n")
+    child = _adapt(tmp_path, _payload("UserPromptSubmit", "sess-7835-third"), state_dir=state)
+    assert child.prompt_id == parent.prompt_id
+    assert _markers(state) == []
 
 
 def test_a_marker_from_another_cwd_is_not_claimed(tmp_path):

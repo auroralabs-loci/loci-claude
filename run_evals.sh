@@ -135,6 +135,13 @@ set -euo pipefail
 # for a background command — non-interactive bash gives one /dev/null
 # otherwise. bash reports the killed job on stderr ("Terminated"); the turn's
 # stderr is captured to a file, and the note says what happened.
+# The watchdog holds NONE of the caller's descriptors: the grader runs inside
+# `$( … )`, and a watchdog whose `sleep` kept the capture pipe open made every
+# grade on a host without either binary wait out the whole bound however soon
+# the grader answered (AAD-7835 review). Killed early, it takes its `sleep`
+# down with it rather than leave one behind for the bound's length; the one
+# race left (killed while it forks the 10 s grace `sleep`) leaves that sleep,
+# which holds nothing and ends on its own.
 with_timeout() {
   if command -v timeout >/dev/null 2>&1; then
     timeout --kill-after=10 "$@"
@@ -145,7 +152,11 @@ with_timeout() {
     shift
     "$@" <&0 &
     _pid=$!
-    ( sleep "$_t"; kill -TERM "$_pid" 2>/dev/null; sleep 10; kill -KILL "$_pid" 2>/dev/null ) 2>/dev/null &
+    ( _s=""; trap 'kill "$_s" 2>/dev/null; exit 0' TERM
+      sleep "$_t" & _s=$!; wait "$_s"
+      kill -TERM "$_pid" 2>/dev/null
+      sleep 10 & _s=$!; wait "$_s"
+      kill -KILL "$_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
     _wd=$!
     wait "$_pid" || _rc=$?
     if kill -0 "$_wd" 2>/dev/null; then kill "$_wd" 2>/dev/null; wait "$_wd" 2>/dev/null || :; fi
@@ -380,6 +391,14 @@ MCP_CONFIG=""
 # released server — the same class of quiet mis-attribution the skew guard
 # exists for. `--installed-plugin` reads the installed copy, as it always did.
 PLUGIN_MCP_JSON=""
+# What interactive Claude Code tells its model in plan mode, for the headless
+# Claude flow, which gets the permission half of plan mode from
+# `--permission-mode plan` and no word about it (AAD-7803; see the single-turn
+# flow). Copilot's host says it itself: the `[[PLAN]]` prefix.
+CLAUDE_PLAN_NOTICE='--- PLAN MODE ---
+Plan mode is active for this turn (the headless form of /plan: --permission-mode plan). You MUST NOT make any edits or run any tool that changes files; research, then present your plan — the hand-over for approval ends the turn.
+--- END PLAN MODE ---'
+
 if [[ "$EVAL_HOST" == "copilot" ]]; then
   # Nothing to pass: Copilot takes `--additional-mcp-config`, but the block
   # this code would hand it is the EMPTY one described below, and the plugin's
@@ -610,13 +629,16 @@ stage_stale_tree() {
     | jq -R . | jq -s --arg d "$dir" '[{directory: $d, file: ($d + "/blink.c"),
         output: "blink.o", arguments: .}]' > "$dir/compile_commands.json" \
     || { echo "  fixture rejected: could not write the compile database" >&2; return 1; }
-  local init_out
+  # Outside the tree: the model works in it, and `build fresh` here prints the stale verdict the evals grade it on finding.
+  local init_out cli_log="${dir%/*}/stale-artifact-cli.log"
+  : >"$cli_log"
   init_out=$(cd "$dir" && loci init --project-root "$dir" --target=armv6-m \
                --compdb=compile_commands.json --set artifacts.elf=kernel.elf --auto \
-               2>/dev/null) || true
+               2>>"$cli_log") || true
+  printf '%s\n' "$init_out" >>"$cli_log"
   if ! jq -e '.ok == true and .data.init_status == "ok"' <<<"$init_out" >/dev/null 2>&1; then
     echo "  fixture rejected: \`loci init\` did not initialize the staged tree" \
-         "($(jq -c '.error.code // .error.message // "no envelope"' <<<"$init_out" 2>/dev/null))" >&2
+         "($(jq -c '.error.code // .error.message // "no envelope"' <<<"$init_out" 2>/dev/null)), see $cli_log" >&2
     return 1
   fi
   [ -f "$dir/.loci/build.yaml" ] || { echo "  fixture rejected: init said ok but wrote no recipe" >&2; return 1; }
@@ -625,9 +647,9 @@ stage_stale_tree() {
   # Without this check a CLI-version gap reports as a skill FAIL — and the contract
   # explicitly tells the model NOT to run the gate on an old CLI, so the assertion
   # "runs loci build fresh" would be demanding the opposite of the rule.
-  if ! loci build fresh --elf "$dir/kernel.elf" >/dev/null 2>&1; then
+  if ! loci build fresh --elf "$dir/kernel.elf" >>"$cli_log" 2>&1; then
     echo "  fixture rejected: the loci on PATH has no working \`build fresh\`" \
-         "($(loci --version 2>&1 | sed -n '1{p;q;}')) — needs the CLI these skills pin" >&2
+         "($(loci --version 2>&1 | sed -n '1{p;q;}')) — needs the CLI these skills pin, see $cli_log" >&2
     return 1
   fi
 
@@ -1060,6 +1082,14 @@ dry_run_report() {
   echo "DRY_RUN|argv resolved, $HOST_BIN never called ($FLOW, --model $MODEL)" > "$VERDICT"
 }
 
+# two_turn_resume_argv <session-id> — the two-turn flow's turn-2 argv, into
+#   T2_ARGV: the flow's C_ARGS, `--resume <id>`, then RESUME_TURN (both are the
+#   caller's locals). One builder for the real turn and the dry run, so the
+#   argv a test pins is the one that runs.
+two_turn_resume_argv() {
+  T2_ARGV=("${C_ARGS[@]}" --resume "$1" "${RESUME_TURN[@]}")
+}
+
 run_one_eval() {
   local SKILL_NAME="$1"
   local EVAL_ID="$2"
@@ -1305,6 +1335,10 @@ run_one_eval() {
       dry_run_report "$TAG" two-turn \
         "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_dryrun.txt" \
         "$LOG_FILE" "$VERDICT_FILE" "${C_ARGS[@]}" "${PLAN_TURN[@]}"
+      # Turn 2 too, built by the function the real turn uses, under a
+      # placeholder for the id turn 1 would have returned.
+      two_turn_resume_argv '<session-id>'
+      echo "resume: $HOST_BIN ${T2_ARGV[*]}" >> "$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_dryrun.txt"
       echo "${PROG_PFX} DONE     ${TAG}  DRY_RUN" >> "$PROGRESS_LOG"
       return
     fi
@@ -1367,8 +1401,9 @@ run_one_eval() {
       echo "${PROG_PFX} RUNNING  ${TAG}  [turn2/edit]" >> "$PROGRESS_LOG"
       local T2_START T2_END
       T2_START=$(date +%s)
+      two_turn_resume_argv "$SID"
       ( cd "$BLE_ROOT" && echo "$APPROVE_PROMPT" | with_timeout "$EVAL_TIMEOUT" \
-          "$HOST_BIN" "${C_ARGS[@]}" --resume "$SID" "${RESUME_TURN[@]}" ) >"$T2_JSON" 2>>"$STDERR_FILE" || T2_EXIT=$?
+          "$HOST_BIN" "${T2_ARGV[@]}" ) >"$T2_JSON" 2>>"$STDERR_FILE" || T2_EXIT=$?
       T2_END=$(date +%s)
       R2=$(transcript_text "$T2_JSON")
       T2_TOOLS=$(transcript_tool_names "$T2_JSON")
@@ -1598,9 +1633,15 @@ $R2"
   else
   CLAUDE_ARGS=(-p --model "$MODEL" --dangerously-skip-permissions)
   if $PLAN_MODE; then
-    # Headless equivalent of typing /plan in an interactive session — puts the
-    # run in plan mode so the preflight skill's "MANDATORY in /plan mode" gate
-    # actually fires. This replaces the (unsupported) /plan prompt prefix.
+    # Headless equivalent of typing /plan in an interactive session: the
+    # permission half of plan mode (edits refused). It replaces the
+    # (unsupported) /plan prompt prefix. It is NOT the whole of plan mode: in
+    # print mode Claude Code tells the model nothing about it (probed 2026-10-05,
+    # 2.1.288 — asked, the model quotes "no such instruction"), where the
+    # interactive REPL injects a plan-mode reminder every turn and Copilot's
+    # host prefixes the prompt with `[[PLAN]]`. The preflight skill gates on
+    # that signal (AAD-7803), so the system prompt below carries the notice the
+    # REPL would; argv is unchanged.
     CLAUDE_ARGS+=(--permission-mode plan)
   fi
   # `--bare` skips plugins entirely — `--plugin-dir` included, per `claude
@@ -1615,7 +1656,15 @@ $R2"
   if [[ -n "$MCP_CONFIG" ]]; then
     CLAUDE_ARGS+=(--mcp-config "$MCP_CONFIG")
   fi
-  if [[ -n "$SYSTEM_PROMPT" ]]; then
+  local CLAUDE_SYSPROMPT="$SYSTEM_PROMPT"
+  if $PLAN_MODE; then
+    # The plan-mode notice (see --permission-mode plan above). Appended, so a
+    # non-plan eval's system prompt is byte for byte what it always was.
+    CLAUDE_SYSPROMPT+="${CLAUDE_SYSPROMPT:+$'
+
+'}$CLAUDE_PLAN_NOTICE"
+  fi
+  if [[ -n "$CLAUDE_SYSPROMPT" ]]; then
     # Pass the system prompt via a FILE, not an inline argv string. The
     # preflight SKILL.md is ~33KB and Windows caps the whole CreateProcess
     # command line at 32,767 chars — an inline --append-system-prompt blows
@@ -1623,7 +1672,7 @@ $R2"
     # exits 126 ("Argument list too long") before the model ever runs. The
     # *-file variant passes only the path, sidestepping the limit entirely.
     local SYSPROMPT_FILE="$RESULTS_DIR/${SKILL_NAME}_eval${EVAL_ID}_sysprompt.txt"
-    printf '%s' "$SYSTEM_PROMPT" > "$SYSPROMPT_FILE"
+    printf '%s' "$CLAUDE_SYSPROMPT" > "$SYSPROMPT_FILE"
     CLAUDE_ARGS+=(--append-system-prompt-file "$SYSPROMPT_FILE")
   fi
 
@@ -1953,7 +2002,7 @@ REASON: <one-line summary>"
       GRADER_HOST_FLAGS+=(--bare)
     fi
     T_START=$(date +%s)
-    GRADE=$(echo "$GRADE_PROMPT" | timeout --kill-after=10 "$GRADE_TIMEOUT" "$HOST_BIN" "${GRADER_HOST_FLAGS[@]}" --model "$GRADER_MODEL" 2>"$GRADE_STDERR_FILE") || GRADE_EXIT=$?
+    GRADE=$(echo "$GRADE_PROMPT" | with_timeout "$GRADE_TIMEOUT" "$HOST_BIN" "${GRADER_HOST_FLAGS[@]}" --model "$GRADER_MODEL" 2>"$GRADE_STDERR_FILE") || GRADE_EXIT=$?
     T_END=$(date +%s)
     T_ELAPSED=$((T_END - T_START))
 

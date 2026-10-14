@@ -428,10 +428,16 @@ def _session_init(tmp_path: Path, *, fail_fast: bool,
         loci.write_text(stub, encoding="utf-8", newline="\n")
         loci.chmod(0o755)
         path = f"{_to_bash_path(bin_dir)}:{path}"
+    # `_LOCI_BOOTSTRAP`: the environment is built from nothing, so the suite's
+    # own setting never reaches the hook, and without it session-init's detached
+    # installer ran a REAL `uv tool install loci-tools==<pin>` into this fixture
+    # home — two ~100 MB installs per suite run, found on the mac-mini while
+    # proving AAD-7835 (the AAD-7806 leak, in a second file).
     env = {
         "PATH": path,
         "HOME": _to_bash_path(home),
         "LOCI_STATE_DIR": _to_bash_path(state),
+        "_LOCI_BOOTSTRAP": "1",
     }
     if fail_fast:
         env["LOCI_FAIL_FAST"] = "1"
@@ -442,6 +448,10 @@ def _session_init(tmp_path: Path, *, fail_fast: bool,
         input=json.dumps(payload) if payload is not None else "",
     )
     assert proc.returncode == 0, proc.stderr
+    status = state / "loci-cli-status.json"
+    if status.is_file():
+        assert json.loads(status.read_text(encoding="utf-8")).get("status") == "skipped", (
+            "session-init started a real CLI install from a test")
     log = state / "loci.log"
     return (json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"],
             log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
@@ -449,7 +459,7 @@ def _session_init(tmp_path: Path, *, fail_fast: bool,
 
 #: What the rule is allowed to cost the injected block, and it is charged only to
 #: a session that sets the variable. The steady-state block
-#: (`test_project_detection_gate.py`) pays nothing, which is why the line is
+#: (`test_session_init_block.py`) pays nothing, which is why the line is
 #: conditional rather than trimmed to fit a budget it would have to share.
 _FAIL_FAST_LINE_ALLOWANCE = 700
 

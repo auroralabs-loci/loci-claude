@@ -5,7 +5,7 @@ verdict depended on which host tools a machine happened to have. There is one
 rung now and it runs everywhere, which is the whole point of it; the cost of
 that is that a defect in it is a defect in `contract-guard.sh`, both edge hooks,
 `draft-pending-nudge.sh`, `turn-clean.sh`, `session-init.sh`,
-`lib/detect-project.sh` and `lib/setup-steps.sh` at once. Two shipped:
+`lib/loci_host.sh` and `lib/setup-steps.sh` at once. Two shipped:
 
 * **F13** — the closing-quote scan walked one escaped quote at a time and
   re-copied the rest of the document behind each, so a 64 KB value holding
@@ -602,7 +602,7 @@ STATE_DRIVER = r"""
 . "$1"
 eval "$3"
 state() { shopt -q extglob && printf on || printf off; }
-loci_json_load '{"a": ["cwd","cwd"], "cwd": "v", "n": [1,2], "z": "\u00e9"}'
+loci_json_load '{"a": ["cwd","cwd"], "cwd": "v", "z": "\u00e9"}'
 : > "$2"
 printf '%s' "$(state)" >> "$2"
 loci_json_get cwd > /dev/null;     printf ' %s' "$(state)" >> "$2"
@@ -610,7 +610,6 @@ loci_json_get absent > /dev/null;  printf ' %s' "$(state)" >> "$2"
 loci_json_has absent || true;      printf ' %s' "$(state)" >> "$2"
 loci_json_kind cwd > /dev/null;    printf ' %s' "$(state)" >> "$2"
 loci_json_count cwd > /dev/null;   printf ' %s' "$(state)" >> "$2"
-loci_json_array_len n > /dev/null; printf ' %s' "$(state)" >> "$2"
 """
 
 #: `loci_json_count` and the walk it falls back to, over one document. The two
@@ -816,11 +815,11 @@ def test_a_name_never_followed_by_a_colon_is_absent(tmp_path, document):
 
 
 @pytest.mark.parametrize("setup,expect", [
-    (":", " ".join(["off"] * 7)),
-    ("shopt -s extglob", " ".join(["on"] * 7)),
+    (":", " ".join(["off"] * 6)),
+    ("shopt -s extglob", " ".join(["on"] * 6)),
 ])
 def test_the_seek_puts_back_the_shell_option_it_borrows(tmp_path, setup, expect):
-    """`extglob` is GLOBAL shell state and seven hooks source this library.
+    """`extglob` is GLOBAL shell state and every hook sources this library.
 
     The search needs it: the pattern that steps over a non-key occurrence in one
     glob is an extended one, and bash parses a function's `case` patterns when
@@ -1580,8 +1579,7 @@ def test_a_name_the_escaped_pass_cannot_spell_is_left_to_the_first(tmp_path,
 
 #: Every shell call in this repository that asks the library for a named field.
 _FIELD_READ_RE = re.compile(
-    r"\b(?:loci_json_get|loci_json_has|loci_json_kind|loci_json_count"
-    r"|loci_json_array_len)\s+"
+    r"\b(?:loci_json_get|loci_json_has|loci_json_kind|loci_json_count)\s+"
     r"""(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_$]+))""")
 
 

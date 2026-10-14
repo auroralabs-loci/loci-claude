@@ -173,6 +173,23 @@ def test_structural_bounds_are_whole_binary_only():
     assert "`stack-depth` is what measures all four" in contract_skill
 
 
+def test_a_structural_row_cites_the_whole_binary_not_the_functions_analysed():
+    """AAD-7797: `analyse stack` analyses the functions it is named, and
+    `data.detail`'s own lists are what those reach. A structural entry is judged on
+    the whole binary (`data.detail.whole_binary`): a clean `Pairing_start` read as
+    the binary's 0 once, and passed a whole-ELF bound on an image holding 524
+    indirect-call sites. The rule is the shared section's, and stack-depth's
+    envelope has to name the block for the rule to point at anything."""
+    section = _section(_text(HOUSE_RULES), *MAPPING)
+    assert "cites `data.detail.whole_binary`" in section
+    assert "A clean function never makes the binary clean" in section
+    assert "without one, `data.detail`'s lists are only what the analysed functions reach" in section
+    assert ("`whole_binary`, the same three for the whole binary, present when an "
+            "entry bounds them") in _skill("stack-depth")
+    assert "from `data.detail.whole_binary` when the run has it" in _skill("stack-depth")
+    assert "the counts are only the analysed functions' reach" in _skill("stack-depth")
+
+
 def test_the_mapping_is_routed_to_from_the_skill_that_measures_the_four():
     """A shared section nothing routes to is prose nobody is handed.
 
@@ -401,3 +418,62 @@ def test_preflight_escalates_on_a_structural_hazard_whether_or_not_one_is_bounde
     assert "an enabled structural invariant bounds it" not in triggers, (
         "the escalation is conditional on a bound again — these four judge "
         "without a contract, so a repo with none would escalate on nothing")
+
+
+def test_post_edit_escalates_with_no_contract():
+    """`data.escalations` is built from contract requests, so with no contract it is
+    always empty. v0.2.84 and v0.2.85 keyed Step 4a on that list alone and post-edit
+    stopped escalating in every uncontracted repo."""
+    step = _section(_skill("loci-post-edit"),
+                    "## Step 4a: what the escalated skills still answer",
+                    "## Step 5:")
+    assert "`none`: that list is always empty" in step, (
+        "Step 4a no longer says the escalation list is empty with no contract, so "
+        "an agent reads the empty list as nothing to escalate")
+    assert "yours to argue" in step, (
+        "Step 4a no longer hands the no-contract escalation to the agent")
+
+
+def test_post_edit_offers_the_relink_before_the_child():
+    """The link is stale by construction after an edit, so a child invoked as it
+    stands lands on the object and its `worst_case_depth` is one frame. The offer
+    was keyed on `data.artifact.before_saved`, which only the child's envelope
+    carries, and "offer no relink" read as a ban — so it was never made."""
+    step = _section(_skill("loci-post-edit"),
+                    "## Step 4a: what the escalated skills still answer",
+                    "## Step 5:")
+    assert "offer no relink" not in step, (
+        "Step 4a bans the relink again, so the child lands on the object")
+    assert "**Offer the relink before invoking.**" in step
+    assert "`data.linked_before.before_saved`" in step, (
+        "Step 4a keys the offer on something other than the parent's own envelope")
+    assert "`data.linked_before.relink`" in step
+
+    offer = _section(_ref("loci-post-edit", "escalation.md"),
+                     "## When to offer a relink", "1. **Only when")
+    rules = _ref("loci-post-edit", "escalation.md").split(
+        "## When to offer a relink", 1)[1]
+    assert "before invoking either" in offer
+    assert "**Only when `data.linked_before.before_saved` is `true`**" in rules
+    assert "`data.artifact.before_saved`" not in rules, (
+        "the relink condition reads the child's envelope, which arrives too late")
+    assert "the tree builds as it stands" not in rules, (
+        "a condition the agent cannot verify before the build is back")
+
+
+def test_preflight_offers_the_relink_after_the_child():
+    """Before the first edit nothing needs protecting, so a child that refused the
+    stale link and measured the object is the one case a relink costs nothing — and
+    the plan-mode answer is a plan step, since plan mode runs no build."""
+    rules = _ref("loci-preflight", "escalation.md").split(
+        "## When to offer a relink", 1)[1]
+    assert "`data.artifact.kind` is `object`" in rules
+    assert "`data.artifact.refused`" in rules
+    assert "`data.artifact.before_reason` is `no_edit_this_turn`" in rules, (
+        "the offer is no longer limited to the reason under which nothing is lost")
+    assert "Any other reason: no offer" in rules
+    assert "**Plan mode: make `data.artifact.relink` (`error.relink`) the plan's first step**" in rules, (
+        "plan mode would run a build or drop the relink instead of planning it")
+    assert "the same `--turn` and `--parent-run`" in rules
+    assert "linked_before" not in rules, (
+        "preflight reads the child's envelope; `measure` adds no field for it")

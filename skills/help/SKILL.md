@@ -18,7 +18,7 @@ next step. Adapt the output based on what is actually working vs missing.
 ## Fast path
 
 1. The project's facts come from `loci project` (Step 0). Do **not** re-derive any
-   of them, and do not `find`, Glob or `ls` the project for ELF files.
+   of them, and do not `find`, `ls` or search the project for ELF files.
 2. **One Bash** covering the project, auth, quota, and stats:
    `loci project; loci auth status; loci usage; loci stats global-summary`
    (skip `usage` / `global-summary` only if `auth status` is `auth_required`).
@@ -103,6 +103,7 @@ Map LOCI target to CPU name:
 | LOCI target | CPU |
 |---|---|
 | aarch64 | A53 |
+| neoverse-v2 | Neoverse V2 (ARMv9-A) |
 | armv7e-m | Cortex-M4 |
 | armv6-m | Cortex-M0+ |
 | tc399 | TC399 |
@@ -139,7 +140,10 @@ started.
 
 → Name one — "check main in ~/Projects/fw" — or point me at a binary:
   "stack depth of main in build/app.elf".
+  Likely roots here: <each error.candidates[].path>
 ```
+
+Drop the last line when `candidates` is empty.
 
 If the `loci:` line says `uv` is missing, relay that: nothing else in LOCI runs
 until it is there. LOCI checks for it and **never** installs it — it is a host
@@ -151,8 +155,8 @@ once they have it.
 ```
 ## Environment — no supported target
 
-`loci init` found no target ISA LOCI supports here (aarch64, armv7e-m, armv6-m,
-tc399), and that result is recorded and permanent.
+`loci init` found no target ISA LOCI supports here (aarch64, neoverse-v2,
+armv7e-m, armv6-m, tc399), and that result is recorded and permanent.
 
 → If LOCI should be measuring a different image in this repo (a bootloader, a
   second core), run `/loci:init` and name its target explicitly.
@@ -165,7 +169,7 @@ tc399), and that result is recorded and permanent.
 
 Every LOCI analysis skill requires a signed-in session.
 
-→ Run `! loci login` in your terminal, then re-run /loci:help.
+→ Type `! loci login` at the prompt, then re-run /loci:help.
 
 Skills that work signed-out: /loci:help, /loci:setup, /loci:bug-report, /loci:contract
 Skills that need sign-in:    /loci:init, /loci:exec-trace, /loci:stack-depth,

@@ -119,7 +119,7 @@ FULL = """## Post-Edit: aes_encrypt
 | Metric | Before | After | Note |
 | --- | --- | --- | --- |
 | Performance | 4862 ns | 5104 ns | +5.0% |
-| Energy | 12.1 uWs | 12.7 uWs | +4.9% |
+| Energy | 754 nWs | 791 nWs | +5.0% |
 
 Verdict: **CAUTION**
 
@@ -380,7 +380,7 @@ PREFLIGHT = """## Preflight: aes_encrypt
 
 | Callee | Safety | Performance | Energy |
 | --- | --- | --- | --- |
-| aes_round | ok | 812 ns | 2.1 uWs |
+| aes_round | ok | 812 ns | 126 nWs |
 
 Execution fit: **GOOD**
 """
@@ -410,7 +410,7 @@ def test_the_argued_verdict_vocabulary_is_a_verdict_too():
     contract (the fixtures' common case) was "invoked but produced no real
     verdict line"; found by the third real eval pass of T14 on the BLE project."""
     cleared = PREFLIGHT.replace("Execution fit: **GOOD**",
-                                "Execution fit: ○ cleared — 136.9 ns / 21.21 mWs measured; no contract covers this function")
+                                "Execution fit: ○ cleared — 137 ns / 21.2 nWs measured; no contract covers this function")
     assert "PASS" not in cleared.split("Execution fit")[1]
     verdict, reason = grade_preflight(cleared)
     assert verdict == "PASS", reason

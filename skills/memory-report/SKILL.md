@@ -54,7 +54,8 @@ user wrote, judged against and never followed:
 
 ```
 loci analyse memory --turn "<turn-id>" --caller memory-report \
-    [--project-root <the project the user named>] [--map-file <path.map>] [--elf <path>]
+    [--project-root <the project the user named>] [--map-file <path.map>] [--elf <path>] \
+    [--source <file the user named>]
 ```
 
 Its `data.project_root` and `data.context_file` are `<project_root>` and
@@ -70,6 +71,8 @@ Its `data.project_root` and `data.context_file` are `<project_root>` and
   `data.artifact.via` says which of `named` / `recipe` / `ranked` it took. Read
   that; never re-rank in prose beside it. [The artifact a run measures](../_shared/house-rules.md#the-artifact) is the rule, and the verb is its one
   implementation here.
+- `--source` only when the user named a source file and no binary: it finds the
+  project, never what is measured.
 - `--map-file` is what turns absolute totals into per-region occupancy with
   percentages. The region sizes are the linker's own, so the percentage is
   arithmetic on a fact — but it is not a bound, and it never sets a status by
@@ -102,7 +105,9 @@ itself failed. The refusal reasons are in `error.message` on this
 envelope, not in `data.artifact.refused` — that field exists only on an `ok:true`
 run. Surface the message verbatim rather than hunting for a binary yourself.
 
-**A `1` with an `error.code` is one of the eleven coded errors**, each with exactly
+**`error.code: no_artifact` is the verb refusing every candidate**: route it by
+`error.reason` through **[When nothing qualifies](../_shared/house-rules.md#no-artifact)**.
+**Any other `1` with an `error.code` is one of the eleven coded errors**, each with exactly
 one recovery in the shared contract's **When a `loci` call refuses** table:
 **`not_initialized` branches — follow its row.** `recipe_stale`
 and its neighbours name a repair that is the user's, not yours. Report the code and its recovery, and stop. Do not improvise a repair,
@@ -164,7 +169,8 @@ and the figures are that translation unit's own. The verb routes this: a
 before/after **delta** on one TU is complete in its object and comes back
 `verifiable`, while an **absolute budget** on the whole image can only ever show a
 breach there — a clean result reads `no breach visible at this scope`, never a
-pass. Render it as unjudged with that reason.
+pass. Render it as unjudged with that reason. Escalated, an object run folds back
+the object form, never firmware totals.
 
 ## Step 2: judge what the CLI could not
 
@@ -317,8 +323,8 @@ says how the artifact was chosen:
   not a caveat:
   - `validated: unvalidated` → `validated unvalidated — these flags are a claim,
     not a demonstrated one`, or the contract's `artifact_only` wording when set.
-  - `confirmed_by_user: false` → `not confirmed by anyone (written by --auto)`,
-    once, with `/loci:init` as what clears it.
+  - `confirmed_by_user: false` → `not confirmed by anyone`, once, with
+    `/loci:init` as what clears it.
   - `via: named` → the user's binary, not the recipe's own. The
     recipe governs the project; it did not build *this file*. Append `— measured
     <name>, which this recipe did not build`, so the line cannot be read as a
@@ -432,7 +438,12 @@ When memory-report is invoked as an ESCALATION from loci-preflight or
 loci-post-edit, still emit the full Conclusion table above, AND hand back
 to the parent skill a one-line summary in the form:
 `memory: ROM <X>% / RAM <Y>% — <run verdict>` when a map supplied the region
-sizes, else `memory: ROM <N> B / RAM <M> B — <run verdict>`. The word is this
+sizes, else `memory: ROM <N> B / RAM <M> B — <run verdict>`. On an object the
+totals are one translation unit's, so no firmware figure and no percentage:
+`memory: firmware unmeasured on object — <artifact> ROM <rom_total> B / RAM
+<ram_static_total> B, <reason> — <run verdict>`, the reason `relink not run` where
+`data.artifact.before_saved` is `true`, else `data.artifact.before_reason`; a
+delta bound on the unit is still judged there. The word is this
 run's own composed verdict, handed back unchanged. **The parent does not inherit
 it**: this run keeps its own record and gets its own row in the parent's table,
 drawn under a `└ ` in the `ENTRY` cell, with its figures — a clean child at 49% of
@@ -514,7 +525,10 @@ parent a one-line summary for fold-back:
 
 ```
 memory: ROM <X>% / RAM <Y>% — <PASS|CAUTION|FAIL|INCOMPLETE>
+memory: firmware unmeasured on object — <artifact> ROM <rom_total> B / RAM <ram_static_total> B, <reason> — <PASS|CAUTION|FAIL|INCOMPLETE>
 ```
+
+The second on an object; `<reason>` is as **Escalation fold-back** above states.
 
 The parent skill renders its own compact or expanded footer based on
 whether this fold-back was clean.

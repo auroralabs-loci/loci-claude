@@ -20,6 +20,8 @@
         "Cortex-M",
         "Cortex-A",
         "aarch64",
+        "Neoverse",
+        "ARMv9",
         "TriCore",
         "automotive",
         "IoT",

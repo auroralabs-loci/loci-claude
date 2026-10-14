@@ -6,7 +6,7 @@ description: >
   trace"); a limit stated in the request is judged here, and a standing bound
   is authored by /loci:contract.
 when_to_use: >
-  A request that only states a limit ("cap energy at N uWs", "must stay under
+  A request that only states a limit ("cap energy at N µWs", "must stay under
   200 ns" with nothing to measure) is /loci:contract — it authors the bound.
 ---
 
@@ -137,18 +137,21 @@ record, and that flag is how this run claims its rows.
 `ok:false` is a stop, and `error.code` says which kind. Route it through **When a
 `loci` call refuses: the eleven coded errors** in the shared house rules — one
 recovery each, and not one of them is a compiler hunt. **`not_initialized` branches —
-read its row.** Any other
+read its row.** `no_artifact` is not one of the eleven: route it by `error.reason`
+through **[When nothing qualifies](../_shared/house-rules.md#no-artifact)**. Any other
 code, and any uncoded failure: emit `error.message` verbatim and stop. A `--elf`
 refusal names every candidate it rejected and why.
 
 Pass the function as the user spelled it: a bare name, a `::`-suffix, the
 qualified or the mangled form all resolve to one canonical spelling — the one
 `data.functions`, the report and the record carry (`data.resolved` maps yours). `function_ambiguous` → list `error.candidates[]` (`signature`, `key`) and ask
-which. `function_not_found` → relay `error.message`. `data.not_found` is not empty
+which. `function_not_found` → relay `error.message` and ask whether the name is
+right, or which binary holds it (`--elf`);
+[`function_inlined`](../_shared/house-rules.md#function-inlined) → ask. `data.not_found` is not empty
 → say which names were absent (`data.unchanged`: present, unedited;
-`data.compiled_out`: relay its `reason`) before
-reporting the rest; never widen to other
-functions — each is a metered measurement.
+`data.compiled_out`, `data.inlined`: relay its `reason`) before
+reporting the rest. Either way, never measure a different function in its place —
+each is a metered measurement.
 
 ## Step 2: confirm or override the hot path
 
@@ -170,7 +173,7 @@ loci analyse measure --prepared "<manifest-id>" --project-root "<project_root>" 
 ```
 
 **`--energy` is this skill's flag, like the named `--signals`.** With a contract in place
-`measure` reports `energy_uws` only on a path the contract bounds for energy, so a
+`measure` reports `energy_nws` only on a path the contract bounds for energy, so a
 repo that wrote bounds and left energy out gets none — the right default for the
 reflex skills, wrong for this one, where energy is half the question asked. Never
 pass it from anywhere else.
@@ -187,7 +190,7 @@ Read from the envelope it printed:
 - `data.unjudged[]` — entries nothing measured, and a fabricated request whose
   comparison could not be made. Not passes, and no row.
 - `data.agent_judged[]` — entries LOCI reached no verdict on. YOU judge these.
-- `data.paths` — per fn: `hot_path` {`ns`, `energy_uws`, `lower_bound`, `before_ns`},
+- `data.paths` — per fn: `hot_path` {`ns`, `energy_nws`, `lower_bound`, `before_ns`},
   `worst_path` {`ns_worst`, …}.
 
 **The exit codes are one table**, and `2` is not `1`:
@@ -283,7 +286,7 @@ the verb assembles nothing at all and the table is still drawn.
 display word for that row (**Needs attention** / **Looks good** / **As
 reported**), never a wire spelling. A row that reached neither is not drawn: it
 becomes the `(<N> of <M> judged)` count on the verdict line. Add one line per function from `data.paths`:
-hot path `ns` and `energy_uws` on the confirmed candidate, and worst path `ns_worst`
+hot path `ns` and `energy_nws` on the confirmed candidate, and worst path `ns_worst`
 **where an entry bounds `worst_path_time` or the user asked for it**.
 Call them **hot path time** and **worst path time**, LOCI's signal vocabulary. The
 numbers come from LOCI's model trained on real workloads and platform traces; they
@@ -296,8 +299,8 @@ describe the target silicon, not an IPC estimate.
 
 | ENTRY                  | FUNCTION        | BEFORE   | AFTER    | STATUS | AGENT ASSESSMENT | NOTE |
 |------------------------|-----------------|----------|----------|:------:|:----------------:|------|
-| Performance (Hot-Path) | process_message | 1,404 ns | 3,474 ns | CAUTION | Needs attention  | +147% on the ranked hot path (msg.c:46-52), in the new bounds check at block 4 |
-| Energy                 | process_message | 0.2 uWs  | 0.49 uWs | CAUTION | Needs attention  | +145% on the same path |
+| Performance (Hot-Path) | process_message | 1.40 µs  | 3.47 µs  | CAUTION | Needs attention  | +147% on the ranked hot path (msg.c:46-52), in the new bounds check at block 4 |
+| Energy                 | process_message | 200 nWs  | 490 nWs  | CAUTION | Needs attention  | +145% on the same path |
 
 No contract in this repo — every STATUS above is composed from the agent
 assessment beside it, not from a bound. `/loci:contract` records the limits this
@@ -322,7 +325,7 @@ names the block that moved them.
 |--------------------------|-------------|----------|----------|:-------:|:----------------:|------|
 | Performance (Worst-Path) | aes_encrypt | 172 ns   | 187 ns   | CAUTION | As reported      | 187 ns against the bound "aes_encrypt must answer within 200 ns" |
 | Performance (Hot-Path)   | aes_encrypt | 141 ns   | ≥148 ns  |    —    | Needs attention  | floor only — key-schedule loop (aes.c:88-94) has no derived trip count |
-| Energy                   | aes_encrypt | 0.31 uWs | 0.34 uWs |  PASS   | Looks good       | 0.34 uWs against the 0.5 uWs bound |
+| Energy                   | aes_encrypt | 310 nWs  | 340 nWs  |  PASS   | Looks good       | 340 nWs against the 500 nWs bound |
 
 Verdict: **CAUTION** — worst path of `aes_encrypt` 187 ns against the 200 ns
 bound, and the hot path is a floor: the key-schedule loop at aes.c:88-94 has no
@@ -358,15 +361,12 @@ the `Artifact:` line, and never write "sources current" without `freshness: curr
 in hand.
 
 The `Recipe:` line says what this project's measurements are built with, and it
-is rendered from **`data.artifact.recipe`** — the verb's own answer, never the
-context file. `prepare` selects its artifact the same way the leaf verbs
-do, so the block is on this route too; after a mid-session `/loci:init` the
-context file and the envelope disagree, and the call that chose the artifact is
-the one that knows what built it. The rules are
-[The recipe provenance line](../_shared/house-rules.md#recipe-caveat)'s
-parent section: an absent block or a `null` value means *"No recipe governs this
-project."*, said once in the line's place, with `Artifact:` carrying the
-provenance alone.
+is rendered from **`data.provenance[].recipe`** — `prepare`'s answer, the entries
+the `Artifact:` line reads, never the context file; `measure` carries no recipe.
+The rules, the per-unit case among them, are
+[The recipe provenance line](../_shared/house-rules.md#recipe-provenance-line):
+an absent block or a `null` value means *"No recipe governs this project."*, said
+once in the line's place, with `Artifact:` carrying the provenance alone.
 
 **Two runs print no `Recipe:` line at all.** One where no recipe governs the
 project, above — and one where the recipe governed nothing: on the `--elf`
@@ -384,8 +384,8 @@ not delete it** — a caveat nobody can see is not a caveat:
 
 - `validated: unvalidated` → `validated unvalidated — these flags are a claim,
   not a demonstrated one`.
-- `confirmed_by_user: false` → `not confirmed by anyone (written by --auto)`,
-  with `/loci:init` as what clears it.
+- `confirmed_by_user: false` → `not confirmed by anyone`, with `/loci:init` as
+  what clears it.
 - **`via` reads `named`** — not the recipe's `artifact` and not one LOCI
   built this run: the binary the user named, or a vendor blob. The recipe governs
   the project; it did not build *this file*.
@@ -427,7 +427,7 @@ The cause names findings with numbers, not gates:
 ```
 Verdict: **CAUTION** — worst path of `aes_encrypt` 187 ns against the 200 ns bound
 Verdict: **CAUTION** — worst path of `aes_encrypt` +23.4% vs last run (<date>), in the key-schedule loop at block 4
-Verdict: **PASS** — 4 functions measured, worst path 1.2 us; no contract covers timing and no prior run to compare
+Verdict: **PASS** — 4 functions measured, worst path 1.24 µs; no contract covers timing and no prior run to compare
 ```
 
 The middle line is the shape a historical regression takes now: the delta is real

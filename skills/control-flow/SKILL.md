@@ -119,6 +119,9 @@ row**), `recipe_stale`,
 `recipe_tampered` and the rest, each with the one recovery that table names.
 Relay the code and its recovery verbatim, and stop. The table is the procedure;
 it is not restated here, and nothing in it sends you looking for anything.
+`error.code: no_artifact` is not one of the eleven: it is the verb refusing every
+candidate, routed by `error.reason` through **[When nothing
+qualifies](../_shared/house-rules.md#no-artifact)**.
 
 The envelope carries:
 
@@ -132,7 +135,8 @@ The envelope carries:
 - `data.compiled` — one line per touched translation unit, and whether it was
   rebuilt.
 - `data.functions` / `data.not_found` — what was rendered, and what was asked for
-  and is not in the artifact.
+  and is not in the artifact; `data.inlined`, which of those were inlined and into
+  what: relay each `reason`.
 - The contract block, in `analyse stack`'s shapes: `data.contract`,
   `judgements`, `gates`, `verdict`, `unjudged`, `agent_judged`, `rows`. Nothing is
   measured, so `judgements`, `gates` and `rows` are empty, `verdict` is null and the

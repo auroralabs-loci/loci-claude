@@ -10,11 +10,18 @@
 # (`loci_log_session`); a line without it was written before any hook payload
 # had been read, and no reader can attribute it to a session.
 #
-# File logging is on in dev mode (LOCI_ENV in {dev,development,1,true}), and in
-# fast-fail mode (LOCI_FAIL_FAST) at WARN — QA runs production artifacts, so the
-# switch that makes a `loci` failure loud has to be able to record it in a build
-# where LOCI_ENV says nothing. The two gates are independent and neither implies
-# the other. Otherwise production is silent. Safe to source multiple times.
+# File logging is on in dev mode (LOCI_ENV in {dev,development,1,true}), under
+# LOCI_HOOK_LOG=1 at the same level, and in fast-fail mode (LOCI_FAIL_FAST) at
+# WARN — QA runs production artifacts, so the switch that makes a `loci` failure
+# loud has to be able to record it in a build where LOCI_ENV says nothing. The
+# three gates are independent and none implies another. Otherwise production is
+# silent. Safe to source multiple times.
+#
+# LOCI_HOOK_LOG exists because LOCI_ENV is not only a log switch: the loci CLI
+# reads it too and selects the dev backend AND the dev session store, so a run
+# that wanted the hooks' log under LOCI_ENV=dev found `loci init` refusing with
+# `auth_required` against a production sign-in (AAD-7793, the Copilot smoke on
+# WSL). This switch is the log alone — the CLI does not read it.
 
 # Idempotent guard
 [ -n "${_LOCI_LOG_SOURCED:-}" ] && return 0
@@ -41,6 +48,17 @@ loci_fail_fast() {
     esac
 }
 
+# LOCI_HOOK_LOG=1 turns the file log on at DEBUG with nothing else: not the dev
+# backend, not the dev session store, not fast-fail. The acceptance gates
+# (tests/acceptance/copilot_smoke.sh) read the hooks' start/end lines through it
+# against a production sign-in.
+loci_hook_log() {
+    case "${LOCI_HOOK_LOG:-}" in
+        1|true|TRUE|True|yes|on|debug|DEBUG) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Numeric level for filtering.
 _loci_log_level_num() {
     case "${1:-}" in
@@ -58,11 +76,11 @@ _loci_log_level_num() {
 # Same reasoning for the rotation check.
 _LOCI_LOG_FILE=""
 _LOCI_LOG_THRESHOLD=99
-if loci_is_dev || loci_fail_fast; then
+if loci_is_dev || loci_hook_log || loci_fail_fast; then
     # Fast-fail alone logs from WARN: what it exists to record is the failure and
     # the notice that carries it, not the start/end line of every hook in a
     # production session.
-    if loci_is_dev; then
+    if loci_is_dev || loci_hook_log; then
         _LOCI_LOG_THRESHOLD=$(_loci_log_level_num DEBUG)
     else
         _LOCI_LOG_THRESHOLD=$(_loci_log_level_num WARN)

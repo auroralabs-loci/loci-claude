@@ -1,8 +1,8 @@
 # LOCI Usage Examples
 
-LOCI runs two skills automatically on every Claude Code session — no slash command needed. The rest are available on demand.
+LOCI runs two skills automatically in every session, under Claude Code and under GitHub Copilot CLI — no slash command needed. The rest are available on demand.
 
-Each example shows a complete LOCI interaction — the trigger phrase, what LOCI does internally, and the output format you will see in Claude Code.
+Each example shows a complete LOCI interaction — the trigger phrase, what LOCI does internally, and the output format you will see in your coding agent.
 
 ---
 
@@ -83,7 +83,7 @@ LOCI extracts the compiled assembly, calls LCLM — the execution model behind A
 
     motor_control_loop
       Execution time:  3.82 µs  (std dev: 0.12 µs)
-      Energy:          0.0041 Ws
+      Energy:          592 nWs
       Hottest block:   pid_update — 61% of total cycles
 
 Low standard deviation means strong empirical backing. High standard deviation flags that the assembly pattern is underrepresented and the estimate should be treated with caution.

@@ -1,20 +1,21 @@
 LOCI: install and setup
 =======================
 
-LOCI version: 0.3.0
+LOCI version: 0.3.22
 Canonical source: agents.txt in the loci-claude repository root.
 
-This file is the machine-readable install guide for LOCI. A coding agent can
-follow it from top to bottom. A person can follow it too. It is the twin of the
-"Install", "Quick Start" and "Troubleshooting" sections of README.md.
+The machine-readable install guide for LOCI: a coding agent can follow it from
+top to bottom, and so can a person. It is the twin of README.md's "Install",
+"Quick Start" and "Troubleshooting" sections.
 
 
 WHAT LOCI IS
 ------------
 
-LOCI is a Claude Code plugin for C, C++, Rust and Go projects. It predicts what
-compiled code will do: execution time, energy, stack depth and memory. It reads
-the compiled binary. It never runs the code, and it never changes the code.
+LOCI is a Claude Code and GitHub Copilot CLI plugin for C, C++, Rust and Go
+projects. It predicts what compiled code will do: execution time, energy,
+stack depth and memory. It reads the compiled binary. It never runs the code,
+and it never changes the code.
 
 LOCI judges a measurement against a bound (a limit you state, such as "under
 200 ns"). Without a bound it reports the number and reasons about it.
@@ -25,7 +26,9 @@ BEFORE YOU START
 
 You need these:
 
-  1. Claude Code, latest version.
+  1. Claude Code (latest) or GitHub Copilot CLI (1.0.90 or newer). On
+     Windows, Copilot also needs PowerShell 7 and Git for Windows' bash on
+     PATH (the hooks are bash).
   2. Python 3.12 or newer.
   3. uv (https://docs.astral.sh/uv/). uv installs the loci CLI.
   4. A compiled artifact in the project: .elf, .o or .axf.
@@ -36,14 +39,12 @@ You need these:
 These skills need no cross-compiler and no backend: /loci:stack-depth,
 /loci:memory-report, /loci:control-flow, /loci:contract.
 
-If you are an agent and uv is missing, stop and give the user one install
-command for their platform. Do not install uv yourself. It needs root and an
-interactive password prompt, so it cannot be installed from inside an agent
-session.
+If you are an agent and uv is missing, stop and give the user the one install
+command for their platform. Do not install it yourself: it needs an
+interactive password prompt.
 
   Linux or macOS   curl -LsSf https://astral.sh/uv/install.sh | sh
   macOS (brew)     brew install uv
-  Arch             sudo pacman -S uv
   Windows          winget install astral-sh.uv
 
 
@@ -55,13 +56,18 @@ Inside a Claude Code session:
   /plugin marketplace add auroralabs-loci/loci-claude
   /plugin install loci@loci
 
-From a terminal, for scripts and CI:
+Claude Code from a terminal, for scripts and CI:
 
   claude plugin marketplace add auroralabs-loci/loci-claude
   claude plugin install loci@loci -y
 
-The marketplace repository is public, so this needs no credentials. Use -y when
-there is no terminal to confirm the install.
+GitHub Copilot CLI, from a terminal (it reads the same marketplace):
+
+  copilot plugin marketplace add auroralabs-loci/loci-claude
+  copilot plugin install loci@loci
+
+The marketplace is public: no credentials. -y confirms the Claude Code install
+when there is no terminal; the Copilot commands ask nothing.
 
 
 STEP 2: INSTALL THE loci CLI
@@ -74,15 +80,14 @@ Check it:
 
   command -v loci
 
-If the command is missing, run /loci:setup in Claude Code. It installs the CLI,
-verifies the environment and repairs what is broken. It is safe to run twice.
+If the command is missing, run /loci:setup in the agent session. It installs
+the CLI, verifies the environment and repairs what is broken. It is safe to
+run twice.
 
-If you cannot run a skill, install the CLI directly:
+If you cannot run a skill, install the CLI directly, at the version this
+plugin release is built against:
 
-  uv tool install -p 3.12 loci-tools
-
-The plugin installs a pinned version of loci-tools and only ever moves it
-forward, so a direct install never rolls you back.
+  uv tool install -p 3.12 loci-tools==0.2.88
 
 
 STEP 3: SIGN IN
@@ -95,7 +100,7 @@ The user must run this in their own terminal, because it opens a browser:
 
   loci login
 
-Inside a Claude Code session, the user types this instead:
+Inside a session on either host, the user types this instead:
 
   ! loci login
 
@@ -130,12 +135,10 @@ STEP 5: VERIFY
 
   loci doctor
 
-Doctor returns one JSON envelope with a check per line and a summary. It reports
-Python, bundled dependencies, cross-compilers, the credential store, the sign-in
-state and the state directory. A required check that fails blocks analysis. An
-optional check that fails is an advisory.
+Doctor prints one JSON envelope: a check per line and a summary. A required
+check that fails blocks analysis; a failed optional check is an advisory.
 
-Then run this in Claude Code:
+Then run this in the agent session:
 
   /loci:help
 
@@ -157,9 +160,8 @@ Ask for one of these in any C, C++, Rust or Go project that has been built:
 The last one states a bound. LOCI drafts it into .loci/contract.yaml and you
 apply it. A bound is what lets a later report pass or fail.
 
-Two skills also run on their own. loci-preflight runs in /plan mode, before code
-is written. loci-post-edit runs after an edit to C, C++, Rust or Go source, and
-diffs the compiled artifact.
+Two skills run on their own, on both hosts: loci-preflight in /plan mode and
+loci-post-edit after an edit to C, C++, Rust or Go source.
 
 
 WHEN SOMETHING FAILS
@@ -178,10 +180,9 @@ Match the error code in the report, then run the skill:
   auth_required       loci login, in the user's own terminal
   loci: not found     /loci:setup
 
-A project with no compile database is initialized off its linked binary, so
-stack-depth, memory-report and control-flow work while the timing skills refuse
-with compdb_absent. Only the project's own build makes a database, and
-error.message names the generators.
+A project with no compile database is initialized off its linked binary:
+stack-depth, memory-report and control-flow work, the timing skills refuse
+with compdb_absent, and error.message names the generators that make one.
 
 If a skill did not trigger at all, check these:
 
