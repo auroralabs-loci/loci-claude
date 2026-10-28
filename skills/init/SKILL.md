@@ -11,7 +11,10 @@ description: >
   on a project that already has a recipe.
 when_to_use: >
   The codes it routes: `recipe_stale`, `recipe_tampered`, `recipe_invalid`,
-  `compiler_missing`, `recipe_foreign_host`, `arch_mismatch`, `outside_target`,
+  `compiler_missing`, `cython_missing`, `cython_timeout`, `python_not_cythonized`,
+  `python_backend_unread`, `python_target_unsupported`, `python_headers_missing`,
+  `python_headers_foreign`, `python_declaration_failed`, `python_recipe_conflict`,
+  `python_nothing_to_link`, `python_libpython_missing`, `recipe_foreign_host`, `arch_mismatch`, `outside_target`,
   `not_initialized` — each to its recovery, sometimes a knob rather than a
   re-init. **Not** `not_initialized` with no recipe — adopting a project is the
   user's call, so a skill hitting that names `/loci:init` and stops. Not for
@@ -23,8 +26,7 @@ when_to_use: >
 
 `.loci/build.yaml` records how this checkout builds — **one target ISA**, the
 compiler, the build system, the compile database, the artifact. Every LOCI
-measurement resolves its flags from it instead of guessing, which is what makes them
-reproducible. It is **machine-local**: `loci init` gitignores it via a
+measurement resolves its flags from it, which is what makes them reproducible. It is **machine-local**: `loci init` gitignores it via a
 `.loci/.gitignore` it writes.
 
 **The CLI never prompts. You do.** It refuses with a code at a genuine decision point;
@@ -82,8 +84,8 @@ loses the user's confirmation and leaves the refusal where it was.
 
 Read the project's account of itself: `CLAUDE.md`, `AGENTS.md`, `README*`, CI config and
 the root build files (`CMakeLists.txt`, `meson.build`, `Makefile`, `Cargo.toml`,
-`platformio.ini`, `west.yml`, `*.csolution.yml`/`*.uvprojx`/`*.ewp`) — a cold CMake
-tree's configure line comes from there, not from you. Then `probe`, whose `.data` is
+`setup.py`, `pyproject.toml`, `platformio.ini`, `west.yml`,
+`*.csolution.yml`/`*.uvprojx`/`*.ewp`) — a cold CMake tree's configure line comes from there, not from you. Then `probe`, whose `.data` is
 everything `loci init` decides from.
 
 - `.data.initialized == true` → a recipe is here; show `.data.recipe` and do not
@@ -102,8 +104,8 @@ everything `loci init` decides from.
   `compiler_missing` it is. `recipe_stale` on a C/C++ build system means the build
   files moved: **regenerate the compile database first** (Step 2) — initializing over
   a stale one records the stale flags at full tier and clears the staleness signal for
-  good. On cargo there is nothing to regenerate; re-derive. The others re-derive
-  cleanly.
+  good. On cargo there is nothing to regenerate; re-derive; on a Python recipe
+  `--refresh` is the recovery ([recovery.md](recovery.md)). The others re-derive cleanly.
 - `.data.candidates` empty with `.data.unsupported_candidates` filled → **skip Step 2**
   and go straight to **Step 3**. There is no target to acquire a database *for*, so
   reconfiguring their tree first mutates it to learn nothing — and do not call this
@@ -123,15 +125,18 @@ Step 3, not a deeper search. (`probe --with-make` **runs the project's build** �
 
 ## Step 2: the compile database (C/C++ build systems only)
 
-**Skip this step when `.data.build_system` is `cargo` or `go`** — none of
-these is handed a compile database, so none of `compdb.md` applies, whatever
-`.data.languages` says (a tree with both a manifest and C sources is one of these;
-`.data.notes` says which build is recorded and which language is excluded). Cargo init
-runs a real build: say so first (`voice.md`), and that it may leave an untracked
-`Cargo.lock`.
+**Skip this step when `.data.build_system` is `cargo` or `go`, or the project is
+Cython** — none of these is handed a compile database, so none of `compdb.md`
+applies, whatever `.data.languages` says (a tree with both a manifest and C sources
+is one of these; `.data.notes` says which build is recorded and which language is
+excluded). Cargo init runs a real build: say so first (`voice.md`), and that it may
+leave an untracked `Cargo.lock`.
 
 **Go and TinyGo also build for real**, and what you say afterwards differs — the
 board, and Go's inlining. Read [go.md](go.md), which replaces `compdb.md` for them.
+A Cython project (`.data.python` set, or a `setup.py`, `pyproject.toml`,
+`CMakeLists.txt` or `meson.build` naming `.pyx` or `cython`) follows
+[python.md](python.md) from here, Step 3's command included.
 
 Otherwise the gate is not "does one exist" but **current, and covering the target you
 are about to record**:
@@ -140,16 +145,18 @@ are about to record**:
 - `.data.compdbs[]` carries `targets` per database. If none builds for the ISA you will
   record — the bootloader's in a bootloader+app repo — you lack the one you need.
 - `.data.compdbs` empty → none probe could *find*, which is not none existing; a deep
-  build layout is the usual reason, and `compdb.md` opens with how to tell.
+  build layout is the usual reason, and `compdb.md` opens with how to tell. Skipping
+  this step skips nothing: with a binary linked, init asks `compdb` (Step 3) rather
+  than record a recipe without one.
 - Otherwise you have one → **Step 3**.
 
 The ISA is not settled until Step 3's question is answered, so on a multi-image repo
 **come back here after the pick** if the database you have does not cover it.
 
 To get one, read **[`compdb.md`](compdb.md)**: where to look first, the matrix, the
-three CMake rules (a never-configured tree is where this goes wrong), and how to
-synthesize. **Every route in it changes something outside LOCI**, so get a yes first —
-it says what to tell them, and `voice.md` how to open it. LOCI will not run configure
+three CMake rules, and how to synthesize. **Every route in it changes something
+outside LOCI**, so get a yes first — it says what to tell them, and `voice.md` how to
+open it. LOCI will not run configure
 for you, and neither should you.
 
 Hand it over with `--compdb="<path>" --compdb-kind=generated|synthesized`, and **carry
@@ -166,7 +173,7 @@ Run `loci init --project-root "<root>" [--compdb="<path>" --compdb-kind=<kind>] 
 
 | code | what it is | what you do |
 |---|---|---|
-| `init_needs_user` | `.error.question` says which: `target` (several supported ISAs), `toolchain_unreachable` or `compdb_regen` | `target` → the one question, below. `toolchain_unreachable` → [`container-toolchain.md`](container-toolchain.md) — before the ISA, never beside it. `compdb_regen` → [`compdb-container.md`](compdb-container.md) |
+| `init_needs_user` | `.error.question`: `target` (several ISAs), `toolchain_unreachable`, `compdb_regen`, `compdb`, or `python_run`, `python_include`, `cython`, `python_interpreter`, `python_version`, `compiler` | `target` → the one question, below. `toolchain_unreachable` → [`container-toolchain.md`](container-toolchain.md) — before the ISA, never beside it. `compdb_regen` → [`compdb-container.md`](compdb-container.md). `compdb` → no database: Step 2; the no is [`compdb.md`](compdb.md)'s last section. the rest → [python.md](python.md) |
 | `init_unsupported` | not an ISA LOCI predicts for; never retried automatically | relay `.error.message` **plus `.error.detail`**, then **stop**. [`recovery.md`](recovery.md) has the caveat to pass on |
 | `init_failed` + `.error.transient` | a temporary state of the tree — unbuilt checkout, broken build, database gone or for another image | **read [`recovery.md`](recovery.md)'s `init_failed` shapes first, top-down in the order given** — the first is a dead end that repeats every session. Otherwise relay `.error.message` (it names the fix) and stop: no recipe was written, the user runs `/loci:init` again once the tree is fixed, and you must **not loop** |
 | `auth_required` | not signed in | `bootstrap.md`'s sign-in line |
@@ -220,7 +227,7 @@ lists. A caveat goes **under** that line, never folded into it.
 `.data.report` is the rendered summary; relay it (trimmed) rather than rebuilding one
 from `.data.recipe_summary`. What survives: **target**, **compiler**, **build system +
 compile-database kind**, the **artifact** where the report has one (cargo: the linked
-program, once built; `compiler: unknown` is right there), every **`toolchain:` and `mount:`**
+program, once built), every **`toolchain:` and `mount:`**
 line ([`container-toolchain.md`](container-toolchain.md)), `.data.validated`,
 `.data.confirmed_by_user`, and — the part a trim always drops — **every line of
 `.data.notes`, every line of `.data.warnings`, and every `!` line in the report**. Those
@@ -228,14 +235,15 @@ say a recipe it could not vouch for was replaced, that nobody confirmed this one
 that the database belongs to another checkout. **Check all three: they are independent
 channels**, and the fact that matters is routinely in one of them alone — a database
 from another checkout reports `notes: []` with the reason only in an `!` line.
-(`.data.warnings` is emitted on the already-initialized envelope, so on a first write it
-is absent rather than empty.) Where `.data.confirmed_by_user` and `recipe_summary`'s
+(`.data.warnings` is absent rather than empty on a first write.) Where
+`.data.confirmed_by_user` and `recipe_summary`'s
 copy disagree the top-level field is authoritative — and so it is over the **report**,
 which renders the document: after init re-establishes a missing integrity record the
 report can read `confirmed by user: True` one line above a `.data.confirmed_by_user` of
 `false`. Relay the report, then correct it from the field.
 
-If `.data.confirmed_by_user` is false, ask once with the question tool (header
+If `.data.confirmed_by_user` is false (synthesized: `validation.failures` empty,
+else Step 2), ask once with the question tool (header
 `Recipe`; options **Looks right** / **Wrong target** / **Something else is wrong**),
 the summary plus `artifact:` notes:
 
@@ -243,7 +251,7 @@ the summary plus `artifact:` notes:
   flags and any accepted `--accept-tier`: it re-derives, so a dropped flag brings back
   the refusal you resolved.
 - **Wrong target** → take the alternatives from **`loci init probe`**'s
-  `.data.candidates[]` — this envelope omits the key on the already-initialized path. Run
+  `.data.candidates[]`. Run
   `loci init --project-root "<root>" --refresh --target=<one>` (carrying the same
   answer flags), come back here, and pass **no `--confirmed`**: they said the setup was
   wrong, which is not consent for the next one. No alternative offered →
@@ -262,7 +270,7 @@ new target — no restart. Close in one short block on what a first init
 unlocks: **one invitation**, naming this recipe's artifact and target, with
 `/loci:exec-trace`, `/loci:stack-depth` and an edit as the words they can type — not a
 command list, and no function you have not seen. Never print the recipe YAML unless
-asked, nor the plumbing (integrity record, context file, plugin dir).
+asked, nor the plumbing.
 
 On a first init or a target switch, offer the cockpit in these words (a
 *separate* terminal: it takes over the one it starts in):

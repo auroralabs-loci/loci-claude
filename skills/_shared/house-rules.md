@@ -36,7 +36,7 @@ named in the line that carries them.
 | **Conclusion rows** | five columns, the cockpit's two among them | |
 | **Structural invariants** | which measurement answers which of the four, and *Report the zero* | |
 | **Naming a path or a loop** | by its source range, never by an id no reader can resolve | `naming-paths` |
-| **The artifact a run measures** | how the verb selects and ranks it, freshness as a filter, `no_artifact` when nothing qualifies, and the `Artifact:` line | `the-artifact`, `no-artifact` |
+| **The artifact a run measures** | how the verb selects and ranks it, freshness as a filter, `no_artifact` when nothing qualifies, the `Artifact:` line, and a Python recipe's module links | `the-artifact`, `no-artifact`, `python-full-build` |
 | **Bounds returned by the CLI** | what a bound looks like coming back, and what each field means | |
 | **The build recipe** | what every measurement rests on, and the provenance line it prints | |
 | **When a `loci` call refuses** | the coded errors, each with the one recovery that works; fast-fail mode is under it (`fail-fast`) | |
@@ -833,7 +833,8 @@ yourself, and never pick one the verb did not.
 | `via` | `named` / `recipe` / `ranked` |
 | `recipe` | the recipe basis, when a recipe governs the project — what the `Recipe:` line is rendered from |
 | `reason` | only on `unverified`, and it is the sentence to quote |
-| `scope` | only on an object: *single-function: callees are not resolved in a relocatable object* |
+| `scope` | only on an object: what one translation unit cannot answer for this verb, to quote |
+| `code_before` | only on a memory run on an object with no Before of its own: the linked binary frozen at the turn's start, read for a function's own code size alone. The row's Note says its Before is the linked build's; one function can differ by a few bytes between the two |
 
 **What an object can answer is not decided here.** Measurability is the tool's
 (`contract.MEASURABILITY`): an object is admitted, and every signal it cannot answer at
@@ -844,6 +845,23 @@ the wrong scope.
 file, so nothing vouches for its flags — say so beside the line. The freshness
 filter still ran, so the file's currency is vouched for; it is the flags that are
 not.
+
+<a id="python-full-build"></a>
+
+### A Python recipe: LOCI's module links until the full build is recorded
+
+On a Python recipe (`build.system: loci-python`) a `.so` under `.loci/build/objects/`
+(`data.artifact.artifact`, or each of `data.artifact.summed` on memory) is LOCI's own
+module link, never the project's build. The `.so` files the project itself builds are
+read only once init records its full build. When the user wants those, or the ELF
+verbs on the whole project, and the run read module links, offer it: it runs the
+recipe's `build.full_build` line under `.loci/build/` (setuptools in a copy of the
+tracked files), never in the project tree, and takes minutes on a large project. Ask
+with [the question tool](#question-tool). Yes → `loci init --refresh --full-build
+--project-root "<project_root>"`, its outcome relayed as `/loci:init`'s Python
+reference says, then the verb again; no → the module links stand.
+Never run `build.full_build` by hand, nor `loci build python --full` for this: neither
+records it.
 
 ## The build recipe: what every measurement rests on
 
@@ -1123,21 +1141,20 @@ Five need more than a line:
   and `configure`; `--refresh` still needs the user's answer first, because it
   re-derives the recipe and can clear their confirmation.
 - **Never relink mid-turn without a saved Before and the user's yes.** Rebuilding
-  the recorded artifact included. Same defect, one layer down: a database
-  regenerated mid-change invalidates the Before; a binary relinked with nothing
-  saved *is* the Before being overwritten, and the two sides become two absolutes,
-  the second of which reads as a clean first measurement rather than the regression
-  it is.
+  the recorded artifact included. A binary relinked with nothing saved *is* the
+  Before being overwritten, and the regression reads as a clean first measurement.
   `data.artifact.before_saved: true` on the run that refused the stale binary (or
   `error.before_saved` on a refusal), or `data.linked_before.before_saved: true` on
   `prepare` / `measure` ahead of an escalation, says this turn kept a copy; only
   then may you offer the recipe's `full_build`, and only the user's yes runs it —
   post-edit's *When to offer a relink* says when.
   `false` means it would destroy the only pre-edit state: report what refused, with
-  `before_reason`, and do not suggest the rebuild. Except `no_edit_this_turn`:
-  nothing changed this turn, so a relink loses nothing. Ask once with
+  `before_reason`, and do not suggest the rebuild. Except `no_edit_this_turn`,
+  where the rebuild is *offered*, never run unasked. Ask once with
   [the question tool](#question-tool), naming the refused binary and `relink`; a yes
-  runs it and the verb again, a no stops with the refusal.
+  runs it and the verb again, a no — or no answer — stops with the refusal. A relink
+  loses no Before, which allows the ask, not the relink; a request saying how the
+  project builds (`make`) is information, not approval, and a request to rebuild is.
 
 **Any other `error.code`, and any uncoded failure: surface `error.message`
 verbatim and stop.** Do not retry with different flags, do not go looking for a

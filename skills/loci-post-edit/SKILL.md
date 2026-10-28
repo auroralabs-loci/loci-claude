@@ -7,8 +7,8 @@ description: >
   reminder appears after an Edit/Write; also "analyze the change", "measure the
   edit", "timing diff".
 when_to_use: >
-  The hook emits that reminder for C/C++/Rust/Go sources
-  (.c,.cc,.cpp,.cxx,.c++,.rs,.go) and headers
+  The hook emits that reminder for C/C++/Rust/Go/Python sources
+  (.c,.cc,.cpp,.cxx,.c++,.rs,.go,.py,.pyx) and headers
   (.h,.hpp,.hxx,.h++,.hh,.inc,.ipp,.tcc,.inl,.tpp,.def) in a project a LOCI recipe
   governs; a header is measured through the units that #include it (Step 0b).
   Do not skip, batch, or wait.
@@ -81,6 +81,15 @@ whole of that branch — which units, how they are chosen, and the per-unit repo
 is [`headers.md`](headers.md). Read it when the edited path is a header; skip it
 otherwise.
 
+## Step 0c: a Python source is passed to `prepare` like any other source
+
+**Applies when the edited path is a `.py` or `.pyx`**; skip it otherwise. Pass that
+file as `--source`, never a `.c`: the CLI regenerates the generated `.c` for both sides
+from the Python text. Functions carry their Python names. An untyped function is mostly
+CPython runtime; say so when the figures are dominated by it. When the reminder says
+how long the module took to compile last time, tell the user "recompiling <module>,
+which took N s last time" before Step 1.
+
 ## Step 1: `loci analyse prepare` — compile, and get the statement of work
 
 One free call. `prepare` compiles the edited translation unit against the turn's
@@ -94,21 +103,18 @@ loci analyse prepare \
     --phase post-edit --turn "<turn-id>" --caller loci-post-edit
 ```
 
-**On a repo with no `.loci/contract.yaml`, add `--signals`.** The contract is what
-normally says which signals a run measures, so without one this skill has no
-request source at all and `measure` would have nothing to bill for or report:
+**Always add `--signals`, contract or not** — timing is this skill's job, and a
+contract that bounds only stack or structure (or no `.loci/contract.yaml` at all)
+otherwise yields no timing request, so the report would carry none:
 
 ```
-    --signals hot_path_time,worst_path_time,energy
+    --signals hot_path_time,energy
 ```
 
-Those three are all `prepare` accepts — a structural or memory signal is a usage
-error naming the verb that measures it. The flag is accepted with a contract too,
-where it asks for a measurement and never a bound; this skill names none there,
-because the entries decide what is measured. Name what this edit makes
-worth measuring; naming nothing measures nothing. Nothing comes back judged:
-your assessment is what gives every row its word, and on this envelope that word
-fills the `STATUS` column as well.
+Add `worst_path_time` where the edit makes the worst case the question. A structural
+or memory signal is a usage error naming the verb that measures it. A named signal
+asks for a measurement, never a bound: an entry on the same signal and function keeps
+its own, and the rest come back unjudged — your assessment gives those rows their word.
 
 **Let it print.** Every field below is in the one envelope it writes to stdout, so
 read them there — and they stay readable for the rest of the turn, which later steps
@@ -163,7 +169,7 @@ Five rules for reading it:
   `(Before recovered after a shell edit — the newest object LOCI built, so the delta
   may span more than this edit)`. Do not re-run, and do not ask the user to restore
   and re-edit: that round trip is what this recovery exists to remove. An entry with
-  no `before_kind` is the ordinary captured snapshot.
+  no `before_kind`, or `reconstructed`, is an ordinary Before.
 - **A Before withheld after a shell edit is final for this turn.** The PostToolUse
   Bash hook already tried to freeze the pre-edit object and found none that is
   provably pre-edit. Use the no-baseline template, say the bound is unjudged, and
@@ -190,10 +196,14 @@ Five rules for reading it:
   `reason`, and it is not `current`. Carry the reason into the report rather than
   letting an unproven artifact read as a checked one.
 - **`ok:false` is a stop, and the code says which kind.** `error.message` names the
-  stage that failed and the plumbing command that reruns that stage alone; when the
-  failing stage is the compile, `error.code` is the recipe's own coded refusal. Route
+  stage that failed and `error.rerun` the plumbing command that reruns it alone; when
+  the failing stage is the compile, `error.code` is the recipe's own coded refusal. Route
   it through **When a `loci` call refuses: the eleven coded errors** in the shared
-  house rules — one recovery each, and not one of them is a compiler hunt.
+  house rules — one recovery each, and not one of them is a compiler hunt. **A compile
+  that failed with no code** returns the compiler's first error in `error.message`,
+  the diagnostics in `error.detail`, the command in `error.command` and, for a
+  synthesized entry, `error.advice`: relay them, and never name a cause the envelope
+  did not.
   **`not_initialized` branches — read its row.** Its no-recipe half matters most here,
   because an edit is not a request — being MANDATORY after a `.c` write does not make
   adopting their repo a side effect of saving a file. On its repair half, if init
@@ -301,7 +311,7 @@ callee in a translation unit you never opened.
 
 ```
 loci analyse measure --prepared "<manifest-id>" --project-root "<project_root>" \
-    --context-file "<project-context>" --caller loci-post-edit
+    --context-file "<project-context>" --caller loci-post-edit; code=$?
 ```
 
 Add `--select <candidate-id>` (repeatable) for each request whose proposal Step 3
@@ -326,12 +336,6 @@ failing with nothing to report at all. What each code means, in full:
 `prepare`; nothing was spent.
 
 Read from the envelope:
-
-```
-loci analyse measure --prepared "<manifest-id>" \
-    --project-root "<project_root>" --context-file "<project-context>" \
-    --caller loci-post-edit; code=$?
-```
 
 - `data.contract` — `project` or `none`. Read this FIRST.
 - `data.verdict` — `pass` | `caution` | `fail` | `null`.
@@ -374,15 +378,16 @@ Four things the numbers mean:
 
 - **`data.paths.<fn>.hot_path`** carries `candidate`, `scope`, `blocks`, `ns`,
   `lower_bound`, and `before_ns` when the same path was costed on the
-  Before side. `energy_nws` rides along only where the contract bounds energy for
-  that function, or where there is no contract at all. `lower_bound: true` means
+  Before side. `energy_nws` rides along where an `energy` request names that
+  function — a contract entry or Step 1's `--signals` — or with no contract at all.
+  `lower_bound: true` means
   the figure can only grow, so the row's number is prefixed `≥`. A minimum the Before
   was too is carried ([Checkpoint words](#checkpoint-words)). `reasons` names what made it one — a loop whose trip count could not
   be derived (`iters=?` is a lower bound, never a `1`), recursion, or a cycle. A
   callee's body is never in the figure, so a call never makes it one. Report `≥`;
   never resolve it by a guess.
-- **`data.paths.<fn>.worst_path`** exists only when the repo declared `worst_path_time`
-  on that entry. Its cost is callee-excluded, like every timed number, and it carries
+- **`data.paths.<fn>.worst_path`** exists only where a `worst_path_time` request named
+  that function, from an entry or `--signals`. Its cost is callee-excluded, like every timed number, and it carries
   `before_ns_worst` when a Before was costed. Its `baseline` is **`recomputed`** — the
   worst path is searched again on the Before side rather than carried there, so
   neither `same_path` nor `reselected` is ever true of it, and a Note claiming the
@@ -414,22 +419,19 @@ by hand is a different measurement from the one the record holds.
 
 ## Step 4a: what the escalated skills still answer
 
-**Invoke `stack-depth` or `memory-report` only where this edit can move what it
-checks** — once, inline, with `--parent-run <this run's manifest id>`, before Step 5:
+**Invoke every skill `data.escalations` lists** — once each, inline, with
+`--parent-run <this run's manifest id>`, before Step 5. Each item is
+`{skill, requests, triggers}`, filled whatever `data.contract` says: `requests` are
+the contract's; `triggers` LOCI read off each unit's Before and After objects —
+`stack_grew` (`before_b` → `after_b`, the walk's depth at object scope),
+`indirect_call`, `recursion`, `static_data` (`ram_b`, `rom_b`, `objects`). An empty
+list means the objects justify nothing.
 
-- `stack-depth`: the edit adds recursion, a call through a function pointer, or a
-  callee the project does not define (the diff, or a path's `reasons`: `recursive
-  call`, `unresolved call site`); or it touches a function a listed request names as
-  `fn`, or, with no contract, adds a local array or a call on a deep call chain.
-- `memory-report`: the edit adds or grows static data: a global, static array or
-  string table.
+**The diff can still add one**, for what an object cannot show: a callee the project
+does not define, a call on a deep chain. Name the line that argues it; "just to
+check" is not one.
 
-**`data.contract` decides who picks.** `project`: invoke only a skill
-`data.escalations` lists. `none`: that list is always empty, and the triggers are
-yours to argue.
-
-**Offer the relink before invoking.** The link predates this edit, so the child
-would measure the object. Where `data.linked_before.before_saved` is `true`, ask;
+**Offer the relink before invoking.** Where `data.linked_before.before_saved` is `true`, ask;
 a yes runs `data.linked_before.relink` first, a no or `false` invokes it anyway:
 [`escalation.md`](escalation.md#when-to-offer-a-relink).
 
@@ -501,6 +503,8 @@ Increment `R` (co-reasoning counter) by 1 for this pass.
   **CAUTION** / **FLAG** ([Checkpoint words](#checkpoint-words)).
   The cause names findings, not gates: "FLAG — timing +147% past budget", not
   "FLAG — the Performance row failed".
+9. **Step 4a is answered.** Each skill `data.escalations` listed has its `└ ` row,
+  or the relink question is what the turn stopped on; otherwise go back.
 
 ## The turn's intent note
 
@@ -565,9 +569,9 @@ No build detail is shown to the user: `prepare` inherits the baseline's flags, s
 there is no parity block to print, and provenance lives in the `.meta.json` sidecar
 and the manifest.
 
-Always surface a **rejected entry** — a `data.unjudged[]` item whose `reason` is
-not `"no measurement supplied …"`. It is a bound enforcing nothing, and it is
-invisible otherwise. One line each, even on a clean run:
+Surface a `data.unjudged[]` item by its `reason_code`, as the shared **An entry
+nothing measured** rule says: silent on `no_measurement`, and a **rejected entry**
+(`not_enforced`) one line each, even on a clean run:
 
 ```
 LOCI · contract — <entry text> not enforced: <reason>
@@ -578,9 +582,8 @@ The line the user reads is the skill, never the verb — the shared **The three 
 commands a user ever sees** is the rule. The verb behind it is `loci contract lint`,
 which `/loci:contract` runs: you know it, they do not need to.
 
-Stay silent on `"no measurement supplied …"` — that is the routine case. None of
-this is a gate: it describes the file, not the code, so it never moves a Status
-or the verdict.
+None of this is a gate: it describes the file, not the code, so it never moves a
+Status or the verdict.
 
 The columns, the words and the closed `ENTRY` vocabulary are [The conclusion table](../_shared/verdicts.md#conclusion-table)'s. This
 skill draws the **delta** shape where a comparable Before exists and the
@@ -590,11 +593,10 @@ verdict line, which is how a contract of any size stays out of a table about one
 edit.
 
 **Row-inclusion rules:**
-- Include Performance and Energy rows when the corresponding path measurement exists.
-  **`energy_nws` is absent on a path the contract does not bound for energy** — a
-  repo that wrote a contract and left energy out of it gets no `energy_nws` and
-  therefore no Energy row. Do not derive one from the timing figure; without a
-  contract at all the field is present as before.
+- **A figure in the envelope is a row.** Draw Performance, Worst-Path and Energy
+  wherever `hot_path.ns`, `worst_path` or `energy_nws` is present — for a new
+  function too, and whether a contract entry or `--signals` asked for it. A field
+  that is absent gets no row; never derive energy from the timing figure.
 - A numeric row an enabled contract entry covers takes its `STATUS` from that
   comparison. With no such entry your assessment carries the row, and the cell
   reads `—` on a contracted run or that assessment's word on a `none` one. No row
@@ -603,10 +605,6 @@ edit.
   structural, soundness or bound reason in the Note column.
 
 ### Build rows from measurements
-
-Use `data.paths`, `data.path_moved`, and `data.unselectable`, plus the contract
-judgement and gate payloads when `data.contract` is `project`. A `none` envelope
-carries none of them.
 
 **Attributing a row to an entry** — a row quotes the requirement in the
 entry's own words, an `entry_key: null` judgement is LOCI's own comparison
@@ -622,13 +620,14 @@ and never the user's bound, and one row carries one requirement: apply
 - **`before`** — `null` when the run had no baseline. When *every* row for
   a function has `before: null`, use the no-baseline template and drop the
   column; never print a column of blanks.
-- **`note`** — verbatim. `measure` has already named the path a time figure was
-  computed on (`— on the ranked hot path (<file>:<lines>)`, plus
+- **`note`** — verbatim. `measure` already names the path a time figure was
+  computed on (`— on the ranked hot path (<file>:<lines>)`, `selected`
+  via `--select`, plus
   `per iteration of the outer loop` for an
   iteration-scope candidate, `(≥ lower bound)`, and `hot path moved — absolutes
   only`); that is what stops a typical-case number reading as a hard-real-time
   promise, so never trim it. Append a skill-side sub-finding after it,
-  comma-separated. The source range in that Note is how the path is named for the
+  comma-separated. That Note's source range is how the path is named for the
   rest of the report; `hot_path.candidate` stays out of the prose, per the shared
   contract's **Naming a path or a loop in the report**.
 - **Which time question the row answers** comes from the measured path. A
@@ -702,10 +701,7 @@ to weigh rather than a breach
 Note where that `CAUTION` came from. No bound computed it — there is none in this
 repo — so the word in the `STATUS` column is your **Needs attention** mapped into
 it, which is what the caption under the table says and what the run's `contract`
-field records durably. The Note is what names the block behind it. The old
-vocabulary had one word for this run and it was `PASS`, because a measurement
-could not fail on its own; a tripled hot path reported as a green pass is exactly
-what the second column exists to prevent.
+field records durably. The Note is what names the block behind it.
 
 <a id="checkpoint-words"></a>
 
@@ -758,7 +754,7 @@ synthesis increments `R`. The table the user sees is the post-loop version.
 |---|---|
 | **Performance** at `CAUTION` with both timing-regression AND new-hot-path-block sub-findings | The new block IS the regression. Don't just report — propose a concrete optimization (cache, lighter callee, inline, different data type) naming the specific block in the Note. Follow [the CAUTION / FLAG action](#checkpoint-words). |
 | **Performance** AND **Energy** both regress at `CAUTION` | Real regression in two metrics, not isolated to one. Confidence is high; proceed to propose root cause. |
-| **Stack** Note shows `> 80% of budget` (the percentage the stack-depth child's row carries) | Surface the top frame contributor by name in the Note before emitting. **Do not re-run the child** — it measured this already, and a second identical run answers a question you have. Where its depth rests on a recursion cap the source contradicts, that is the child's Note to carry, not a re-measurement for you to order. |
+| **Stack** Note shows `> 80% of budget` (the percentage the stack-depth child's row carries) | Surface the top frame contributor by name in the Note before emitting. **Do not re-run the child.** Where its depth rests on a recursion cap the source contradicts, that is the child's Note to carry, not a re-measurement for you to order. |
 | `hot_path.lower_bound` is true, this edit introduced it (the diff adds the loop LOCI cannot count), and the Performance row reads `PASS` | A `PASS` on a number that can only grow is a claim this run cannot make. Keep the number, put `≥` and the `reasons` entry in the Note, and take the row to `CAUTION` through your assessment — `STATUS` stays the bound's word on the number — unless the contract ceiling is breached by the lower bound already. |
 | `paths.<fn>.hot_path.baseline` is `reselected` | The edit restructured the function, so each side's own typical path was ranked. The % is real — print it, and lead the Note with the restructure and both block counts. Never present it as the same path measured twice. |
 | `paths.<fn>.hot_path.baseline` is `none` | No comparable Before. Report absolutes only, never a percentage, and give `baseline_reason` in the Note — it says whether the pre-edit object was missing, lacked the function, or ranked on different evidence. |
@@ -804,6 +800,8 @@ Two things that rule out on this skill specifically:
   **A clean run with no rows at all takes `--agent-verdict cleared`** — Step 2a's
   branch on a repo with no contract is that run, and without it the record reads
   `unjudged` rather than fine. [The shared rule](../_shared/verdicts.md#recording-the-verdict) has both values.
+- **`data.escalations_owed` on the reply is Step 4a unanswered**: the child skills
+  still owed, and why. Invoke each with `--parent-run`, then record again.
 - **`severity` is never yours and never rendered.** It decides how loudly a
   breach surfaces; `STATUS` is the word that carries it, and a run that closes on
   FLAG reaches the user again in the turn-end check unless a later edit in the turn
@@ -851,9 +849,6 @@ it ran as your Step 4a escalation; an object run records no stack figure at all.
 When Step 4a escalated into `stack-depth` or `memory-report` AND the escalated skill
 returned clean, append a space-separated `+<skill>` marker to the counts line.
 
-The suffix is the footer's only, and it never replaces the child's row. **The child
-gets its own row in the conclusion table either way**, clean or not, its `ENTRY` cell
-drawn under a `└ ` with its own figures and its own verdict — a child at 49% of its
-budget and one at 3% must not print alike — and this skill keeps the word its own
-figures earned, names the escalation in that row's Note, and reuses the child's
-figures rather than measuring them again.
+The suffix is the footer's only; the child's `└ ` row is drawn either way, clean or
+not — a child at 49% of its budget and one at 3% must not print alike — as
+[`escalation.md`](escalation.md) says.

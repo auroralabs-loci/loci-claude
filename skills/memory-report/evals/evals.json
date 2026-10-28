@@ -1,18 +1,18 @@
 {
   "skill_name": "memory-report",
-  "description": "Tests that the memory-report skill correctly runs asm-analyze memmap, interprets the JSON output, and reports section breakdowns, ROM/RAM summaries, top consumers, delta comparisons, and optional per-region occupancy. Primary test ELF is $LOCI_TEST_BLE_FRESH/basic_ble.out.",
-  "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running. These prompts do NOT restate session facts: run_evals.sh injects a real SESSION_CONTEXT, and a prompt asserting a different target, compiler or build system asks the model to choose between two sources of truth — which the recipe design settles against the prompt, so such an eval can only fail. Ask for the analysis; let the harness supply the session.",
+  "description": "Tests that the memory-report skill correctly runs `loci analyse memory`, interprets the JSON envelope, and reports section breakdowns, ROM/RAM summaries, top consumers, delta comparisons, and optional per-region occupancy. Primary test ELF is $LOCI_TEST_BLE_FRESH/basic_ble.out.",
+  "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running. mr-3 also needs a second BLE build at $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out — a prebuilt image the BLE repo does not track, placed beside the checkout by hand (the team's WSL and Windows copies are byte-identical) — and declares it under requires_files, so run_evals.sh skips it on a host that lacks the file. These prompts do NOT restate session facts: run_evals.sh injects a real SESSION_CONTEXT, and a prompt asserting a different target, compiler or build system asks the model to choose between two sources of truth — which the recipe design settles against the prompt, so such an eval can only fail. Ask for the analysis; let the harness supply the session.",
   "evals": [
     {
       "id": "mr-1",
       "category": "single-elf-report",
       "prompt": "Analyze the ROM/RAM memory usage of $LOCI_TEST_BLE_FRESH/basic_ble.out. No map file — just show me the section breakdown, summary, and top consumers.",
-      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to basic_ble.out. Reports a section breakdown table with section names, addresses, sizes, types, and memory regions. Reports ROM/RAM summary totals with code/rodata/data/bss breakdown. Reports top ROM consumers (functions) and top RAM consumers (variables) by size. Does not report per-region occupancy since no map file was provided (memory_regions is null). Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
+      "expected_output": "Runs `loci analyse memory` with --elf pointing to basic_ble.out. Reports a section breakdown table with section names, addresses, sizes, types, and memory regions. Reports ROM/RAM summary totals with code/rodata/data/bss breakdown. Reports top ROM consumers (functions) and top RAM consumers (variables) by size. The prompt names no map file, but the session's recipe records `artifacts.map`, which the verb takes itself, so the envelope carries `memory_regions`: rendering that occupancy table is correct (the region sizes are the linker's own), and so is leaving it out on the strength of the prompt's 'no map file' — both are accepted. What is wrong is a percentage that sets a `STATUS` or the verdict by itself, or a region figure the envelope did not carry. A symbol's share of the measured ROM or RAM total — the largest-symbol row's `17,584 B, 39% of the RAM total` — is arithmetic on the run's own figures and is allowed; it claims no limit was approached. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
       "files": [],
       "assertions": [
         {
-          "text": "Response runs asm-analyze memmap with --elf-path pointing to basic_ble.out",
-          "description": "Must use the memmap subcommand with the correct ELF path"
+          "text": "Response runs `loci analyse memory` with --elf pointing to basic_ble.out",
+          "description": "Must use the memory verb with the correct ELF path"
         },
         {
           "text": "Response includes a section breakdown with section names, sizes, types (code/rodata/data/bss), and memory regions (ROM/RAM)",
@@ -27,8 +27,8 @@
           "description": "Top consumers help identify optimization targets"
         },
         {
-          "text": "Response does NOT show per-region occupancy or usage percentages",
-          "description": "No map file was provided, so there are no region sizes to compute a percentage against"
+          "text": "Response lets no percentage set a STATUS or the verdict by itself: a per-region occupancy table appears only from regions the envelope carried (the recipe's `artifacts.map` supplies them here, so showing or omitting the table are both correct), and a symbol's share of the measured ROM or RAM total (`39% of the RAM total`) is allowed",
+          "description": "The prompt named no map, but the recipe records one and the verb reads it, so region sizes are real; the level at which a percentage becomes a concern is not, so it informs the assessment and never the STATUS. A share of a figure this run measured is arithmetic on the run's own evidence and claims no limit was approached"
         }
       ]
     },
@@ -36,11 +36,11 @@
       "id": "mr-2",
       "category": "single-elf-with-map",
       "prompt": "Show me the memory usage of $LOCI_TEST_BLE_FRESH/basic_ble.out with the linker map file at $LOCI_TEST_BLE_FRESH/basic_ble.map. I want to see how much of each memory region is used.",
-      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to basic_ble.out and --map-file pointing to basic_ble.map. Reports section breakdown, ROM/RAM summary, and top consumers as in a normal report. Additionally reports per-region occupancy showing per-region used bytes, total bytes, and usage percentage. Those percentages are arithmetic on region sizes the map declared, so reporting them is correct; they must NOT produce a status or verdict by themselves, since no contract bounds them. If the map file is not found or cannot be parsed, the report still completes but notes that memory regions are unavailable. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
+      "expected_output": "Runs `loci analyse memory` with --elf pointing to basic_ble.out and --map-file pointing to basic_ble.map. Reports section breakdown, ROM/RAM summary, and top consumers as in a normal report. Additionally reports per-region occupancy showing per-region used bytes, total bytes, and usage percentage. Those percentages are arithmetic on region sizes the map declared, so reporting them is correct; they must NOT produce a status or verdict by themselves, since no contract bounds them. If the map file is not found or cannot be parsed, the report still completes but notes that memory regions are unavailable. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged. On this fixture the map gives SRAM 28,577 / 36,864 B (77.5%), FLASH 36.0%, and NVS_SLOT and CCFG at 100% (each a fixed-size region holding its one object, full by construction). With no contract every STATUS is composed from the agent assessment beside it, so the correct RAM row is PASS composed from Looks good with the percentage quoted in its Note — a Looks good needs no named cause, and quoting the figure in a Note or in the verdict clause is NOT the percentage setting the word, so such a row must pass. The failure is a Needs attention / CAUTION row, or a CAUTION verdict, whose only stated cause is a region's percentage or a restatement of it ('nearly full', 'little headroom', 'zero headroom', a fixed-size region at 100%); naming the one object that fills a fixed-size region (flashBuf0 in NVS_SLOT, ccfg in CCFG) is the 100% restated, not a symbol cause. A CAUTION whose Note argues a cause of its own — a section or symbol that grew or is new, a trend reversed, or a single symbol dominating a region such as ucHeap at 17,584 B — is an argued reading and is acceptable.",
       "files": [],
       "assertions": [
         {
-          "text": "Response runs asm-analyze memmap with --elf-path and --map-file flags",
+          "text": "Response runs `loci analyse memory` with --elf and --map-file flags",
           "description": "Both the ELF path and map file path must be passed to the command"
         },
         {
@@ -48,8 +48,8 @@
           "description": "Map file should add to the report, not replace the base sections"
         },
         {
-          "text": "Response includes per-region occupancy with used/total bytes and usage percentage per region, OR notes that the map file was not found or could not be parsed. No occupancy percentage may set a row status or the verdict on its own",
-          "description": "Region occupancy is the key added value of the map file; graceful fallback if absent. The region size is a fact, but the level at which a percentage becomes a concern is not, so it informs a flag rather than setting a status"
+          "text": "Response includes per-region occupancy with used/total bytes and usage percentage per region, OR notes that the map file was not found or could not be parsed. A Needs attention / CAUTION on the ROM or RAM row, or a CAUTION verdict, needs a named symbol, section or trend as its cause; the occupancy percentage alone is never one, nor is its restatement (nearly full, no headroom, a fixed-size region at 100%, or the one object that fills such a region). A PASS row composed from Looks good with the percentage quoted in its Note is CORRECT and passes this assertion",
+          "description": "Region occupancy is the key added value of the map file; graceful fallback if absent. The region size is a fact, but the level at which a percentage becomes a concern is not: with no contract the word comes from the agent's reading, which may quote the percentage but may not be caused by it. Do not fail a Looks good / PASS row for carrying the percentage in its Note; fail only a word whose sole cause is the percentage"
         }
       ]
     },
@@ -57,12 +57,12 @@
       "id": "mr-3",
       "category": "delta-comparison",
       "prompt": "Compare memory usage between two builds. The new binary is $LOCI_TEST_BLE_FRESH/basic_ble.out and the old binary is $LOCI_TEST_BLE_ROOT/CC2340R5/basic_ble.out. Show me what changed.",
-      "expected_output": "Runs asm-analyze memmap with --elf-path pointing to the OLD build (CC2340R5/basic_ble.out) and --comparing-elf-path pointing to the NEW build (examples/.../basic_ble.out); the reported delta is new-minus-old. Reports section deltas showing before/after/delta sizes per section. Reports ROM/RAM summary deltas with total byte changes and percentages. Reports the symbol-level delta section (added/removed/changed symbols sorted by delta size). NOTE: these two builds are near-identical, so the symbol-delta section may legitimately report 'no symbols changed' while the ROM summary shows only a small (a few bytes) delta — that is correct. Does not report per-region occupancy deltas since no map file was provided.",
+      "expected_output": "Runs ONE `loci analyse memory --turn … --caller memory-report --elf <OLD: CC2340R5/basic_ble.out> --comparing-elf <NEW: the fresh basic_ble.out>` call: the OLD build is `--elf` (the base) and the NEW build is `--comparing-elf` (the changed one the run measures); the reported delta is new-minus-old. That one call is the route — no second `analyse memory` run, no `loci elf memmap`, no hand-diff of two reports. Reports section deltas from the envelope's `data.detail.delta.section_deltas` with before/after/delta sizes per section. Reports ROM/RAM summary deltas (from `summary_delta` and `data.measured[].prev`) with total byte changes and percentages. Reports the symbol-level delta from `symbol_deltas`. NOTE: these two builds are identical or near-identical, so `symbol_deltas` is empty and the section correctly says no symbols changed, and the ROM/RAM delta is 0 B or a few bytes — that is correct, not a failure to compare. The Artifact line names the NEW build with `before` as the OLD build the user named (`before_kind: named`), never as a 'pre-edit baseline'; the new copy's freshness reads `current` or `unverified` (sources its debug info names are not on this machine) — either is proceeded on, with `reason` quoted when present and not alarmed over. The prompt names no map file, but the session's recipe records `artifacts.map`, so the envelope may carry `memory_regions` / `memory_regions_delta`: a region occupancy table drawn from them is correct (identical for both builds, and said so), and omitting it is correct too; neither is a delta finding, and no percentage sets a STATUS or the verdict by itself.",
       "files": [],
       "assertions": [
         {
-          "text": "Response runs asm-analyze memmap with --elf-path and --comparing-elf-path flags",
-          "description": "Delta mode requires both ELF paths to compare"
+          "text": "Response runs exactly one `loci analyse memory` call that passes `--elf` with the OLD build (CC2340R5/basic_ble.out) and `--comparing-elf` with the NEW build; it runs no second `analyse memory`, no `loci elf memmap`, and diffs no two reports by hand",
+          "description": "The verb computes the delta in one place and records one run naming both builds; two runs hand-diffed, or an `elf` verb of the skill's own, is the improvised route this rubric exists to refuse"
         },
         {
           "text": "Response shows section-level deltas with before, after, and delta sizes",
@@ -77,8 +77,8 @@
           "description": "Symbol deltas pinpoint exactly which functions/variables grew or shrank; with two near-identical builds the section correctly reports no changes"
         },
         {
-          "text": "Response does NOT show per-region occupancy deltas",
-          "description": "No map file was provided, so there are no region sizes to compare against"
+          "text": "Response sets no STATUS, no assessment word and no finding from a region occupancy percentage, and presents no region as having changed between the builds. Region figures from the envelope (the recipe's `artifacts.map`) MAY appear — as a region table that is the same for both builds, as `used / total` in the Conclusion rows' BEFORE/AFTER cells, as a percentage in their NOTE, and in the verdict clause — exactly as the skill's own delta example draws them; that is rendering a fact, not a finding",
+          "description": "The prompt named no map, but the recipe records one and the verb reads it. Region sizes are the linker's; a percentage of them is a fact that informs the assessment and never sets a word on its own. A grader must not fail a row for carrying the figures the skill tells it to carry"
         }
       ],
       "requires_files": [
@@ -90,12 +90,12 @@
       "source_file": "examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/app/app_data.c",
       "category": "object-file-report",
       "prompt": "Compile $LOCI_TEST_BLE_ROOT/examples/rtos/LP_EM_CC2340R5/ble5stack/basic_ble/app/app_data.c at this session's LOCI target and analyze the memory usage of the object file that compile produces, using the object path the compile reports back.",
-      "expected_output": "Compiles the source and then runs asm-analyze memmap with --elf-path set to the object path the compile REPORTED, whatever that path turns out to be, rather than one it assembled from the basename. Recognizes it as a relocatable object file (not a linked executable). Reports section sizes and types but notes that addresses are zero-based (no linker placement). Reports ROM and RAM estimates. Notes that memory regions are not available for object files (memory_regions is null). Does not attempt to use a map file.",
+      "expected_output": "Compiles the source and then runs `loci analyse memory` with --elf set to the object path the compile REPORTED, whatever that path turns out to be, rather than one it assembled from the basename. Recognizes it as a relocatable object file (not a linked executable). Reports section sizes and types but notes that addresses are zero-based (no linker placement). Reports ROM and RAM estimates. Notes that memory regions are not available for object files (memory_regions is null). Does not attempt to use a map file.",
       "files": [],
       "assertions": [
         {
-          "text": "Response runs asm-analyze memmap with --elf-path pointing to the .o file",
-          "description": "The memmap subcommand handles both linked ELFs and relocatable .o files"
+          "text": "Response runs `loci analyse memory` with --elf pointing to the .o file",
+          "description": "The memory verb handles both linked ELFs and relocatable .o files"
         },
         {
           "text": "Response measures the object path the compile reported back, not one it constructed from the source's basename",

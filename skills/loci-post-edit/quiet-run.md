@@ -168,7 +168,7 @@ report claiming "nothing changed" is wrong for every one of them.
 
 | ENTRY        | FUNCTION | BEFORE | AFTER | STATUS | AGENT ASSESSMENT | NOTE |
 |--------------|----------|--------|-------|:------:|:----------------:|------|
-| `Memory (ROM)` | —      | 137 B  | 361 B |  PASS  | Looks good       | +224 B in this translation unit, all of it in `lut`; no function's instructions changed, RAM static and worst-case frames unchanged |
+| `Memory (ROM)` | app.o (object) | 137 B  | 361 B |  PASS  | Looks good       | +224 B in this translation unit, all of it in `lut`; no function's instructions changed, RAM static and worst-case frames unchanged |
 
 No contract in this repo — every STATUS above is composed from the agent
 assessment beside it, not from a bound. `/loci:contract` records the limits this
@@ -191,7 +191,7 @@ Five rules for that report:
   gate name is what made the differ's silence look like an answer in the first place.
 - **The ROM/RAM numbers are this translation unit's**, never the firmware's — say so in
   the row label, and never send them to `loci contract check`. The contract's
-  `rom_size` / `ram_size` bounds are firmware-scale.
+  unscoped `rom_size` / `ram_size` bounds are firmware-scale.
 - **A bound is what turns a delta into a verdict.** When something moved, ask whether
   the repo bounds it and let the owning skill measure the right artifact. Step 1's
   envelope already answered that — `data.requests[]` is the list, it is in this turn's

@@ -403,6 +403,21 @@ def test_a_preflight_that_ran_init_unbidden_fails():
     assert verdict == "FAIL" and "RAN `loci init`" in reason, reason
 
 
+def test_a_checkpoint_glyph_before_the_judged_word_is_a_verdict():
+    """The Checkpoint words print a glyph before the bold word — `✅ **GOOD**`,
+    `⚑ **ADJUST PLAN**`, `❌ **STOP**` — and the grader allowed a glyph only
+    before the argued words, so a correct Copilot `Execution fit: ✅ **GOOD**`
+    graded as "invoked but produced no real verdict line" (AAD-8002)."""
+    for line in ("Execution fit: ✅ **GOOD** — no contract covers Connection_getConnIndex",
+                 "Execution fit: ⚑ **ADJUST PLAN** — the guard lands on a path over its bound",
+                 "Execution fit: ❌ **STOP** — unbounded recursion in parser_descend"):
+        verdict, reason = grade_preflight(PREFLIGHT.replace("Execution fit: **GOOD**", line))
+        assert verdict == "PASS", (line, reason)
+    # A glyph followed by prose is still not a verdict word.
+    assert grade_preflight(PREFLIGHT.replace("Execution fit: **GOOD**",
+                                             "Execution fit: ✅ the plan looks fine"))[0] == "FAIL"
+
+
 def test_the_argued_verdict_vocabulary_is_a_verdict_too():
     """Since 2026-09-03 a skill with no contract bound to judge by ARGUES —
     `⚑ flagged —` / `○ cleared —` — instead of rendering PASS/CAUTION/FAIL. The
@@ -1128,11 +1143,12 @@ def test_no_eval_still_measures_the_stale_ble_artifact():
                              "pe-10", "pe-11", "pe-7", "pe-8", "pe-9",
                              "pf-critical-1", "pf-critical-2", "pf-critical-3",
                              "pf-critical-4",
-                             "sd-1", "sd-2", "sd-3", "sd-4"], (
+                             "sd-1", "sd-2", "sd-3", "sd-4", "sd-7"], (
         f"the evals measuring the staged fresh artifact are {sorted(users)}; the "
-        f"eleven repointed by T13 plus the seven F01 repointed are the expected "
-        f"set — a change here needs a look at whether the new eval really wants a "
-        f"re-stamped ELF")
+        f"eleven repointed by T13, the seven F01 repointed and sd-7 (AAD-7619, the "
+        f"whole-image question, which measures the linked image and so wants the "
+        f"re-stamped ELF) are the expected set — a change here needs a look at "
+        f"whether the new eval really wants a re-stamped ELF")
     # The seven F01 added are the edit and two-turn evals, which named a
     # top-level `CC2340R5/basic_ble.out` no checkout carries. They could not
     # have been noticed sooner: the skew guard skipped both flows entirely, so

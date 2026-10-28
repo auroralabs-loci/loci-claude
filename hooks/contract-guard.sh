@@ -742,6 +742,12 @@ _ROUTE1_GUARDED=".loci/contract.yaml .loci/build.yaml .loci/build/flags.json"
 # components, which is not a path anything writes: a real one has fewer than
 # fifty, and 1 024 of them do not fit in Linux's PATH_MAX to begin with.
 #
+# ⚠ AND IT IS ASKED BEFORE ANYTHING ELSE TOUCHES SUCH A PATH (AAD-7767). Until
+# then it short-circuited the walk and nothing ahead of it: the three
+# `-ef` stats in `_route1_hit` cost 2.7 s on Git Bash at 16 000 components and
+# 5.8 s at the 64 KB cap, so the shape it exists to decide was killed before
+# its deny. `_w_over` holds the count, and `_route1_hit` asks it first.
+#
 # ⚠ IT WAS 4 096, AND F18 BOUGHT ITS OWN COST WITH IT. The number was sized to
 # ONE walk, and F18 asks for as many as four on one `file_path`: two readings of
 # `..` (see `_walk`) times two spellings of a trailing dot (see `_win32_dots`).
@@ -752,13 +758,16 @@ _ROUTE1_GUARDED=".loci/contract.yaml .loci/build.yaml .loci/build/flags.json"
 #   1. What is the worst a payload can ASK FOR? Each hook is bounded by its own
 #      constant, so this is the number that matters against the 5 s in
 #      `hooks.json` — past it the hook is killed and PreToolUse fails OPEN.
-#
-#          main (at 4 096)   1.00 s      `deep/../` x8167, `-ef` stats
-#          here (at 1 024)   1.00 s      the same shape, same reason
-#
-#      — equal, because the shape that costs the most on either is one the bound
-#      denies unwalked and what it pays for is the `-ef` stats, which are
-#      unbounded on purpose.
+#      F18 answered `deep/../` x8167, 1.00 s at either bound, paid in `-ef`
+#      stats. It was not the worst: a stat is quadratic in the named
+#      components past the first missing one, so `ab/`x10800 + `../`x10800 +
+#      `contract.yaml` was 5.8 s (AAD-7767). Now a path a gate admits and the
+#      bound refuses is decided before the stats — 0.2-0.3 s at the cap, and
+#      `deep/../` x8167 0.21 s; one under the bound pays them, 0.03 s a stat
+#      at 1 000 components. One no gate admits still pays
+#      them in full: 4.6 s at the cap for a path that does not exist, whose
+#      verdict is ALLOW whether or not it is killed. One that exists — all
+#      `-ef` can deny — is 0.26 s a stat at 8 000 `x/../` pairs.
 #
 #   2. What does ONE path cost, here against there? Up to 2.2x, and that is the
 #      honest price of a second reading. At 1 007 components of 63 bytes — the
@@ -851,6 +860,10 @@ _walk() {
     # so nothing here may have been resolved first.
     _w_desc=${_w_a%/}
     cd -P -- "$_w_a" 2>/dev/null || return 1
+    # Over the bound, before a single component is walked. 2, not 1: the caller
+    # reads it as "deny without comparing", where 1 is "this is not that file".
+    # The count is `_w_over`'s, because `_route1_hit` asks it too (AAD-7767).
+    _w_over "$1" && return 2
     # `IFS` unset is not the same as `IFS=""` — the first splits on the default
     # set, the second not at all — and reading it bare would abort under
     # `set -u`, which in a fail-open hook is an ALLOW.
@@ -863,9 +876,6 @@ _walk() {
     set -- $_w_p
     [ -n "$_w_glob" ] || set +f
     IFS=$_w_ifs
-    # Over the bound, before a single component is walked. 2, not 1: the caller
-    # reads it as "deny without comparing", where 1 is "this is not that file".
-    [ $# -le "$_ROUTE1_MAX_SEGMENTS" ] || return 2
     for _w_s; do
         case $_w_s in ""|".") continue ;; esac
         # Descend only while nothing is pending: past the first component that
@@ -914,6 +924,29 @@ _walk() {
         fi
     done
     return 0
+}
+
+# 0 when $1 has more components than `_ROUTE1_MAX_SEGMENTS`, counted the way
+# `_walk` splits it: past its anchor, on `/`, an empty one included. ONE count
+# for the two places that ask: `_walk`, and `_route1_hit` ahead of its `-ef`
+# arm (AAD-7767, the reason is there) — so the deny that skips the arm and the
+# deny the walk would reach cannot disagree about where the edge is. Forkless
+# and linear: one split, 0.01 s on 16 000 components. No `cd`, so it may run
+# outside the subshell.
+_w_over() {
+    case $1 in
+        /*)          set -- "${1#/}" ;;
+        [A-Za-z]:/*) set -- "${1#*/}" ;;
+    esac
+    _wo_ifs=${IFS-$' \t\n'}
+    case $- in *f*) _wo_glob=1 ;; *) _wo_glob="" ;; esac
+    IFS="/"
+    set -f
+    # shellcheck disable=SC2086
+    set -- $1
+    [ -n "$_wo_glob" ] || set +f
+    IFS=$_wo_ifs
+    [ $# -gt "$_ROUTE1_MAX_SEGMENTS" ]
 }
 
 # $1 = the file_path, $2 = the project root, $3… = the guarded repo-relative
@@ -1205,13 +1238,51 @@ _win32_dots() {
 # own `cwd`, which the model writes — the same reachability
 # `test_the_segment_bound_denies_on_the_guarded_side_too` rests on.
 _route1_hit() {
+    # THE WALK'S BOUND GOES FIRST, for a path the walk would be asked about:
+    # one carrying a guarded basename, or an 8.3 last component — the two
+    # gates below. Over `_ROUTE1_MAX_SEGMENTS` such a path is denied whatever
+    # the arms answer, so they have nothing to add to it, and on MSYS they were
+    # its whole cost: a `stat` of a path that does not resolve is quadratic in
+    # the named components past the first missing one (0.85 s at 8 000), and
+    # `-ef` takes three. `<root>/.loci/`
+    # + `ab/`x10800 + `../`x10800 + `contract.yaml` — which Win32 opens as the
+    # Contract Envelope — took 5.8 s idle, past the 5 s kill that fails OPEN,
+    # and its `CONTRA~1.YAM` twin 5.6 s (AAD-7767). Both are 0.2 s here.
+    #
+    # It is NOT a bound on `-ef`, which may have none
+    # (`test_the_ef_arm_carries_no_length_test`): it passes the arm by only for
+    # a path it DENIES. A path no gate admits gets every arm.
+    #
+    # UNDER THE NAME A SUFFIX ARM READS, where one does — those cost no stat —
+    # else the first gate's, which is the walk's rc 2 below. Without the first,
+    # `<root>/contract.yaml-notes/` + `./`x1100 + `../.loci/build.yaml` was
+    # told about the Contract Envelope (review). What only `-ef` can name, an
+    # 8.3 alias over the bound, is refused as unread instead: naming it takes
+    # the stat.
+    for _g in $_ROUTE1_GUARDED; do
+        case $1 in
+            *"${_g##*/}"*)
+                _w_over "$1" || break
+                for _s in $_ROUTE1_GUARDED; do
+                    case $1 in */"$_s"|"$_s"|"./$_s") _g=$_s; break ;; esac
+                done
+                _hit=$_g
+                return 0 ;;
+        esac
+    done
+    if _cg_short_name "$1" && _w_over "$1"; then
+        _cg_what="unread path"
+        deny "$REASON_PATH_UNREAD"
+    fi
     for _g in $_ROUTE1_GUARDED; do
         if [ "$1" -ef "$2/$_g" ]; then _hit=$_g; return 0; fi
         case $1 in */"$_g"|"$_g"|"./$_g") _hit=$_g; return 0 ;; esac
     done
     # Past the arms, nothing resolves to a guarded file without carrying that
     # file's own basename or an 8.3 alias of it (the second gate, below) — a
-    # link that does neither is caught by the `-ef` above,
+    # link that does neither is caught by the `-ef` above, on the POSIX
+    # reading only: Win32 collapses a `..` after a missing directory as text
+    # and `stat` does not, so `<root>/nope/../<link>` is not (AAD-8029),
     # and `test_a_symlink_that_hides_the_name_is_a_known_gap` pins what is left
     # (a link the payload-level prefilter never admits). So this is the whole of
     # route 1 for a payload that merely says `contract` somewhere: no subshell,
@@ -1552,6 +1623,13 @@ _route1_read() {
     # there is, and route 1's ordinary traffic never sees it: an Edit that exits
     # at the prefilter is 0.042 s and a 64 KB Write that reaches route 1 is
     # 0.074 s here against 0.103 s on `main`.
+    #
+    # ⚠ THOSE ARE F16's NUMBERS, and the arm's cost is not linear. Re-measured
+    # at `3e856d6`: one `stat` of a missing path is 0.03 s at 1 000 named
+    # components, 0.25 s at 4 000 and 0.83 s at 8 000, three per `-ef` arm. A
+    # path the walk would refuse unwalked is therefore decided BEFORE the arm
+    # (`_route1_hit`, AAD-7767), which denies and so is no bound on it; one no
+    # gate admits still pays the arm in full, because it is all there is.
     _hit=""
     root="${root%/}"
     _route1_hit "$fp" "$root"

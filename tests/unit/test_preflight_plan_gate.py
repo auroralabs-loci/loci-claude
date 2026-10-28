@@ -17,6 +17,12 @@ was two defects, not one:
   user reads in `-p` mode and what every reader of a transcript grades; the plan
   file is in addition to it, never instead.
 
+AAD-8074. Under Claude Code the plan body was "the verdict box, then only the
+adjusted steps". A preflight run measured hot path, worst path and energy, then
+wrote that plan and handed it over with no report in the reply: the approval
+dialog showed the verdict and none of the figures. The plan is what the user
+approves on both hosts, so it carries the report on both.
+
 These pins hold the wording that closes each hole, so a later trim cannot
 reopen one without failing here.
 """
@@ -100,7 +106,8 @@ def test_the_reply_carries_the_full_report_on_every_host():
             "addition to it, never instead, and a one-line summary is not it.") in plan
     # The licence that sent the report into the plan file alone is gone.
     assert "summary may stay brief" not in _text()
-    # Copilot's plan file still carries it too: that file is what the user approves.
+    # The plan carries it too, on both hosts: the plan is what the user approves.
+    assert "On both hosts the plan is what the user approves" in plan
     assert "so it carries the full report after the verdict box and before the steps" in plan
 
 
@@ -108,8 +115,10 @@ def test_the_output_format_section_still_names_the_response_text():
     sec = _flat(_section("## Output format"))
     assert "Emit the preflight report in the **response text**" in sec
     assert "A one-line summary is not the report" in sec
-    # Host-qualified: Copilot's plan file carries the report; Claude's plan body does not.
-    assert ("then only the adjusted steps under Claude Code; under Copilot the plan "
-            "file also carries the report") in sec
+    # Every host's plan body carries the report between the box and the steps.
+    assert ("on every host the plan body opens with the verdict in the LOCI box, "
+            "then the report, then the adjusted steps") in sec
+    # The Claude-only exemption that hid the figures from the approval dialog is gone.
+    assert "only the adjusted steps" not in _text()
     # No "all-clear shorthand" licence to replace the report with a line.
     assert "shorthand" not in _text()

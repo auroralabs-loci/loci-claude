@@ -124,7 +124,7 @@ step order or report format.
 
 ## Why rejected entries must always surface
 
-An `unjudged` item whose reason is *not* "no measurement supplied" is a bound
-enforcing nothing — usually a validation error in the file. Left unreported it is
-invisible: the author believes a bound protects them, and it does not. "No
-measurement supplied" is the routine case and stays quiet.
+An `unjudged` item with `reason_code: not_enforced` is a bound enforcing nothing —
+a validation error in the file. Left unreported it is invisible: the author
+believes a bound protects them, and it does not. `no_measurement` is the routine
+case and stays quiet.

@@ -82,8 +82,11 @@ CONTAINER = SKILL_DIR / "container-toolchain.md"
 # the reason `container-toolchain.md` is — prose a model executes, reached from
 # Step 3's row — so every flag, verb, field and contradiction screen reads it.
 REGEN = SKILL_DIR / "compdb-container.md"
+# AAD-8020. The `--python` branch, go.md's Cython sibling, reached from Step 2 and
+# from the `python_*` codes; in `DOCS` so every screen in this file reads it.
+PYTHON = SKILL_DIR / "python.md"
 DOCS = (SKILL, BOOTSTRAP, COMPDB, RECOVERY, GO, VOICE, SHARED_VOICE, CONTAINER,
-        REGEN)
+        REGEN, PYTHON)
 INSTALLER_REL = "hooks/ensure-loci-cli.sh"
 
 #: Bytes for `SKILL.md` alone, LF normalised UP to CRLF so the number is the same on
@@ -135,7 +138,10 @@ INSTALLER_REL = "hooks/ensure-loci-cli.sh"
 #: figure: a budget an author keeps raising is evidence about the budget, and the
 #: completion log escalates it as the one unmet acceptance criterion rather than
 #: treating the constant as the answer.
-SIZE_BUDGET = 17 * 1024 + 384
+#: Raised from 17 * 1024 + 384 for AAD-8020's Python route; the trim is AAD-8030.
+#: Raised from 17 * 1024 + 640 for the Python questions and recognition; the trim is AAD-8030.
+#: Raised from 17 * 1024 + 1056 for the python_interpreter question; the trim is AAD-8030.
+SIZE_BUDGET = 17 * 1024 + 1070
 
 #: Terminated comments, and an unterminated one, which hides the rest of the file.
 _COMMENTS = (re.compile(r"<!--.*?-->", re.S), re.compile(r"<!--.*\Z", re.S))
@@ -278,17 +284,25 @@ DATA_FIELDS = {
     "initialized", "recipe_untrusted", "existing_loci_state", "compdbs", "notes",
     "candidates", "unsupported_candidates", "warnings", "build_system", "languages",
     "binaries", "project_root",
+    # AAD-7935: the init skill reads `.data.validation.failures` to keep a
+    # synthesized database no unit compiles under away from the confirmation.
+    "validation",
     # T15: `probe` carries the `go_facts` block, and the init skill reads
     # `.data.go.tinygo` to tell a `go` recipe from a `tinygo` one — which is a
     # question `.data.build_system` cannot answer, since it says `go` for both.
     "go",
+    # AAD-8020: what `loci init --python` recorded, which python.md shows the user.
+    "python",
 }
 ERROR_FIELDS = {"code", "message", "candidates", "supported", "regen", "detail",
                 "recorded_target", "target",
                 # AAD-7641: the `toolchain_unreachable` question's payload. All
                 # three are quoted in `init.py` (the probe envelope carries them
                 # too); `question` is not, and sits in KWARG_ONLY below.
-                "exec_candidates", "inferred_mount", "exec_symptoms"}
+                "exec_candidates", "inferred_mount", "exec_symptoms",
+                # AAD-8020: the path a `--python-modules` refusal names, the modules
+                # `python_module_unknown` offers, the recipe `python_recipe_conflict` met.
+                "module", "modules", "system"}
 #: Only ever `LociError(**details)` kwargs, so they have no quoted form to find —
 #: `error_envelope` merges `err.details` into the body, so the key never appears as a
 #: literal. Named individually rather than by loosening the pattern for all 24, which
@@ -322,6 +336,15 @@ ERROR_CODES = {
     "compiler_missing", "arch_mismatch", "outside_target",
     # AAD-7641: the two codes only a `build.exec` recipe raises.
     "exec_unavailable", "recipe_foreign_host",
+    # AAD-8020: the `--python` refusals python.md routes.
+    "cython_missing", "python_not_cythonized", "python_backend_unread",
+    "python_headers_missing", "python_headers_foreign", "python_target_unsupported",
+    "python_link_unsupported", "python_recipe_conflict", "python_modules_declared",
+    "python_module_missing", "python_module_not_source", "python_module_outside_root",
+    "python_module_unknown", "python_nothing_to_link", "python_declaration_failed",
+    "python_cflags_invalid", "python_module_failed", "python_libpython_missing",
+    "python_full_build_failed", "python_full_build_unsupported", "cython_timeout",
+    "python_key_retired",
 }
 
 
@@ -486,8 +509,10 @@ def test_the_only_loci_verbs_the_docs_invoke_are_init_login_doctor_project_and_c
     (AAD-7807)."""
     verbs: set[str] = set()
     for path in DOCS:
-        verbs |= {m.group(1) for m in re.finditer(r"loci ([a-z][a-z0-9-]*)",
-                                                  _flat(path))}
+        # python.md names `loci build python` as the build init itself ran; only that
+        # one `build` subcommand is exempt.
+        flat = _flat(path).replace("`loci build python`", "")
+        verbs |= {m.group(1) for m in re.finditer(r"loci ([a-z][a-z0-9-]*)", flat)}
     extra = sorted(verbs - {"init", "login", "doctor", "project", "cockpit"})
     assert not extra, f"unexpected `loci` verbs: {extra}"
 
@@ -834,7 +859,12 @@ def test_the_frontmatter_carries_the_trigger_surface():
     for phrase in ("initialize LOCI", "set up this project for LOCI", "/loci:init",
                    "switch the LOCI target", "not initialized", "not_initialized",
                    "recipe_stale", "arch_mismatch", "outside_target", "/loci:setup",
-                   "/loci:contract", "recipe_foreign_host"):
+                   "/loci:contract", "recipe_foreign_host", "cython_missing",
+                   "cython_timeout", "python_not_cythonized", "python_backend_unread",
+                   "python_target_unsupported", "python_headers_missing",
+                   "python_headers_foreign", "python_declaration_failed",
+                   "python_recipe_conflict", "python_nothing_to_link",
+                   "python_libpython_missing"):
         assert phrase in fm, f"when_to_use/description must cover {phrase!r}"
 
 
@@ -1409,6 +1439,30 @@ def test_the_synthesis_route_forces_a_build_and_stays_in_the_project():
     assert "add-file" in sect
 
 
+def test_a_dry_run_is_not_an_observation_and_the_capture_is_checked():
+    """AAD-7935: a `make -B -n` capture taken while the makefile's generator (TI
+    SysConfig, behind a placeholder tool path) did not run carried none of its
+    `.opt` response files — no `HOST_CONFIG`, no `DeviceFamily_*` — and init
+    recorded that database as `compile-check`. The route now says what a dry run
+    is, how to check a capture against the build directory, and that a database
+    init reports failures for is not put to the user for confirmation."""
+    sect = _section("Synthesizing, where no generator exists", COMPDB)
+    assert "A dry run is not an observation" in sect
+    assert "$(shell" in sect and "SysConfig" in sect
+    assert re.search(r"response files \(`\*\.opt`", sect), (
+        "the check is concrete: the build directory's response files and generated "
+        "headers must be named by the captured lines")
+    assert "a tool path is not a flag" in sect, (
+        "overriding the generator's variable is sanctioned explicitly, or the "
+        "never-invent-a-flag rule reads as forbidding the one fix")
+    assert "`.data.validation.failures` on a synthesized database" in sect
+    assert "Do not put that recipe to the user for confirmation" in sect
+    step4 = _section("Step 4")
+    assert "`validation.failures` empty," in step4 and "else Step 2)" in step4, (
+        "Step 4 is where the confirmation question lives, so it is where the "
+        "exception has to be stated")
+
+
 def test_the_tool_existence_rule_is_stated():
     """Step 0 probes `loci` and `uv` only. `meson`, `pio`, `west`, `cbuild`,
     `bear` and `compiledb` are all absent on this machine, and the matrix names all
@@ -1724,6 +1778,18 @@ def test_the_refresh_row_still_claims_the_four_codes_it_does_fix():
     assert re.search(r"regenerate the compile database \*\*before\*\*", refresh)
 
 
+def test_a_stale_python_recipe_refreshes_without_building_first():
+    """AAD-8020: `loci build python` runs the same staleness check, so sending a
+    Python `recipe_stale` to the regeneration step looped on the same refusal."""
+    refresh = _row("| `loci init --refresh`", RECOVERY)
+    assert re.search(r"on a Python recipe `loci init --refresh` re-reads the "
+                     r"declaration and relinks, so do not run `loci build python` "
+                     r"first", refresh)
+    bullet = _bullet("- `.data.recipe_untrusted` present")
+    assert re.search(r"on a Python recipe\s+`--refresh` is the recovery "
+                     r"\(\[recovery\.md\]\(recovery\.md\)\)", bullet)
+
+
 def test_every_variant_is_documented_with_its_consent_rule():
     for variant in ("| `loci init --refresh`", "| `loci init set <key>=<value>`",
                     "| `loci init add-file <src>`", "| `loci init --from-existing`"):
@@ -1758,6 +1824,31 @@ def test_the_uncoded_refusal_rule_is_stated_where_set_and_add_file_are():
 #: every phrase the positive assertions look for. Each was verified to pass the whole
 #: prose-lint suite before this table existed.
 CONTRADICTIONS: tuple[tuple[Path, str, str, str], ...] = (
+    # AAD-8020. Cythonizing a plain Python project is the user's call, and the module
+    # list is theirs to confirm.
+    (PYTHON, INTRO,
+     r"[Cc]ythoni[sz]e (?:it|the project|their (?:code|project)) (?:yourself|for them)"
+     r"|(?:add|write) (?:a |the )?`?setup\.py`? (?:yourself|for them)",
+     "adopts a plain Python project on the user's behalf"),
+    # P2 (AAD-8020 review): a session took the target answer as the module-list
+    # confirmation; the run consent is `--allow-run`, never `--confirmed`.
+    (PYTHON, "Running it",
+     r"`--confirmed` (?:answers|is (?:the|its) answer|also answers|counts)"
+     r"|(?:pass|add) `--allow-run` (?:yourself|unasked|without asking|by default)",
+     "takes `--confirmed` as the run consent, or runs the declaration unasked"),
+    (PYTHON, "What init shows",
+     r"(?:skip|no need for) (?:the |confirming the )?(?:module list|confirmation)"
+     r"|(?:target|`python_run`) answer (?:is|counts as) (?:the|this) confirmation"
+     r"|`--python-modules` (?:fixes|overrides|replaces) (?:a|the|any) (?:wrong|missing)",
+     "skips confirming the module list, or answers a wrong list with --python-modules"),
+    # PLG-4/PLG-6: a plain re-run finds `.toolchain`/`.venv`; a refresh repeats a
+    # missing cross compiler.
+    (PYTHON, "Refusals",
+     r"ask (?:the user )?for their `cython` path"
+     r"|(?:then|and) re-run with `--python-include <dir>`"
+     r"|`compiler_missing`[^.|]*?(?:then|→) `?(?:loci init )?--refresh",
+     "sends a header/Cython refusal to a path the CLI finds itself, or a missing "
+     "cross compiler to a refresh that repeats it"),
     (BOOTSTRAP, "`uv` missing",
      r"installs host tools for you|you may install uv",
      "reverses the host-tool policy"),
@@ -2174,7 +2265,7 @@ def test_every_relative_link_resolves(path: Path):
 def test_every_reference_file_is_actually_referenced():
     """A file nothing points at is a file the model never reads."""
     flat = _flat(SKILL)
-    for ref in (BOOTSTRAP, COMPDB, RECOVERY, GO, VOICE):
+    for ref in (BOOTSTRAP, COMPDB, RECOVERY, GO, VOICE, PYTHON):
         assert f"]({ref.name})" in flat, (
             f"{ref.name} exists but SKILL.md never links to it")
 
@@ -2360,3 +2451,93 @@ def test_the_regen_reference_offers_the_second_answer():
     # reader who wants an artifact-only recipe reads it rather than this file.
     assert "compdb-container.md" in _section(
         "When the build cannot be observed", COMPDB)
+
+
+# ── AAD-7861: the artifact-only recipe is asked for, never written on sight ──
+#
+# A plain `loci init` used to record an artifact-only recipe the moment it found
+# a linked image and no database, so the only thing between the user and a
+# recipe that can never time anything was Step 2's prose about offering their
+# build first — which the Copilot model skipped, and the user was asked to
+# confirm "no compile database" they had never been asked about. The CLI now
+# refuses at that decision point (`init_needs_user`, question `compdb`); these
+# pin that the skill routes it, offers the build, and passes the accepting flag
+# only as the user's no.
+
+def test_step_3_routes_the_compdb_question():
+    row = _row("| `init_needs_user`")
+    assert "`compdb`" in row, "the fourth question is not named"
+    assert "compdb.md" in row and "Step 2" in row, (
+        "a no-database project goes back to Step 2 (the build) and to the "
+        "section that says what yes and no are")
+
+
+def test_step_2_says_skipping_it_meets_the_question():
+    step2 = _section("Step 2: the compile database")
+    assert re.search(r"Skipping this step skips nothing", step2), (
+        "a model that goes straight to `loci init` has to know it lands in the "
+        "same question, so there is nothing to gain by skipping")
+    assert "`compdb` (Step 3)" in step2
+
+
+def test_the_artifact_only_section_is_an_answer_not_a_default():
+    sect = _section("When the build cannot be observed", COMPDB)
+    assert "init_needs_user" in sect and "`compdb`" in sect
+    assert ".error.artifact_only_elf" in sect, (
+        "the binary a yes would record is in the payload; show it, do not search")
+    assert "--accept-tier=unvalidated" in sect, "the no is a flag, and it is this one"
+    assert re.search(r"[Cc]arry the flag through `--confirmed`", sect), (
+        "init re-derives on every call, so the answer rides the confirmation too")
+    assert re.search(r"Headless: print both `loci init` lines, then stop", sect)
+    assert "--no-exec-regen-compdb" in sect, (
+        "the container question's no records the same recipe, and says so here")
+    # The reversals: the flag passed without the user's no, or the old default.
+    assert not re.search(
+        r"pass `--accept-tier=unvalidated` (?:first|by default|yourself|straight away)|"
+        r"[Pp]lain `loci init`[^.]*writes it|nothing extra is passed|records it on sight",
+        sect), "the artifact-only recipe is written on sight again, or accepted for them"
+
+
+@needs_cli_src
+def test_the_full_build_offer_python_md_reads_is_the_cli_s():
+    text = _flat(PYTHON)
+    blob = "\n".join((_cli_src() / n).read_text(encoding="utf-8")
+                     for n in ("init.py", "python_full.py"))
+    for name in ("run_summary", "run_steps", "first_error", "log"):
+        assert f"`{name}`" in text and f'"{name}"' in blob, name
+    assert "`--refresh --full-build`" in text and '"--full-build"' in blob
+    assert '"python_full_build"' in blob
+
+
+@needs_cli_src
+def test_the_init_needs_user_row_names_every_question_the_cli_asks():
+    """AAD-8020 added three questions; a row that lists four sends the other three
+    to nothing."""
+    asked = set(re.findall(r'(?m)^QUESTION_[A-Z_]+ = "([a-z_]+)"',
+                           (_cli_src() / "init.py").read_text(encoding="utf-8")))
+    assert {"target", "python_run", "python_include", "cython"} <= asked, asked
+    row = _row("| `init_needs_user`")
+    missing = sorted(q for q in asked if f"`{q}`" not in row)
+    assert not missing, f"Step 3's init_needs_user row does not name {missing}"
+
+
+@needs_cli_src
+def test_python_md_routes_every_python_code_the_cli_raises():
+    raised = set(re.findall(r'= "((?:python|cython)_[a-z_]+)"',
+                            (_cli_src() / "_errors.py").read_text(encoding="utf-8")))
+    assert "python_backend_cmake" not in raised
+    text = _flat(PYTHON)
+    missing = sorted(c for c in raised if f"`{c}`" not in text)
+    assert not missing, f"python.md does not route {missing}"
+
+
+@needs_cli_src
+def test_the_python_run_consent_python_md_reads_is_the_cli_s():
+    """P2: the run consent is `--allow-run`; `--confirmed` stamps a module list
+    nobody has seen yet."""
+    src = (_cli_src() / "init.py").read_text(encoding="utf-8")
+    sect = _section("Running it", PYTHON)
+    for name in ("run_summary", "before_summary", "run_steps"):
+        assert f"`{name}`" in sect and re.search(rf"\b{name}=", src), name
+    assert 'RUN_FLAG = "--allow-run"' in src and "`--allow-run`" in sect
+    assert "`--confirmed` is not this answer" in sect

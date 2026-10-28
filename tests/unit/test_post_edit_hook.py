@@ -179,7 +179,8 @@ _UNSET = object()
 def _run(home: Path, payload: dict, *, stub: str,
          drop_home: bool = False, expect_zero: bool = True,
          recipe: bool = True, init_status=_UNSET,
-         project: Path | None = None, state_dir: Path | None = None) -> Result:
+         project: Path | None = None, state_dir: Path | None = None,
+         hook: Path = HOOK) -> Result:
     """Run the hook against a stubbed `loci`.
 
     The hook prepends `$HOME/.local/bin` to PATH (where `uv tool install` puts the
@@ -237,7 +238,7 @@ def _run(home: Path, payload: dict, *, stub: str,
     env.update(host.env(project=_to_bash_path(root)))
     host.seed(sdir)
     proc = subprocess.run(
-        [_find_bash(), _to_bash_path(HOOK)],
+        [_find_bash(), _to_bash_path(hook)],
         input=json.dumps(payload), capture_output=True, text=True, timeout=30,
         env=env, cwd=host.cwd(None),
     )
@@ -569,7 +570,7 @@ def test_a_multi_hunk_patch_contributes_every_hunk(tmp_path):
 # ── what must never reach the CLI at all ────────────────────────────────────
 
 @_BOTH_HOSTS
-@pytest.mark.parametrize("path", ["/p/notes.md", "/p/build.py", "/p/Makefile", "/p/x"])
+@pytest.mark.parametrize("path", ["/p/notes.md", "/p/Makefile", "/p/x"])
 def test_a_non_source_path_never_invokes_loci(tmp_path, path):
     r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), stub=_MEASURABLE)
     assert r.calls == [], f"{path} must be filtered in the hook; got {r.calls!r}"
@@ -1280,13 +1281,25 @@ def test_the_nudge_is_appended_to_the_reminder_as_a_second_sentence(tmp_path):
     assert ctx.count("[loci]") == 1
 
 
-@pytest.mark.parametrize("path", ["/p/notes.md", "/p/build.json", "/p/x.py"])
+@pytest.mark.parametrize("path", ["/p/notes.md", "/p/build.json", "/p/x.rst"])
 def test_a_non_source_edit_never_nudges(tmp_path, path):
     """The extension filter runs first and exits, so a markdown edit cannot burn
     the marker — which would silently consume the one nudge the project gets."""
     r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), stub=_MEASURABLE,
              recipe=False, init_status="uninitialized")
 
+    assert r.out == ""
+    assert _markers(tmp_path / "state") == []
+
+
+@pytest.mark.parametrize("path", ["/p/build.py", "/p/x.pyx"])
+def test_a_py_outside_any_recipe_never_reaches_the_cli_and_never_nudges(tmp_path, path):
+    """A plain Python repo is not one LOCI should offer to adopt, nor pay a `loci`
+    process for on every edit."""
+    r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), stub=_MEASURABLE,
+             recipe=False, init_status="uninitialized")
+
+    assert r.calls == []
     assert r.out == ""
     assert _markers(tmp_path / "state") == []
 
@@ -2372,3 +2385,112 @@ def test_only_the_nudge_reaches_the_user(tmp_path):
     keys = set(json.loads(r.out))
     assert keys == ({"hookSpecificOutput", "additionalContext"} if _host().copilot
                     else {"hookSpecificOutput"}), keys
+
+
+# ── Python under a recipe: the CLI's sourcemap decides ──────────────────────
+
+def _py_file(path: Path) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("def f(x):\n    return x\n", encoding="utf-8")
+    return path.as_posix()
+
+
+def _py_stub(governed: bool, root: Path, **extra) -> str:
+    data = {"governed": governed, "measurable": governed, "artifact_only": False,
+            "measure_via": "generated", "project_root": root.as_posix(),
+            "checkout_root": "" if governed else root.as_posix(), **extra}
+    return "echo '" + json.dumps({"ok": True, "data": data}) + "'"
+
+
+@_BOTH_HOSTS
+def test_a_mapped_py_gets_the_plain_reminder(tmp_path):
+    lab = tmp_path / "lab"
+    path = _py_file(lab / "lab" / "dsp.py")
+    r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH),
+             stub=_py_stub(True, lab), project=lab)
+
+    assert len(r.calls) == 1
+    assert r.context is not None and "[loci] dsp.py was modified" in r.context
+    assert "Step 0b" not in r.context
+    assert "to compile last time" not in r.context
+
+
+@_BOTH_HOSTS
+def test_a_py_reminder_carries_its_modules_last_compile_time(tmp_path):
+    """Design §11: post-edit says a long compile before it starts, and the reminder
+    is what it reads before `prepare` compiles."""
+    lab = tmp_path / "lab"
+    path = _py_file(lab / "lab" / "dsp.py")
+    r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), project=lab,
+             stub=_py_stub(True, lab, module="lab.dsp", compile_seconds=111.4))
+
+    assert r.context is not None
+    assert "Its module lab.dsp took 111.4 s to compile last time." in r.context, r.context
+
+    quick = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), project=lab,
+                 stub=_py_stub(True, lab, module="lab.dsp", compile_seconds=3.1))
+    assert quick.context is not None and "to compile last time" not in quick.context
+
+
+@_BOTH_HOSTS
+def test_a_py_the_c_recipe_does_not_map_is_silent(tmp_path):
+    fw = tmp_path / "fw"
+    path = _py_file(fw / "tools" / "gen.py")
+    r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH),
+             stub=_py_stub(False, fw), project=fw, init_status="uninitialized")
+
+    assert len(r.calls) == 1, "a recipe sits above it, so the CLI is the one to ask"
+    assert r.out == ""
+    assert _markers(tmp_path / "state") == []
+
+
+@pytest.mark.parametrize("governed", [True, False, None],
+                         ids=["governed", "ungoverned", "governance-unknown"])
+@pytest.mark.parametrize("name", ["x.py", "x.pyx", "x.c"])
+def test_a_py_is_never_nudged_where_a_c_file_would_be(tmp_path, name, governed):
+    fw = tmp_path / "fw"
+    (fw / ".loci").mkdir(parents=True)
+    (fw / ".loci" / "build.yaml").write_text("version: 1\n", encoding="utf-8")
+    checkout = tmp_path / "their-repo"
+    checkout.mkdir()
+    path = _py_file(fw / name)
+    stub = _governed_stub(governed, project_root=fw.as_posix() if governed else "",
+                          checkout_root="" if governed else checkout.as_posix())
+    r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), stub=stub,
+             recipe=False, project=tmp_path / "session")
+
+    assert r.calls, "a recipe sits above it, so the CLI is the one to ask"
+    assert _nudged(r) is (name == "x.c" and governed is not True), r.out
+
+
+_NUDGING_EXTS = [".c", ".cc", ".cpp", ".cxx", ".c++", ".rs", ".go",
+                 ".h", ".hpp", ".hxx", ".h++", ".hh", ".inc", ".ipp", ".tcc",
+                 ".inl", ".tpp", ".def", ".S", ".s"]
+
+
+@pytest.mark.parametrize("ext", _NUDGING_EXTS)
+def test_every_allow_listed_extension_nudges(tmp_path, ext):
+    r = _run(tmp_path, _edit(f"/p/mod{ext}", patch=_ONE_LINE_PATCH),
+             stub=_NOT_MEASURABLE, recipe=False, init_status="uninitialized")
+
+    assert _nudged(r), f"{ext} stopped nudging: {r.out!r}"
+
+
+def test_an_extension_added_to_the_filter_does_not_nudge_until_allow_listed(tmp_path):
+    """The nudge's premise is a C/C++/Rust/Go project. An arm added to the
+    extension filter must opt in to it, not inherit it the way `.py` once did."""
+    anchor = '    *) _po_state="skipped (extension not measurable)"; exit 0 ;;\n'
+    text = HOOK.read_text(encoding="utf-8")
+    assert text.count(anchor) == 1, "the extension filter's fallback arm moved"
+    plugin = tmp_path / "plugin"
+    shutil.copytree(PLUGIN_ROOT / "lib", plugin / "lib")
+    (plugin / "hooks").mkdir()
+    hook = plugin / "hooks" / HOOK.name
+    hook.write_text(text.replace(anchor, "    *.zz) ;;\n" + anchor), encoding="utf-8")
+
+    r = _run(tmp_path, _edit("/p/new.zz", patch=_ONE_LINE_PATCH), stub=_MEASURABLE,
+             recipe=False, init_status="uninitialized", hook=hook)
+
+    assert r.calls == ["hook edit-scan"], "the new arm did not reach the CLI"
+    assert not _nudged(r), r.out
+    assert _markers(tmp_path / "state") == []

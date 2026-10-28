@@ -52,8 +52,20 @@ command -v loci_host_session_resumed >/dev/null 2>&1 || loci_host_session_resume
 command -v loci_host_name >/dev/null 2>&1 || loci_host_name() { return 1; }
 command -v loci_host_notice >/dev/null 2>&1 || loci_host_notice() { return 1; }
 command -v loci_hook_log >/dev/null 2>&1 || loci_hook_log() { return 1; }
+
+# Whether this machine holds a recipe the user approved in some checkout, which
+# the recipe reuse below can give another checkout of the same repository
+# (AAD-7843). A glob, so a machine with none pays nothing here or below; it is
+# also a reason to read the payload, whose `cwd` names the session's folder.
+_LOCI_APPROVED=""
+for _f in "$STATE_DIR"/recipe-approved-*.json; do
+    [ -f "$_f" ] && { _LOCI_APPROVED=1; break; }
+done
+unset _f
+
 LOCI_HOOK_INPUT=""
-if { loci_is_dev || loci_hook_log || loci_fail_fast || loci_host_reads_payload; } && [ ! -t 0 ]; then
+if { loci_is_dev || loci_hook_log || loci_fail_fast || loci_host_reads_payload \
+        || [ -n "$_LOCI_APPROVED" ]; } && [ ! -t 0 ]; then
     LOCI_HOOK_INPUT=$(cat 2>/dev/null || true)
 fi
 
@@ -272,6 +284,143 @@ else
     fi
 fi
 
+# Recipe reuse (AAD-7843). The opt-in to LOCI is per repository, so a checkout
+# with no recipe — a new git worktree, which is where every Copilot session runs
+# — gets the one the user approved in another checkout of the same repository,
+# unless that recipe is tied to the folder it was made in. Which recipes those
+# are, and what is written, is the CLI's (`loci hook recipe-reuse`). Here, before
+# any edit hook asks whether a recipe governs, so post-edit fires on the first
+# governed edit of the session.
+#
+# One CLI call (~0.4 s on Windows), made only where it can do something: `loci`
+# is on PATH, and an approved copy of THIS checkout's repository names a LOCI
+# root that exists here with no recipe at or above it (`_loci_reuse_due`). Up to
+# the call it is file tests and string matching — the copies are written
+# unescaped so no JSON parser is needed to read them — so a session in a
+# repository nobody set up, or in one whose roots all have recipes (a monorepo
+# session at the top, above them), pays nothing.
+#
+# The session folder as turn-clean.sh reads it: the payload's `cwd` (Copilot runs
+# hooks from the plugin root, AAD-7810), then CLAUDE_PROJECT_DIR, then $PWD. The
+# CLI is started IN it and handed no path, so no `/c/…` spelling reaches Python.
+#
+# Silent: a recipe not reused is today's behaviour and says nothing. Fast-fail
+# puts a failed call in the context, the one reply this hook owns.
+_REUSE_NOTICE=""
+
+# Is reuse due in the checkout whose top is $1? The CLI's own selection
+# (`recipe_reuse.reuse`), approximated from the files alone, and erring towards
+# the call wherever it cannot tell (a copy it cannot read).
+#   • the main checkout: $1 itself for a clone (`.git` a directory); for a linked
+#     worktree, the parent of the `commondir` its `.git` file points through,
+#     which must be a `.git` — a submodule or a bare repository has none, and the
+#     CLI answers nothing there;
+#   • a copy of that repository (`repository` names it, by identity with `-ef`,
+#     so `C:/…` and `/c/…` are one directory). The CLI writes the copy as JSON
+#     with only `"` and `\` escaped in a path, and both are decoded here; a copy
+#     this cannot read is skipped, not asked about — it would otherwise send every
+#     checkout on the machine to the CLI, every session, for good;
+#   • whose `rel` exists here, with no recipe at it or above it in this checkout,
+#     and which is not the very folder it was approved in (`source_root`) — that
+#     one's lost recipe is `/loci:init`'s to restore.
+_loci_reuse_due() {
+    local top="$1" main line gitdir common shared f t repo rel src d
+    local re_repo='"repository": "((\\.|[^"\\])*)"' re_rel='"rel": "((\\.|[^"\\])*)"'
+    local re_src='"source_root": "((\\.|[^"\\])*)"'
+    if [ -d "$top/.git" ]; then
+        main="$top"
+    elif [ -f "$top/.git" ]; then
+        line="" common=""
+        IFS= read -r line < "$top/.git" || [ -n "$line" ] || return 1
+        line="${line%$'\r'}"
+        case "$line" in gitdir:*) gitdir="${line#gitdir:}"; gitdir="${gitdir# }" ;; *) return 1 ;; esac
+        case "$gitdir" in /*|[A-Za-z]:*) ;; *) gitdir="$top/$gitdir" ;; esac
+        IFS= read -r common < "$gitdir/commondir" 2>/dev/null || [ -n "$common" ] || return 1
+        common="${common%$'\r'}"
+        case "$common" in /*|[A-Za-z]:*) shared="$common" ;; *) shared="$gitdir/$common" ;; esac
+        [ -d "$shared" ] && [ "$shared" -ef "$shared/../.git" ] || return 1
+        main="$shared/.."
+    else
+        return 1
+    fi
+    for f in "$STATE_DIR"/recipe-approved-*.json; do
+        [ -f "$f" ] || continue
+        t=$(<"$f") || continue
+        [[ $t =~ $re_repo ]] && _loci_json_unescape "${BASH_REMATCH[1]}" || continue
+        repo="$_LOCI_UNESCAPED"
+        [ "$repo" -ef "$main" ] || continue
+        [[ $t =~ $re_rel ]] && _loci_json_unescape "${BASH_REMATCH[1]}" || continue
+        rel="$_LOCI_UNESCAPED"
+        [ -d "$top/$rel" ] || continue
+        if [[ $t =~ $re_src ]] && _loci_json_unescape "${BASH_REMATCH[1]}"; then
+            src="$_LOCI_UNESCAPED"
+            [ "$top/$rel" -ef "$src" ] && continue
+        fi
+        d="$rel"
+        while :; do
+            [ -e "$top/$d/.loci/build.yaml" ] && continue 2
+            [ "$d" = "." ] && break
+            case "$d" in */*) d="${d%/*}" ;; *) d="." ;; esac
+        done
+        return 0
+    done
+    return 1
+}
+
+# A JSON string body with `\\` and `\"` decoded, into $_LOCI_UNESCAPED; fails on
+# any other escape (a control character in a path — no copy of LOCI's has one).
+_loci_json_unescape() {
+    local s="$1" bs=$'\001'
+    s="${s//\\\\/$bs}"
+    s="${s//\\\"/\"}"
+    case "$s" in *\\*) return 1 ;; esac
+    _LOCI_UNESCAPED="${s//$bs/\\}"
+}
+
+_loci_reuse_recipe() {
+    local root="" d up i=0 out rc
+    [ -n "$_LOCI_APPROVED" ] && $_DETECTION_READY || return 0
+    if [ -n "$LOCI_HOOK_INPUT" ]; then
+        loci_json_load "$LOCI_HOOK_INPUT"
+        root=$(loci_json_get cwd)
+    fi
+    [ -n "$root" ] || root="${CLAUDE_PROJECT_DIR:-$PWD}"
+    d=$(cd "$root" 2>/dev/null && pwd -P) || return 0
+    # The checkout's top: the nearest `.git` at or above the folder, a directory
+    # (a clone) or a `gitdir:` file (a worktree, or a submodule).
+    while [ ! -e "$d/.git" ]; do
+        up="${d%/*}"
+        [ -n "$up" ] || up="/"
+        if [ "$up" = "$d" ] || [ "$i" -ge 64 ]; then
+            return 0
+        fi
+        d="$up"; i=$((i + 1))
+    done
+    _loci_reuse_due "$d" || return 0
+    if command -v timeout >/dev/null 2>&1; then
+        out=$(cd "$root" 2>/dev/null && timeout 30 loci hook recipe-reuse 2>&1)
+    else
+        out=$(cd "$root" 2>/dev/null && loci hook recipe-reuse 2>&1)
+    fi
+    rc=$?
+    # One log line: the envelope is pretty-printed, and argparse's usage is
+    # several CRLF lines (a CLI without the verb). Folded, and the indentation
+    # squeezed before the cut so the skip reasons survive it — with no process,
+    # and only when a log is open: on stock macOS bash 3.2 this costs 0.1 s.
+    if [ -n "${_LOCI_LOG_FILE:-}" ]; then
+        d="${out:0:1500}"; d="${d//$'\r'/ }"; d="${d//$'\n'/ }"
+        while [[ $d == *"  "* ]]; do d="${d//  / }"; done
+        loci_log INFO session-init "recipe-reuse in $root: rc=$rc ${d:0:400}"
+    fi
+    if [ "$rc" -ne 0 ] && loci_fail_fast \
+       && . "${PLUGIN_DIR}/lib/loci_failfast.sh" 2>/dev/null; then
+        _REUSE_NOTICE=$(loci_fail_fast_notice session-init "loci hook recipe-reuse" \
+            "$rc" "$out")
+    fi
+    return 0
+}
+_loci_reuse_recipe
+
 # additionalContext — injected into the session, invisible to the user.
 #
 # The 1 385-byte LOCI_VOICE block is gone from here, but not all of it. Every
@@ -328,7 +477,7 @@ if _HOST_NAME=$(loci_host_name) && [ -n "$_HOST_NAME" ]; then
 fi
 # The reminder is the trigger, not "any edit": the hook emits it only for edits a
 # recipe governs.
-_AUTORUN_RULES='LOCI auto-run rules: '"$_PLAN_MODE"', when the user describes new C/C++/Rust/Go logic in a project a LOCI recipe governs, you MUST invoke loci:loci-preflight '"$_PREFLIGHT_ON"' before proposing edits.'"$_PREFLIGHT_OFF"' After an '"$_EDIT_TOOLS"' to a C/C++/Rust/Go source (.c,.cc,.cpp,.cxx,.c++,.rs,.go) or a header it includes, invoke loci:loci-post-edit as soon as the hook'"'"'s `You MUST invoke` reminder appears; it appears only for edits a recipe governs.'
+_AUTORUN_RULES='LOCI auto-run rules: '"$_PLAN_MODE"', when the user describes new C/C++/Rust/Go/Python logic in a project a LOCI recipe governs, you MUST invoke loci:loci-preflight '"$_PREFLIGHT_ON"' before proposing edits.'"$_PREFLIGHT_OFF"' After an '"$_EDIT_TOOLS"' to a C/C++/Rust/Go/Python source (.c,.cc,.cpp,.cxx,.c++,.rs,.go,.py,.pyx) or a header it includes, invoke loci:loci-post-edit as soon as the hook'"'"'s `You MUST invoke` reminder appears; it appears only for edits a recipe governs.'
 _TOOL_POLICY='LOCI tool policy: All analysis runs through the `loci` command on PATH — call it as a bare `loci …`, never via Python. Every `loci` call prints one JSON envelope on stdout (`{"ok":true,"data":…}` or `{"ok":false,"error":…}`); read it and branch on `ok` — never `python -c` (the plugin emits Unicode like `→`, `─`, en-dash that `python -c` mangles under Windows cp1252). Path policy: NEVER write intermediate files to `/tmp/`, `/var/tmp/`, or any path outside the working directory'"$_PATH_WHY"'. Always write inside the project (e.g. `.loci/build/`) so every tool sees the same path.'
 # Adopting a project is the USER'S decision, so this rule no longer auto-runs
 # init — it used to, and that was the intrusive half. `loci init` writes four
@@ -364,6 +513,7 @@ fi
 
 _ctx_line "$_VERSION_LINE"
 _ctx_line "$_FAIL_FAST_RULE"
+_ctx_line "$_REUSE_NOTICE"
 _ctx_line "$_CLI_LINE"
 # Once, plainly, and only where it is true: stock macOS bash with no newer bash
 # installed. The hooks still run; what changes is the size they decide exactly

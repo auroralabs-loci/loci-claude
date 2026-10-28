@@ -73,7 +73,7 @@ holds there too. What differs is around the edges:
   command in your shell, which is where the browser flow has to run.
 - **What runs automatically.** The six hooks in the table below fire under Copilot
   as they do under Claude Code: `loci-preflight` in `/plan` mode (or a `--plan`
-  run), `loci-post-edit` after an edit to C/C++/Rust/Go source, the contract guard
+  run), `loci-post-edit` after an edit to C/C++/Rust/Go/Python source, the contract guard
   on every edit and command. Copilot's subagents inherit the parent turn's id
   through the `SubagentStart` hook.
 - **Version.** `copilot plugin list` shows the installed version, and
@@ -105,11 +105,17 @@ the ones that never reach the backend:
 loci auth status      # must report signed_in
 ```
 
-Then run `/loci:init` once per checkout. It records how the project builds — target
+Then run `/loci:init` once per clone. It records how the project builds — target
 ISA, compiler, build system, artifact — into `.loci/build.yaml`, and every
 measurement after that resolves its flags from that file instead of guessing.
 Both it and LOCI's own build output (`.loci/build/`) are machine-local and
-gitignored, so a fresh clone needs its own `/loci:init`.
+gitignored, so a fresh clone needs its own `/loci:init`. Another checkout of a
+repository you set up on this machine — a git worktree, the kind Copilot runs each
+session in — reuses the recipe you confirmed, at session start. It does not when
+that recipe is tied to the folder it was made in: it names that folder, builds in
+a container, reaches outside it with `../`, builds outside it (a shadow build
+directory every checkout would share), or uses a compile database LOCI
+synthesized there. Then that checkout needs its own `/loci:init`.
 
 Then try these in any C/C++/Rust project with compiled binaries.
 
@@ -129,7 +135,7 @@ Guardian — human-on-the-loop. LOCI predicts, warns, and guides; you review the
 
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
-| **loci:init** | User-invoked | Records how this project builds into `.loci/build.yaml` — target ISA, compiler, build system, artifact. Once per checkout; every skill that compiles or measures rests on it. Needs sign-in. |
+| **loci:init** | User-invoked | Records how this project builds into `.loci/build.yaml` — target ISA, compiler, build system, artifact. Once per clone, which its worktrees reuse; every skill that compiles or measures rests on it. Needs sign-in. |
 | **loci-preflight** | Auto in `/plan` mode | Audits the plan at binary level before code is written — timing, energy, and CFG impact. |
 | **loci-post-edit** | Auto after edits | Diffs pre/post compiled artifacts — timing, energy and control-flow impact of the edit. |
 | **exec-trace** | User-invoked | Function-level timing and energy from real workloads and platform traces, powered by LCLM. |
@@ -164,7 +170,7 @@ means for your project.
 
 | Hook | Trigger | Action |
 |------|---------|--------|
-| `SessionStart` | startup, resume | CLI install, context injection, build-state cleanup |
+| `SessionStart` | startup, resume | CLI install, context injection, build-state cleanup, the confirmed recipe for a new checkout of a repository already set up |
 | `UserPromptSubmit` | every prompt | stamps the turn id every measurement is filed under |
 | `PreToolUse` | Edit, Write, Bash | keeps `.loci/contract.yaml` and `.loci/build.yaml` read-only to the agent; `.o` snapshot for delta analysis |
 | `PostToolUse` | Edit, Write, Bash | asks whether the edit can change a compiled function, and reminds `loci-post-edit` if so |
@@ -231,7 +237,11 @@ Skills that need sign-in: `/loci:init`, `/loci:exec-trace`, `/loci:stack-depth`,
 ### LOCI says the project is not initialized
 
 Every measurement resolves its flags from `.loci/build.yaml`, which `/loci:init`
-writes. It is machine-local, so a fresh clone has none until you run it there.
+writes. It is machine-local, so a fresh clone has none until you run it there. A
+worktree of a repository you already set up reuses its recipe when the session
+starts, unless that recipe is tied to its own folder (see Quick Start). A recipe
+confirmed before plugin v0.3.23 is offered to other checkouts once `/loci:init`
+has run again where it was made.
 
 1. Run `/loci:init`. It reads the project, asks at most one question — the
    target ISA when more than one is possible, otherwise just "does this look
@@ -243,7 +253,7 @@ writes. It is machine-local, so a fresh clone has none until you run it there.
 **Auto-skills didn't fire:**
 
 - `loci-preflight` only runs in `/plan` mode. Make sure you're planning new logic, not just asking a question.
-- `loci-post-edit` only runs after edits to C/C++/Rust/Go source files, or a header they include, in a project a LOCI recipe governs.
+- `loci-post-edit` only runs after edits to C/C++/Rust/Go/Python source files, or a header they include, in a project a LOCI recipe governs.
 - Both auto-skills require compiled binaries (`.elf`, `.o`, `.axf`) to be present. If your project hasn't been built yet, compile it first.
 
 **On-demand skills didn't respond:**

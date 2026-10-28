@@ -6,17 +6,19 @@ Reference for `/loci:loci-post-edit`. Step 4a in full — which signals an objec
 
 ## Step 4a: what the escalated skills still answer
 
-`data.escalations` (on `prepare` and `measure`) is `[{skill, requests}]`: the
-requests `measure` never fills — stack depth and frame size, the four structural
-invariants, ROM and RAM — grouped by the skill that does. Invoke a listed skill only on SKILL.md Step 4a's
-triggers; one run answers every request it lists. Each emits its own report, and
-its one-line summary becomes a Stack / Safety / Memory row here. Increment `R` by 1 at the trigger
-and again after reasoning over the result.
+`data.escalations` (on `prepare` and `measure`) is `[{skill, requests, triggers}]`:
+the requests `measure` never fills — stack depth and frame size, the four structural
+invariants, ROM and RAM — grouped by the skill that does, and the `triggers` the
+objects justify (SKILL.md Step 4a). Invoke every listed skill; one run answers every
+request and trigger it lists. Each emits its own report, and its one-line summary
+becomes a Stack / Safety / Memory row here. Increment `R` by 1 at the trigger and
+again after reasoning over the result.
 
-**With no contract, the decision is yours**, on SKILL.md Step 4a's triggers; the
-argument is the whole gate. A child run costs latency and context, not money — `analyse stack` and
-`analyse memory` are unmetered end to end — so argue for it from what it would
-tell you, and "just to check" is still not that.
+**The list is LOCI's on every contract.** A child run costs latency and context,
+not money — `analyse stack` and `analyse memory` are unmetered end to end — so add
+a skill the list lacks only for what an object cannot show, argued from the diff.
+A listed one is never skipped: the turn-end check and `stats record` name each one
+left unanswered (`escalations_owed`).
 
 **Hand the escalated skill this run's manifest id as its `--parent-run`.** It records
 its own run either way; the pointer is what puts that run under yours in the cockpit
@@ -49,12 +51,13 @@ run it unasked — it rewrites the user's build outputs:
 1. **Only when `data.linked_before.before_saved` is `true`** on `measure`'s envelope.
    `false`: a relink destroys the only Before — report `before_reason`, except
    `no_edit_this_turn` ([house rules](../_shared/house-rules.md#coded-errors)).
-2. **Only where the edit plausibly moves a bounded figure**: a function on the
-   entry's call graph; a new call, local array, recursion, indirect call or static data.
+2. **Only where the edit plausibly moves a bounded figure**: a listed trigger, or a
+   function on the entry's call graph.
 3. **Ask once per turn with the question tool**
    ([house rules](../_shared/house-rules.md#question-tool)), naming the entry and
    `data.linked_before.relink`. A yes covers the turn; a no is not asked again; with
-   nobody to answer, skip.
+   nobody to answer, skip. On a Python recipe it is `loci build python --only <module>`,
+   or `--full` for a module the project's full build recorded: run it as given.
 4. **Yes:** run it, then the child with the same `--turn` and `--parent-run`; it
    finds a fresh link. **No, or `false`:** invoke the child anyway; the entry is
    `no_opinion`, and stack-depth folds back the object's own frame with `relink

@@ -1,12 +1,12 @@
 ---
 name: stack-depth
 description: >
-  Worst-case stack depth analysis for embedded C/C++/Rust/Go: call-graph traversal,
-  per-function frame sizes, recursion detection, and stack budget pass/fail from
-  compiled .o or linked ELF binaries. Use for what the stack costs: worst-case
-  depth, stack overflow risk, frame size impact of a change, or whether a task
-  stack is big enough; a budget stated in the request is judged here, and a
-  standing bound is authored by /loci:contract.
+  Worst-case stack depth analysis for embedded C/C++/Rust/Go and Python (Cython):
+  call-graph traversal, per-function frame sizes, recursion detection, and stack
+  budget pass/fail from compiled .o or linked ELF binaries. Use for what the stack
+  costs: worst-case depth, stack overflow risk, frame size impact of a change, or
+  whether a task stack is big enough; a budget stated in the request is judged
+  here, and a standing bound is authored by /loci:contract.
 when_to_use: >
   Also RAM optimization in embedded/RTOS projects, investigating hard faults,
   or sizing new RTOS tasks.
@@ -26,15 +26,18 @@ sees](../_shared/house-rules.md#user-commands)** sections. There is no architect
 here: `loci init` refuses to record a target LOCI does not support, so
 the target is the recipe's own, and the verb reads it there — never
 re-detected, never passed. Artifact selection is *not* yours either: the verb owns the freshness
-ladder — the recipe's recorded artifact first, then the ranking, as the house rules'
-[The artifact a run measures](../_shared/house-rules.md#the-artifact) says — it refuses a stale binary rather than measuring it, and names what it
-measured, and how it chose it (`data.artifact.via`), in the envelope.
+ladder ([The artifact a run measures](../_shared/house-rules.md#the-artifact)): it refuses a
+stale binary rather than measuring it, and names what it measured, and how it chose it
+(`data.artifact.via`), in the envelope. On a Python
+recipe it reads LOCI's own module links until [the project's full
+build](../_shared/house-rules.md#python-full-build) is recorded, which that section
+says when to offer.
 
 **Verdict vocabulary.** Two columns — `STATUS` and `AGENT ASSESSMENT` — and the
 row verdict is the two composed; see `<plugin-dir>/skills/_shared/verdicts.md`
 for the matrix and the display words. A `STATUS` of `PASS` / `CAUTION` / `FAIL`
-needs an enabled contract entry bounding `stack_depth` or `stack_frame_size`, or
-a directly observed structural hazard. A depth with neither behind it has
+needs an enabled contract entry bounding `stack_depth` or `stack_frame_size`, a
+bound the request stated, or a directly observed structural hazard. A depth with neither behind it has
 `STATUS` `—` on a contracted run and takes its word from your assessment, which
 on a `none` envelope fills the `STATUS` column itself — the mapping and the
 caption are in `verdicts.md`'s [No contract: the agent fills
@@ -42,6 +45,12 @@ caption are in `verdicts.md`'s [No contract: the agent fills
 and no percentage band here: the measurement is a number of bytes until someone's
 bound gives it a denominator, and where one does, the CLI bands the ratio in one
 place and this skill states no threshold of its own.
+
+A bound stated in the request is the house rules' second source: compare the depth
+to it yourself — never `--stack-budget`, whose band fails half the figure — as a
+bound: `STATUS` `PASS` or `FAIL` by that comparison alone, Note `<N> B of <bound> B
+(<pct>%)`, the figure quoted as the request's, and the footer's bounded form with
+`stated in the request`; on a floor every figure, the percentage too, has `≥`.
 
 Apply the house rules' **The Contract Envelope is input only**, **A measurement
 inherits a verdict from a bound, never from a band** and **Your verdicts are
@@ -81,7 +90,9 @@ Its `data.project_root` and `data.context_file` are `<project_root>` and
   ([The artifact a run measures](../_shared/house-rules.md#the-artifact)).
 - `--source` only when the user named a source file and no binary: it finds the
   project, never what is measured.
-- `--entry-functions` only when the user named the roots.
+- `--entry-functions` only when the user named the roots. Otherwise the verb
+  walks the binary's own roots — every function nothing calls — beside the
+  contract's functions, so the depth answers for the image.
 
 **Branch on `.ok` first, and only then on the exit code.** On `ok:false` the
 envelope carries an `error` and no `data`, whatever the number is — and `2` is
@@ -116,38 +127,45 @@ The envelope carries:
   absent when no recipe governs the project.
 - `data.detail` — `cycles`, `unknown_callees`, `indirect_call_sites` (the
   analysed functions' reach), the per-run `summary`, and `whole_binary`, the
-  same three for the whole binary, present when an entry bounds them.
-- `data.detail.stack_analysis` — **the figures Step 4 reports**, keyed by entry
+  same three for the whole binary, present when an entry bounds them, with
+  `largest_frame` (`function`, `size`) and, when an entry bounds `stack_depth`
+  with no function, `deepest` (`function`, `depth`, `path`, `lower_bound`): a
+  function-less `stack_depth` or `stack_frame_size` entry is judged on those,
+  never on the roots walked.
+- `data.detail.stack_analysis` — **the figures Step 4 reports**, keyed by
   function: `worst_case_depth`, `frame_size`, `average_depth`, `worst_case_path`,
-  `per_function_frames` and that function's own `warnings`. This is the whole source
-  for them. Never re-derive a depth, and never run `loci elf stack` for one — that is
-  a second full disassembly of a binary this call already read, and the `elf` verbs
-  are not this skill's to call.
+  `per_function_frames` and that function's own `warnings`. On a run you did not
+  scope (`data.detail.roots` is `binary`) it holds every contract function and
+  the deepest ten roots, deepest first, a root's `warnings` cut to twelve lines
+  and a count; `summary.total_functions_analyzed` counts every root walked.
+  Never re-derive a depth or run `loci elf stack` for one: the `elf` verbs are
+  not this skill's to call.
 - `data.detail.resolved` — a root you named that is keyed above under another
   name (`lfs_bd_read` → `lfs_bd_read.isra.0`, the compiler's clone of it); and
   `data.detail.ambiguous_functions`, a root that named several.
+- `data.measured` — per request, `value` and `prev` when a Before existed
+  (`lower_bound` / `prev_lower_bound` beside). A root's depth and frame no entry
+  bounds, and the image's depth on an unscoped run, are the verb's own requests
+  (`fabricated: true`, no bound).
 - `data.contract` — **read this first**: the string `project` or `none` (never
   an object: test `data.contract == "project"`, never `data.contract.source`).
   `project` means the user's own
   entries judged this run and their verdicts are the report's; `none` means the
-  repo has no contract file, so there is no judgement, gate, row or machine
-  verdict assembled for you and every row's `STATUS` is the one your own
-  assessment maps to. You still draw the
-  conclusion table, composing its rows yourself — `verdicts.md` says how. An envelope carrying none of
-  them is telling you that, and it is never a reason to go and read the contract
-  yourself.
-- `data.rows` — **not rendered, on any envelope.** It assembles one row per
-  (function, gate), merging two bounds into one, and that merge is the thing
-  [The conclusion table](../_shared/verdicts.md#conclusion-table) removes: a row
-  is one contract entry, so two requirements draw two rows. The field stays in
-  the envelope, unused. You compose the table — from `data.judgements`, which is
+  repo has no contract file, so no judgement, gate, row or machine verdict is
+  assembled and every row's `STATUS` is the one your assessment maps to; you
+  still draw the conclusion table as `verdicts.md` says. An envelope carrying
+  none of them is never a reason to go and read the contract yourself.
+- `data.rows` — **not rendered, on any envelope.** It merges two bounds on one
+  (function, gate) into one row, which
+  [The conclusion table](../_shared/verdicts.md#conclusion-table) forbids: a row
+  is one contract entry. You compose the table — from `data.judgements`, which is
   what each row is drawn from. Do not recompute a percentage, re-map an icon, or
   reword a note.
   **On a `project` envelope you render these** — they are the user's own requirements
   answered, so the verdict is theirs to hear back. Quote the requirement from
   `judgements[].text`, and never substitute reasoning of your own for a bound the
   verb already compared.
-- `data.judgements` — one per compared bound, the evidence beneath those rows:
+- `data.judgements` — one per compared bound:
   `verdict`
   (`pass` | `caution` | `fail`), the entry's own `text`, `gate`, `severity`,
   `entry_key`, `bound`, `observed`, and a `note` written to be printed as it
@@ -155,23 +173,20 @@ The envelope carries:
 - `data.gates` and `data.verdict` — the per-gate Statuses and the run's machine
   verdict, rolled up from those judgements.
 - `data.unjudged` — an entry nothing measured, with its `reason`. **Not a pass**,
-  and it produces no row: a green row on an unmeasured bound is a claim this run
-  cannot support. **One `reason_code` is not "nothing measured":**
-  `pending_classification` means the binary WAS read and the cycles are in hand —
-  what is missing is the source-level call Step 2 makes. Report that entry as
-  awaiting your classification, with the cycle count, never as unmeasured.
-- `data.agent_judged` — the entries LOCI cannot compute. Step 2 judges these.
+  and it produces no row. **One `reason_code` is not "nothing measured":**
+  `pending_classification` means the binary WAS read and the cycles are in hand.
+  Report that entry as awaiting your classification, with the cycle count, never
+  as unmeasured.
+- `data.agent_judged` — the entries LOCI cannot compute; with no contract, one per
+  figure and counted hazard. Send its `entry_key` as offered, the row's function in
+  `fn`. Step 3 judges these.
 - `data.pending_classification` — the recursion the verb refuses to guess at.
 - `data.run` — the run id every patch below names.
 
 ## Step 2: classify the recursion (stack only)
 
-`--max-recursion-depth` bounds every cycle by fiat, so the classification is a
-reading of the source and it is yours: the verb states the cycles and stops.
-
 **The question is whether the deepest depth is knowable and finite from the
-source, not whether the recursion terminates** — almost all of them do, and one
-that always returns is still unbounded here. **Read the call sites**: the bound is
+source, not whether the recursion terminates.** **Read the call sites**: the bound is
 often not in the recursing function. A constant it tests, a fixed size its caller
 passes (`sort(buf, BUFFER_SIZE)`), a structure of fixed depth — all bounds. A depth
 scaling with a runtime value nothing in the source caps is not, and one you would
@@ -186,17 +201,22 @@ loci stats record --run <data.run> --project-root "<project_root>" \
 ```
 
 Every other listed cycle counts as unbounded. Pass an empty value when the
-source bounds none of them. When the source does not say — the terminator is a
-runtime value, the recursion crosses a callback — say so instead of guessing:
+source bounds none of them, or when `cycles` is empty: that settles the entry.
+When source you read does not say — the terminator is a runtime value, the
+recursion crosses a callback — say so instead of guessing:
 
 ```
 loci stats record --run <data.run> --project-root "<project_root>" \
     --context-file "<project-context>" --recursion-unjudged "<why>"
 ```
 
-`no_source`, in `data.detail` and in `whole_binary`, holds cycles and sites with no
-source to read: never classify or guess them, and name them in a Note only where
-they matter.
+`no_source`, in `data.detail` and in `whole_binary`, holds cycles and sites in code
+with no source on this machine: never classify them; name them in the Recursion
+row's Note, or the depth row's when there is none. A cycle under
+`pending_classification[].no_source_members` is read in the members that have
+source; one that only forwards the call is no reading. A bound there is a bound;
+otherwise the cycle is unbounded — count it, naming the unread members — never
+unjudged, which is for source read that does not say.
 Use the classification only to qualify whether the depth is a lower bound.
 
 Never guess `0`.
@@ -231,9 +251,8 @@ project documentation to manufacture one.
 
 ## Step 4: report
 
-**Important:** always include `Worst-case path` for every reported function — in the
-report block below, which is where the evidence for a depth goes; the conclusion table
-has no row for it. If the output would be long, limit how many functions you report
+**Important:** always include `Worst-case path` for every reported function. If the
+output would be long, limit how many functions you report
 (top 10 by depth) but show the complete report for each one you do include.
 
 ### Per-function report
@@ -323,13 +342,13 @@ bound**, not a worst case, and the real depth can only be larger. So:
   too — `lower_bound: true` on the `stack_depth` judgement and its measured value,
   `prev_lower_bound: true` when the Before was a minimum as well.
 - **`STATUS` stays the verb's word on the number it computed**; never write
-  `CAUTION` into it for a floor. Weighing the floor is yours, by what bounds the
-  depth: under an entry's bound, or with no contract at all, the assessment is
-  **Needs attention**, never **Looks good**, and the composition lifts a `PASS` row
-  to `CAUTION`; on a contracted repo with no entry on this function it is a Note,
-  never a flag. Name the cause in the Note either way. An entry nothing compared
-  (a regression with no Before) keeps `STATUS` `—`, the floor in its Note, and
-  `no_opinion` unless the code gives you one.
+  `CAUTION` into it for a floor. An entry nothing compared (a regression with no
+  Before) comes first: `STATUS` `—`, the floor in its Note, `no_opinion` unless
+  the code gives you one, which the floor is not. Otherwise, by what bounds the
+  depth: under a bound that compared a number, or with no contract at all, the
+  assessment is **Needs attention**, never **Looks good**, and the composition
+  lifts a `PASS` row to `CAUTION`; on a contracted repo with no entry on this
+  function it is a Note, never a flag. Name the cause in the Note either way.
 - **At a checkpoint, a minimum the change did not cause is a Note only.** Invoked
   with `--parent-run` from preflight, every floor is today's code, not the plan's;
   from post-edit, one whose Before was a minimum from the same cycle, call site or
@@ -381,11 +400,12 @@ this skill draws the **absolute** shape.
 triggers below say — they decide visibility for rows no entry covers. A
 requirement checked and met is the answer the reader asked for.
 
-1. **Worst-case depth** — `Stack (Depth)`, on the entry function. Always, when at least
-  one entry function was analyzed. Report the measured byte count. `STATUS` is
+1. **Worst-case depth** — `Stack (Depth)`, on the deepest function reported and on
+  every function an entry bounds — the user's roots where they named them. Always,
+  when at least one function was analyzed. Report the measured byte count. `STATUS` is
   `PASS`/`CAUTION`/`FAIL` against an enabled contract entry bounding `stack_depth`
-  for that function, with the percentage the entry's `bound` supplies. With no
-  such entry your assessment carries the row — **Needs attention** where the depth
+  for that function, or the request's bound, with the percentage that bound
+  supplies. With neither your assessment carries the row — **Needs attention** where the depth
   is worth raising on the evidence the house rules' reasoning rule allows — and the
   `STATUS` cell is `—` on a contracted run, or that assessment's word on a `none`
   one. Never a percentage of a denominator you chose.
@@ -411,8 +431,7 @@ requirement checked and met is the answer the reader asked for.
   function. Only when Step 2 left a cycle unbounded, or answered
   `--recursion-unjudged`. `STATUS` is the entry's word where one covers
   `unbounded_recursion`, and otherwise `—` on a contracted run or your assessment's
-  word on a `none` one — a depth nothing bounds is the strongest thing this skill
-  finds, so say so there. Note names the cycle and **where a bound would have had to
+  word on a `none` one. Note names the cycle and **where a bound would have had to
   come from**, so the reader can check your reading. Never write it as "may not
   terminate": that is a different claim.
 
@@ -478,9 +497,8 @@ Verdict: **PASS** — worst-case 312 B measured; no contract covers stack_depth
 for TaskMain, and this is the first recorded measurement for it on this branch
 ```
 
-Same run, with a contract entry bounding `TaskMain` at 2048 B. The bound
-supplies the denominator, so the row is compared and the closing word is
-measured:
+Same run, with a contract entry bounding `TaskMain` at 2048 B, so the row is
+compared and the closing word is measured:
 
 ```
 ### Conclusion
@@ -516,16 +534,6 @@ region — and the next run judges these same figures against them.
 
 Verdict: **CAUTION** — worst-case ≥1880 B, lower bound: recursion capped at depth 2
 ```
-
-Three rules meet in that table. The floor is **Needs attention**, never a measured
-`CAUTION` — nothing bounded it, so the word is the composition's. The bounded
-cycle carries **no status at all**: it is a fact in the Note unless an entry
-bounds the count. And on this uncontracted run both compose into the `STATUS`
-cell, which is why the first row reads `CAUTION` and the second `PASS`.
-
-Read that verdict as: 1880 B is what two iterations cost, and nothing here says
-two is the maximum. A third iteration costs more than was measured, which is why
-the figure is a floor rather than a worst case.
 
 ### Escalation fold-back
 
@@ -573,12 +581,8 @@ shown to the user, and then lost.
 ## Step 5: record it
 
 Apply **[Recording it: one call, on every run that reaches a verdict](../_shared/verdicts.md#recording-the-verdict)**. `--run`
-is `data.run`, `--agent-judged` carries your per-row assessments (Step 3's words
-among them), and `--agent-note` carries the
-cause clause of the `Verdict:` line you composed — copied, never recomposed. This
-skill sent no note at all until 051, so the cockpit fell back to its own reconstruction
-of the figures and the two surfaces described one run differently: the session said
-`worst-case frame 4,912 B past the 4,096 B bound` and the panel said something else.
+is `data.run`, `--agent-judged` carries Step 3's words, and `--agent-note` the
+cause clause of your `Verdict:` line, copied.
 
 **The run's own word.** Where your verdict rests on something LOCI did not
 compute — here, a `≥` depth, or a cycle you left unbounded — or the run is clean and no row says so, send
@@ -588,8 +592,8 @@ rule](../_shared/verdicts.md#recording-the-verdict)**.
 **Escalated?** Add `--parent-run "<the parent's run id>"` to the Step 1 call — the
 parent hands you its manifest id — so the cockpit draws this run under the edit that
 caused it. Nothing in the CLI proposes an escalation on a repo with no contract:
-the parent skill decided to call you from what it read, and this run is metered
-like any other, so it keeps its own record and its own verdict.
+the parent skill decided to call you from what it read; this run keeps its own
+record and its own verdict.
 
 ## LOCI voice remark
 
@@ -618,7 +622,7 @@ One form, always — there is no compact variant to choose between:
 ────────────────────────────────────────
 ```
 
-- **N** — unique entry functions analyzed.
+- **N** — `summary.total_functions_analyzed`: every root walked.
 - `<icon>` — mirrors the run verdict, the worst composed row: `✅` PASS, `🔶`
   CAUTION, `❌` FAIL. `INCOMPLETE` takes the word and no icon.
 

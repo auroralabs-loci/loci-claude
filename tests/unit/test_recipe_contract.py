@@ -905,7 +905,9 @@ HOT_FILE_CEILINGS = {
     # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
     # paid once — control-flow now costs 18 KB MORE per run than before.
     "skills/help/SKILL.md": 15_600,                          # 14,247 B
-    "skills/init/SKILL.md": 17_600,                          # 15,912 B
+    # Raised from 17_600 for AAD-8020's Python route; the trim is AAD-8030.
+    # Raised from 17_800 for the Python questions and recognition; the trim is AAD-8030.
+    "skills/init/SKILL.md": 18_200,                          # 18,168 B
     # 3,600 -> 6,000 for Step 0's CLI-version gate. Two states that used to be
     # handled inline (or not at all) now route through `/loci:setup` first, and the
     # routes are procedure, which is what this file exists to hold: a MISSING `loci`
@@ -930,7 +932,8 @@ HOT_FILE_CEILINGS = {
     # per-run cost this bought: every skill loads the shared contract, so the
     # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
     # paid once — control-flow now costs 18 KB MORE per run than before.
-    "skills/init/recovery.md": 12_500,                       # 11,365 B
+    # Raised from 12_500 for AAD-8020's Python route; the trim is AAD-8030.
+    "skills/init/recovery.md": 12_600,                       # 12,416 B
     # T15, new: ceiling set the same way as its siblings, ~110 % of the size it
     # arrived at. A new prose file with no ceiling is the hole this table exists
     # to close — `exec-trace` grew 24 KB -> 82 KB with every ceiling green,
@@ -939,6 +942,12 @@ HOT_FILE_CEILINGS = {
     # was 3_000 against a 2,161-byte file — 139 %, which is most of a page of
     # prose the alarm would not have noticed.
     "skills/init/go.md": 2_590,                             # 2,121 B
+    # AAD-8020, new: the `--python` branch, go.md's Cython sibling; ~110 % of its arrival size.
+    # Raised from 2_370 for AAD-8020's full build; the trim is AAD-8030.
+    # Raised from 2_480 for the rewrite against the design (questions, refusals); the trim is AAD-8030.
+    # Raised from 5_000 for AAD-8084's compiler question; the trim is AAD-8030.
+    # Raised from 5_102 for AAD-8084's python_version question; the trim is AAD-8030.
+    "skills/init/python.md": 5_270,                         # 5,270 B
     # AAD-7641, new: the container-toolchain branch of `/loci:init` Step 3 — what
     # `toolchain_unreachable` carries, the one fact-finding question it may cost,
     # the `toolchain:`/`mount:` lines Step 4 relays, and the codes only a
@@ -1007,7 +1016,8 @@ HOT_FILE_CEILINGS = {
     # What cost the bytes is what was missing — that the question is the DEPTH
     # being knowable rather than the recursion terminating, and that the bound is
     # usually at the call site. Compressed four times before raising.
-    "skills/stack-depth/SKILL.md": 36_100,                   # 36,037 B
+    # Raised from 36_100 for the Python full-build link; the trim is AAD-8030.
+    "skills/stack-depth/SKILL.md": 36_300,                   # 36,282 B
     "skills/trends/SKILL.md": 4_000,                        # 3,611 B
 }
 
@@ -1065,7 +1075,16 @@ CEILINGED_FILES = ("skills/loci-post-edit/SKILL.md",
 # what grew, why it is not duplication, and what the new figure is a percentage
 # of -- and never to make a red test green.
 # Raised from 500_000 for AAD-7595's branch. The trim is owed, not waived.
-SHIPPED_PROSE_CEILING = 550_000
+# Raised from 550_000 for AAD-8020's Python route; the trim is AAD-8030.
+# Raised from 552_600 for AAD-8020's full build; the trim is AAD-8030.
+# Raised from 553_100 for the python.md rewrite; the trim is AAD-8030.
+# Raised from 555_800 for post-edit's long-compile line; the trim is AAD-8030.
+# Raised from 555_900 where main's AAD-7824/AAD-8045 prose met this branch; the trim is AAD-8030.
+# Raised from 556_100 for the Python route's memory delta; the trim is AAD-8030.
+# Raised from 556_200 for the Python full-build rule; the trim is AAD-8030.
+# Raised from 557_900 for AAD-8084's compiler question; the trim is AAD-8030.
+# Raised from 557_940 for AAD-8084's python_version question; the trim is AAD-8030.
+SHIPPED_PROSE_CEILING = 558_169
 
 
 def _lf_bytes(p: Path) -> int:
@@ -1343,3 +1362,22 @@ def test_control_flow_patches_the_run_its_own_verb_already_wrote():
             "names `--run`") in body, (
         "nothing forbids a second recording call, so one run reaches the cockpit "
         "as two — the verb's and the skill's")
+
+
+#: AAD-8020 T13: stack-depth never offered the full build, and a yes ran `build.full_build` by hand.
+PYTHON_FULL_BUILD_HEADING = "A Python recipe: LOCI's module links until the full build is recorded"
+
+
+def test_the_python_full_build_rule_is_stated_once_and_every_elf_skill_links_it():
+    rule = _subsection(_raw(HOUSE_RULES), PYTHON_FULL_BUILD_HEADING)
+    assert '<a id="python-full-build"></a>' in _raw(HOUSE_RULES)
+    for fact in ("`build.system: loci-python`", "`.loci/build/objects/`",
+                 "`loci init --refresh --full-build", "Never run `build.full_build` by hand"):
+        assert fact in rule, f"the shared Python full-build rule no longer says {fact!r}"
+    for skill in ("stack-depth", "memory-report", "control-flow"):
+        assert "house-rules.md#python-full-build" in _text(SKILLS / skill / "SKILL.md"), (
+            f"{skill} does not link the shared Python full-build rule")
+    elsewhere = [_rel(p) for p in _prose_files()
+                 if "--refresh --full-build" in _text(p)
+                 and p not in (HOUSE_RULES, SKILLS / "init" / "python.md")]
+    assert not elsewhere, f"the full-build command is restated outside its rule: {elsewhere}"

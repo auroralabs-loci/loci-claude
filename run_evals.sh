@@ -343,17 +343,20 @@ fi
 
 # ---------------------------------------------------------------------------
 # The BLE fixture's recipe (T14). Every measurement rests on one, so the harness
-# initializes the fixture ONCE, the way the plugin's auto-init would: a plain
-# `loci init --auto`. On a checkout measured by a pre-move CLI — this one has its
-# sidecars under `.loci-build/` — that is the double jump, seeded from those
-# sidecars with no question asked. An eval must never run against a fixture the
-# CLI could not initialize, so the outcome is checked, not assumed; `--list` and
-# `--dry-run` skip it, since neither runs a skill.
+# initializes the fixture ONCE, as the user would. On a checkout measured by a
+# pre-move CLI — this one has its sidecars under `.loci-build/` — that is the
+# double jump, seeded from those sidecars with no question asked. On a fresh
+# clone with no compile database the CLI asks whether to record the linked
+# image alone (AAD-7861); the harness is the user here and says yes with
+# `--accept-tier=unvalidated`, which is what a plain init recorded before. An
+# eval must never run against a fixture the CLI could not initialize, so the
+# outcome is checked, not assumed; `--list` and `--dry-run` skip it, since
+# neither runs a skill.
 # ---------------------------------------------------------------------------
 BLE_RECIPE="$BLE_ROOT/.loci/build.yaml"
 if ! $LIST_MODE && ! $DRY_RUN; then
   if [[ ! -f "$BLE_RECIPE" ]]; then
-    _ble_init=$(cd "$BLE_ROOT" && loci init --project-root "$BLE_ROOT" --auto 2>/dev/null) || true
+    _ble_init=$(cd "$BLE_ROOT" && loci init --project-root "$BLE_ROOT" --auto --accept-tier=unvalidated 2>/dev/null) || true
     if jq -e '.ok == true and .data.init_status == "ok"' <<<"$_ble_init" >/dev/null 2>&1; then
       echo "BLE recipe: written by loci init ($(jq -r '.data.target' <<<"$_ble_init"), $(jq -r '.data.validated' <<<"$_ble_init"))"
     else

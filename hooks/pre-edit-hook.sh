@@ -81,7 +81,30 @@ _pe_snap="not run"
 _pe_scan="not run"
 trap 'loci_log INFO pre-edit "end: snapshot=$_pe_snap scan=$_pe_scan (hook rc=$?)"' EXIT
 
-# Only C/C++/Rust/Go sources — skips plan files, markdown, configs, etc.
+# `recipe.discover`'s walk and ceilings (nearest `.git`, `$HOME` exclusive), without a
+# spawn. Its one divergence, a logical `$HOME`, can only send a file on to the CLI.
+_loci_recipe_above() {
+    local d="${1//\\//}" base="${2//\\//}" p i=0
+    case "$d" in /*|[A-Za-z]:/*) ;; *) [ -n "$base" ] && d="$base/$d" ;; esac
+    while [ "$i" -lt 64 ]; do
+        case "$d" in */*) d="${d%/*}"; d="${d:-/}" ;; *) d=. ;; esac
+        [ -d "$d" ] && break
+        i=$((i + 1))
+    done
+    p=$(cd "$d" 2>/dev/null && pwd -P) && d="$p"
+    d="${d%/}"
+    i=0
+    while [ "$i" -lt 64 ]; do
+        [ -n "${HOME:-}" ] && [ "$d" = "${HOME%/}" ] && return 1
+        [ -f "$d/.loci/build.yaml" ] && return 0
+        [ -e "$d/.git" ] && return 1
+        [ -n "$d" ] || return 1
+        d="${d%/*}"; i=$((i + 1))
+    done
+    return 1
+}
+
+# Only C/C++/Rust/Go/Python sources — skips plan files, markdown, configs, etc.
 #
 # This list must not be NARROWER than the CLI's `_SNAPSHOT_SOURCE_EXTS`, and that is
 # a correctness rule rather than tidiness. The CLI now captures a pre-edit copy of
@@ -98,6 +121,11 @@ case "$_pe_gate" in
     # gate is the same one, and being narrower here means a Go project's baseline
     # is never captured at all.
     *.go) ;;
+    # Python (Cython), measured through its generated `.c`. Only under a recipe:
+    # a plain Python repo must not pay a `loci` process per edit.
+    *.py|*.pyx)
+        _loci_recipe_above "$fp" "$root" \
+            || { _pe_snap="skipped (python outside any recipe)"; exit 0; } ;;
     *.h|*.hpp|*.hxx|*.h++|*.hh|*.inc|*.ipp|*.tcc|*.inl|*.tpp|*.def) ;;
     # `.S` is preprocessed (so it reads headers) and `.s` is not, but a
     # case-insensitive filesystem cannot tell the two names apart — so both, and the

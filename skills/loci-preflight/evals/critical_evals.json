@@ -1,6 +1,6 @@
 {
   "skill_name": "loci-preflight",
-  "description": "Critical smoke tests for the loci-preflight plan-mode GATE \u2014 the single behavior that matters most: does the skill invoke when (and only when) the user is in /plan mode? Per SKILL.md, preflight is 'MANDATORY in /plan mode' and must 'NOT invoke ... outside plan mode'. The suite is five tests in two controlled groups: (1) three /plan prompts that MUST invoke, (2) two no-/plan prompts whose wording SOUNDS like planning ('how should I modify', 'walk me through the plan') but, lacking the /plan prefix, MUST stay silent. Tests are paired by task so the ONLY difference between an invoke and a no-invoke case is the /plan signal: pf-critical-1 <-> pf-critical-5 (bounds guard on Connection_getConnIndex) and pf-critical-2 <-> pf-critical-4 (TX byte counter in HCI_SendDataPkt). All functions are compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out, so a real /plan run produces a full report (not a STOPPED block). Two further evals ride in this file rather than gating invocation: pf-loops-1 (loop-cost reasoning) and pf-recipe-1 (what Step 1 does when the installed CLI predates `--require-recipe`). Both are reasoning-graded and run no tools.",
+  "description": "Critical smoke tests for the loci-preflight plan-mode GATE \u2014 the single behavior that matters most: does the skill invoke when (and only when) the user is in /plan mode? Per SKILL.md, preflight is 'MANDATORY in /plan mode' and must 'NOT invoke ... outside plan mode'. The suite is five tests in two controlled groups: (1) three /plan prompts that MUST invoke, (2) two no-/plan prompts whose wording SOUNDS like planning ('how should I modify', 'walk me through the plan') but, lacking the /plan prefix, MUST stay silent. Tests are paired by task so the ONLY difference between an invoke and a no-invoke case is the /plan signal: pf-critical-1 <-> pf-critical-5 (bounds guard on Connection_getConnIndex) and pf-critical-2 <-> pf-critical-4 (TX byte counter in HCI_SendDataPkt). All functions are compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out, so a real /plan run produces a full report (not a STOPPED block). Two further evals ride in this file rather than gating invocation: pf-loops-1 (loop-cost reasoning) and pf-recipe-1 (what Step 1 does when the installed CLI is older than a flag `loci analyse prepare` needs). Both are reasoning-graded and run no tools.",
   "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running. NOTE: run_evals.sh keeps a leading '/plan' verbatim (it strips other slash commands) \u2014 that prefix is the plan-mode signal these tests gate on. Bash grading detects invocation via the '## Preflight:' header plus an 'Execution fit:' verdict line, matching the current SKILL.md output format.",
   "evals": [
     {
@@ -105,65 +105,57 @@
     },
     {
       "id": "pf-loops-1",
-      "prompt": "I'm planning to call crc16_update() from my 1 ms control ISR. Work out whether it fits. Session context: LOCI target: armv6-m. `loci elf asm` returned data.loops = {\"total\":2,\"with_trip_count\":1,\"unknown_trip_count\":1,\"recursion\":0,\"uncounted_cycles\":0}. The CFG shows `L1 loop ... trips 8 exact` (blocks carry iters=8) and `L2 loop ... trips ? (no constant initialiser for r2 reaching bb_0x40)` (blocks carry iters=?). Hot-path block costs sum to 300 ns if every block is counted once. (Grade only the reasoning; the agent need not execute any loci command.)",
-      "expected_output": "Does NOT report 300 ns as the worst path. Multiplies each in-loop block by its iters, and because the second loop's trip count is not derivable the figure is reported as a lower bound with a >= prefix and a Note identifying that loop by where it is in the source (never by its `L2` id, which is a LOCI-internal counter the reader cannot resolve) and giving the reason from the loops: line. Does not invent a trip count for L2 (no guess from a buffer size, a typical length, or the source), and does not silently treat iters=? as 1. Any Performance status is capped at CAUTION rather than PASS on a lower bound, or FAIL if a bound is breached by the lower bound already; suggests declaring L2's bound in the Contract Envelope rather than assuming one.",
+      "prompt": "I'm planning to call crc16_update() from my 1 ms control ISR. Work out whether it fits. Session context: LOCI target: armv6-m; this repository has no `.loci/contract.yaml`. The CFG `loci elf asm` printed for crc16_update carries:\nloops: 2 (1 with a derived trip count; max nesting depth 1)\n  iters = executions of a block per single call of crc16_update (product of enclosing trip counts);\n  ? = not derivable from the code \u2014 treat that block's cost as per-iteration, not per-call.\n  A block with no iters annotation is in no loop and runs once per call.\n  L1  loop  header bb_0x24  latch bb_0x2e  depth 1  blocks 2  source=crc16.c:18:5  trips 8 exact  (init r4=0 @bb_0x20; step +1 (adds r4, #1 @bb_0x2e); limit 8 (cmp r4, #8 @bb_0x2e); continue on lt)\n  L2  loop  header bb_0x40  latch bb_0x52  depth 1  blocks 3  source=crc16.c:31:5  trips ?  reason=init-not-visible (no constant initialiser for r2 reaching bb_0x3c)\nand its blocks carry iters=8 inside the first loop and iters=? inside the second. Hot-path block costs sum to 300 ns if every block is counted once. (Grade only the reasoning; the agent need not execute any loci command.)",
+      "expected_output": "Does NOT report 300 ns as the worst path or as the call's cost: that sum counts every block once. Computes no cost of its own for the call \u2014 no block-times-iters product, total or cost formula \u2014 and does not offer to do that arithmetic itself later; stating the given sum as a floor (`\u2265 300 ns`, the real cost is above it) is the lower-bound treatment the skill prescribes and is fine, because the skill's Step 3 says path cost, in every part, is `loci analyse measure`'s arithmetic and a hand-derived figure is a different measurement. It leaves the figure to a LOCI measurement (`loci analyse measure`, `/loci:exec-trace` or a preflight re-run \u2014 any of them counts) and says it is a `\u2265` lower bound while the second loop's trip count is not derivable. A qualitative remark is fine: that the given 300 ns sum is a small share of 1 ms but only a floor, or that the first loop's 8 iterations raise the cost by a fixed factor. Names the uncountable loop by where it is in the source (crc16.c:31) and gives its reason (no constant initialiser for r2) and its trip count as not derivable; a mention of the first loop carries its 8 iterations (exact). The `L2` id never stands in for the source location; echoing it beside the location, as the user's own message spells it, is tolerated. Assigns no number to the second loop's trip count and does not treat iters=? as 1; saying what probably drives it (a length argument, the caller's buffer) without putting a number on it is fine. Does not present the fit with the 1 ms ISR as settled: an ADJUST PLAN, a GOOD that says no contract covers the signal and names the second loop as undecided, or no opinion all count. It has that loop's bound come from somewhere other than an assumption, and any one route counts: the user stating the maximum, a cap or termination guard at the call site or in the function, or a bound declared in the repository's Contract Envelope.",
       "files": [],
       "assertions": [
         {
-          "text": "Does not report 300 ns as the worst path",
+          "text": "Does not report 300 ns as the worst path or as the call's cost",
           "description": "the bare-sum figure is the failure this guards"
         },
         {
-          "text": "Multiplies each in-loop block by its iters and reports the figure as a lower bound with a >= prefix",
-          "description": "L2's trip count is not derivable, so the total can only grow"
+          "text": "Computes no cost of its own for the call (no block-times-iters product, total or cost formula) and does not offer to compute it by hand; leaves the figure to a LOCI measurement (`loci analyse measure`, `/loci:exec-trace` or a preflight re-run all count) and says it is a `\u2265` lower bound while the second loop's count is not derivable (stating `\u2265 300 ns` as a floor is fine)",
+          "description": "SKILL.md Step 3: 'Do not compute any of this yourself. Path cost, in every part, is measure's arithmetic.' The old rubric demanded the multiplication the skill forbids (AAD-8002)"
         },
         {
-          "text": "Identifies the uncountable loop by its source location, not by its `L2` id, and gives the reason from the `loops:` line in the Note",
-          "description": "the caveat has to say which loop and why — and `L1`/`L2` are LOCI-internal counters that mean nothing to the reader"
+          "text": "Names the uncountable loop by its source location (crc16.c:31), with its reason and its trip count as not derivable; the `L2` id never stands in for the location",
+          "description": "house rules, Naming a path or a loop: by source range when the row has one; the trip count always goes with it. An id echoed beside the location is tolerated because the user's message spells the loops that way"
         },
         {
-          "text": "Invents no trip count for L2 and does not treat iters=? as 1",
+          "text": "Assigns no number to the second loop's trip count and does not treat iters=? as 1 (naming what probably drives it, without a number, is fine)",
           "description": "a guessed bound is a fabricated number"
         },
         {
-          "text": "Caps the Performance status at CAUTION rather than PASS on a lower bound (or FAIL if the lower bound already breaches)",
-          "description": "a green verdict on a number that can only grow is a claim the run cannot make"
+          "text": "Does not present the fit with the 1 ms ISR as settled (ADJUST PLAN, a GOOD naming the second loop as undecided, or no opinion all count), and has that loop's bound come from the user, a cap or termination guard, or the Contract Envelope rather than an assumption; any one route counts",
+          "description": "SKILL.md: a lower bound 'can only grow' and its reason goes in the Note; with no contract the word is the agent's and a GOOD must say no contract covers the signal; 'An unbounded loop in a callee -> plan to add a termination guard or budget'. No-GOOD is not demanded: the rule against a check mark on a `>=` lives in compile-route.md, which run_evals.sh does not inline"
         }
       ]
     },
     {
       "id": "pf-recipe-1",
-      "prompt": "Decision question, no tools needed \u2014 reason it out from the loci-preflight skill and answer directly. In /plan mode I asked you to add a callee to an existing function, so preflight is running. Step 1's `loci build compile \u2026 --phase preflight --require-recipe` produced no JSON at all \u2014 stdout was empty and stderr read exactly `usage: loci [-h] [-V] <command> ...` then `loci: error: unrecognized arguments: --require-recipe`, with exit code 2. The project does have a `.loci/build.yaml`. What do you do next, and what does the preflight report have to say about its own numbers?",
-      "expected_output": "Recognises exit 2 with an argparse usage message and no JSON as the installed CLI being older than the flag \u2014 NOT as the user's code failing to compile, and not as one of the eleven coded errors (there is no envelope, so there is no `error.code` to branch on). Does not stop and does not emit a '## Preflight: STOPPED' block for it: it re-runs the same command once WITHOUT `--require-recipe` and continues the analysis. Says in the report that these flags came from the old cascade rather than from `.loci/build.yaml`, and does NOT print a recipe provenance line, which would be a false claim about what the numbers rest on. Offers `/loci:setup` as the fix. Does not add `--compiler`, `--compiler-path` or `-D` flags of its own, does not hunt for a compiler, and does not reuse a project-built .o or .elf instead. (Grade only this reasoning; the agent need not execute any loci command.)",
+      "prompt": "Decision question, no tools needed \u2014 reason it out from the loci-preflight skill and answer directly. The session context carries `loci: CLI is 0.2.2 but this plugin pins 0.2.120 \u2014 the automatic upgrade is not taking effect. A retry runs in the background this session; if the user hits stale behaviour or asks about the version, invoke the loci:setup skill and read `\u2026/loci-cli-install.log` for the cause.` In /plan mode I asked you to add a callee to an existing function, so preflight is running. The project does have a `.loci/build.yaml`. Step 1's `loci analyse prepare --source \u2026 --functions \u2026 --signals hot_path_time,worst_path_time,energy --phase preflight --turn \u2026 --caller loci-preflight` produced no JSON at all \u2014 stdout was empty and stderr read exactly `usage: loci [-h] [-V] <command> ...` then `loci: error: unrecognized arguments: --signals hot_path_time,worst_path_time,energy`, with exit code 2. What do you do next, and what does the preflight report say?",
+      "expected_output": "Recognises exit 2 with an argparse usage message, empty stdout and no JSON as the installed CLI being older than the plugin's pin (the stale-CLI advisory says so) \u2014 NOT as the user's code failing to compile, and not as one of the coded errors: there is no envelope, so there is no `.ok` and no `error.code` to branch on. Does not write around it: does not re-run `prepare` without `--signals` (or with any other flag dropped or changed), does not fall back to `loci build compile`, a hand compile, or a project-built .o or .elf, and does not proceed to `loci analyse measure`. Reports no timing or energy figure, since nothing was measured, and says the CLI is too old as an action, not as a version number \u2014 run `/loci:setup` to repair the install \u2014 then stops; a '## Preflight: STOPPED' block carrying that sentence is a fine way to say it. Prints no `Recipe:` provenance line (preflight prints one in no case). (Grade only this reasoning; the agent need not execute any loci command.)",
       "files": [],
       "assertions": [
         {
-          "text": "Recognises exit 2 with an argparse usage message and empty stdout as the installed CLI being older than the flag, not as the user's code failing to compile",
-          "description": "the misdiagnosis this guards"
+          "text": "Recognises exit 2 with an argparse usage message and empty stdout as the installed CLI being older than the plugin's pin, not as the user's code failing to compile and not as a coded `error.code` refusal",
+          "description": "house rules: argparse exits 2 with no JSON at all, where `.ok` is neither true nor false; the stale-CLI advisory names the skew"
         },
         {
-          "text": "Re-runs the same command once WITHOUT `--require-recipe` and continues the analysis",
-          "description": "the recovery"
+          "text": "Does not re-run `prepare` with `--signals` (or any other flag) dropped, and does not fall back to `loci build compile`, a hand compile, or a project-built .o or .elf",
+          "description": "the old cascade's re-run-without-the-flag recovery is gone; writing around a too-old CLI is the failure this guards"
         },
         {
-          "text": "Does NOT emit a '## Preflight: STOPPED' block for it",
-          "description": "SKILL-ONLY: the shared contract does not answer this, so it discriminates this task's diff. the STOPPED block is loci-preflight's own; the contract has no such block."
+          "text": "Does not proceed to `loci analyse measure` and reports no timing or energy figure",
+          "description": "nothing was prepared, so there is nothing to measure"
         },
         {
-          "text": "Says in the report that these flags came from the old cascade rather than from `.loci/build.yaml`, and offers `/loci:setup`",
-          "description": "the report must not present cascade flags as recipe-backed"
+          "text": "Offers `/loci:setup` as the fix, saying the CLI is too old as an action rather than quoting its version number, and stops",
+          "description": "house rules, Reporting versions: a CLI that is too old is said as an action (run /loci:setup)"
         },
         {
-          "text": "Prints no recipe provenance line, and does not treat that as special to this case \u2014 preflight prints one in no case",
-          "description": "SKILL-ONLY: the shared contract does not answer this, so it discriminates this task's diff. the contract scopes the provenance line to the absolute verbs but says nothing about preflight."
-        },
-        {
-          "text": "Does not add `--compiler`, `--compiler-path` or `-D` flags of its own and does not reuse a project-built .o or .elf",
-          "description": "the deleted ladder must not return"
-        },
-        {
-          "text": "Gates the re-run on the usage line naming `--require-recipe` specifically, and treats an envelope-less exit naming any other argument \u2014 or a second envelope-less exit \u2014 as a stop",
-          "description": "SKILL-ONLY: this sentence exists in the skill file and nowhere in the shared house rules, which run_evals.sh inlines into every prompt \u2014 so it discriminates this task's diff. Added in round 2 after a reviewer showed an invalid `--loci-target` produces a byte-identical signature; the contract keys only on the flag."
+          "text": "Prints no `Recipe:` provenance line",
+          "description": "SKILL.md 'One exception, one line': preflight prints none in any case (lib/eval-graders.sh names this eval as its pin)"
         }
       ]
     }

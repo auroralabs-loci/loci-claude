@@ -114,13 +114,13 @@ Rules, in order of how often they are got wrong:
   needs to hear about. Rewriting their file is still their call, not yours.
 - **A timing bound covers the function's own code — say so when you draft one.**
   Every LOCI timing signal is callee-excluded: a `bl` costs the call, never the
-  callee body. Tell the user that in the draft, so they know the budget does not
-  cover the whole call tree. If the user's sentence is about end-to-end latency
-  through the callees, say that LOCI does not measure it and confirm the limit
-  they mean is the function's own blocks.
-  `energy` shares that basis (exec-trace's `energy_nws` is self-scoped too), so
-  an energy bound off an exec-trace figure is wrong the same way. Memory and stack
-  signals need no such heads-up.
+  callee body, so the budget does not cover the call tree. If the user means
+  latency through the callees, say LOCI does not measure it and confirm they
+  mean the function's own blocks.
+  `energy` shares that basis (exec-trace's `energy_nws` is self-scoped too).
+- **A function's `rom_size` counts its own instructions**, not the tables or
+  strings it reads. Say so when drafting one; bound the whole artifact (no
+  `function`) for those. `ram_size` takes no `function`.
 - **Pick `kind` from the intent** — **required on every entry that has a
   `bound`**, and rejected without one: "must stay under / must never exceed" →
   `budget`; "must not regress more than" → `regression` (with

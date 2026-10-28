@@ -381,8 +381,8 @@ investigate:
    Code, `when_to_use` too. List the keywords and note which matched or didn't.
 
 2. **Auto-run conditions** — for auto-triggered skills:
-   - `loci-post-edit`: Was the edited file a C/C++/Rust/Go source
-     (.c, .cc, .cpp, .cxx, .c++, .rs, .go, .h, .hpp, .hxx, .h++, .hh, .inc, .ipp, .tcc, .inl, .tpp, .def)? Was an Edit/Write
+   - `loci-post-edit`: Was the edited file a C/C++/Rust/Go/Python source
+     (.c, .cc, .cpp, .cxx, .c++, .rs, .go, .py, .pyx, .h, .hpp, .hxx, .h++, .hh, .inc, .ipp, .tcc, .inl, .tpp, .def)? Was an Edit/Write
      tool used?
    - `loci-preflight`: Was the session in plan mode when the user described
      new logic?

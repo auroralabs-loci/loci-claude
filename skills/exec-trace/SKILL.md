@@ -191,7 +191,7 @@ Read from the envelope it printed:
   comparison could not be made. Not passes, and no row.
 - `data.agent_judged[]` — entries LOCI reached no verdict on. YOU judge these.
 - `data.paths` — per fn: `hot_path` {`ns`, `energy_nws`, `lower_bound`, `before_ns`},
-  `worst_path` {`ns_worst`, …}.
+  `worst_path` {`ns_worst`, `ties`, …}.
 
 **The exit codes are one table**, and `2` is not `1`:
 [`measure`'s exit codes](../_shared/house-rules.md#measure-exit-codes).
@@ -287,8 +287,8 @@ display word for that row (**Needs attention** / **Looks good** / **As
 reported**), never a wire spelling. A row that reached neither is not drawn: it
 becomes the `(<N> of <M> judged)` count on the verdict line. Add one line per function from `data.paths`:
 hot path `ns` and `energy_nws` on the confirmed candidate, and worst path `ns_worst`
-**where an entry bounds `worst_path_time` or the user asked for it**.
-Call them **hot path time** and **worst path time**, LOCI's signal vocabulary. The
+**where an entry bounds `worst_path_time` or the user asked for it**; `ties` > 0
+means that many other paths cost the same — say so. Call them **hot path time** and **worst path time**, LOCI's signal vocabulary. The
 numbers come from LOCI's model trained on real workloads and platform traces; they
 describe the target silicon, not an IPC estimate.
 

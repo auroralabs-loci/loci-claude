@@ -1,7 +1,7 @@
 LOCI: install and setup
 =======================
 
-LOCI version: 0.3.22
+LOCI version: 0.3.60
 Canonical source: agents.txt in the loci-claude repository root.
 
 The machine-readable install guide for LOCI: a coding agent can follow it from
@@ -9,7 +9,7 @@ top to bottom, and so can a person. It is the twin of README.md's "Install",
 "Quick Start" and "Troubleshooting" sections.
 
 
-WHAT LOCI IS
+WHAT     LOCI IS
 ------------
 
 LOCI is a Claude Code and GitHub Copilot CLI plugin for C, C++, Rust and Go
@@ -87,7 +87,7 @@ run twice.
 If you cannot run a skill, install the CLI directly, at the version this
 plugin release is built against:
 
-  uv tool install -p 3.12 loci-tools==0.2.88
+  uv tool install -p 3.12 loci-tools==0.2.122
 
 
 STEP 3: SIGN IN
@@ -161,7 +161,7 @@ The last one states a bound. LOCI drafts it into .loci/contract.yaml and you
 apply it. A bound is what lets a later report pass or fail.
 
 Two skills run on their own, on both hosts: loci-preflight in /plan mode and
-loci-post-edit after an edit to C, C++, Rust or Go source.
+loci-post-edit after an edit to C, C++, Rust, Go or Python source.
 
 
 WHEN SOMETHING FAILS
@@ -187,7 +187,7 @@ with compdb_absent, and error.message names the generators that make one.
 If a skill did not trigger at all, check these:
 
   1. loci-preflight runs only in /plan mode.
-  2. loci-post-edit runs only after an edit to C, C++, Rust or Go source.
+  2. loci-post-edit runs only after an edit to C, C++, Rust, Go or Python source.
   3. Both need a compiled artifact. Build the project first.
   4. LOCI is inactive in a directory where no build file declares a build.
 

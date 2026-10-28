@@ -75,8 +75,8 @@ concluded nothing, and `—` is what says so. It should be **rare** here: this i
 the route where your reading is the only word the reader gets, so a row you looked
 at and raised nothing about is **Looks good**, not a shrug. A `—` on an
 uncontracted run says the run gave you nothing to judge the row on — and since an
-`INCOMPLETE` row is never drawn, reaching for it means the row leaves the table
-and becomes a coverage count instead. Composition is then the identity —
+`INCOMPLETE` row is never drawn, the row leaves the table for the coverage count.
+Composition is then the identity —
 the table below already maps `—` + Needs attention to `CAUTION`, `—` + Looks good
 to `PASS`, and `—` + As reported to `INCOMPLETE` — so a run's verdict is the same
 word either way. What changes is only where the reader finds it.
@@ -279,7 +279,7 @@ identity and a cause:
 | `Performance (Hot-Path)` | `decode_frame` | `PASS` | Looks good | 186 ns of the 200 ns ceiling |
 | `Performance (Hot-Path)` | `decode_frame` | `FAIL` | Needs attention | +14.1% vs 163 ns, past the 10% allowance — resampler at `decode.c:212` |
 | `Stack (Depth)` | `decode_frame` | `CAUTION` | Looks good | 1904 B of 2048 B (93%) |
-| `Memory (ROM)` | — | `CAUTION` | Looks good | 1.84 MB of 2.00 MB (88%) |
+| `Memory (ROM)` | `app.elf (elf)` | `CAUTION` | Looks good | 1.84 MB of 2.00 MB (88%) |
 
 Two rows on one entry name, one function, two words — the first is the ceiling,
 the second the regression, and the Note is what tells them apart.
@@ -302,10 +302,11 @@ is where a row is filed, never the unit that carries a verdict.
 **A text-only entry has no signal: its row is `<Gate> (Rule)`** — `Safety (Rule)`
 on a `gate_fallback` — and its Note quotes the entry's `text`, then your cause.
 
-**`FUNCTION` is what the row is bounded on**, an em dash where the row bounds the
-whole artifact. Two columns rather than one mashed cell: the cockpit mashes them
-because a terminal panel is width-bound, a report is not, and a reader scanning
-for one function should not have to read every label to find it.
+**`FUNCTION` is what the row is bounded on.** With no function, it is the file
+name in `data.artifact`, then its kind, `(object)` or `(elf)`, never an em dash.
+Two columns, not the cockpit's one mashed cell: a
+report is not width-bound, and a reader looking for one function should not read
+every label.
 
 **There is no `KIND` column.** Two rows sharing an `ENTRY` and a `FUNCTION` are
 told apart by their notes, because a budget and a regression do not read alike —
@@ -337,11 +338,11 @@ judged the right trade.
   a breach the project chose not to block on, and a reader acts differently on
   each.
 - **An `INCOMPLETE` row is never drawn.** It becomes the coverage count beside
-  the run verdict. Drawing it puts back, in the one place meant to carry verdicts,
-  the rows already excluded from the worst-of — and on a contract of any size most
-  entries are untouched by any one edit, so the table would be mostly inventory. A
-  run where **no** row reached a word draws no rows at all: the verdict and the
-  count say it.
+  the run verdict: most entries are untouched by any one edit, so drawn they make
+  the table an inventory. A run where **no** row reached a word draws no rows:
+  the verdict and the count say it. Except an entry measured but not compared (a
+  regression with no Before): drawn `—` / **As reported**, its Note giving the
+  figure and why, still counted as not judged.
 
 ### Three column shapes, and which to draw
 
@@ -440,7 +441,7 @@ rather than re-measuring them — or one investigation is metered twice.
 
 The conclusion table carries **both rows**, because the turn's verdict is the
 worst over both and a headline may not come from a row nobody drew. The child's
-`ENTRY` cell is marked with the `└ ` the cockpit feed already uses — `└ Stack` —
+`ENTRY` cell is marked with the `└ ` the cockpit feed already uses — `└ Stack (Depth)` —
 so the prose table and the panel read the same. A clean child gets a row too,
 with its figures: the old `+stack-depth` suffix dropped them, so a child at 49%
 of its budget and one at 3% printed identically.

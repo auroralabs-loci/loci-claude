@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -2877,6 +2878,13 @@ def test_a_path_too_long_to_walk_is_denied_rather_than_allowed(tmp_path):
     The last assertion is the other edge: the bound must not have become a
     blanket deny for any long path, only for one that got past the basename
     gate.
+
+    ⚠ UNTIL AAD-7767 THE CLOCK WAS MOSTLY TIMING SOMETHING ELSE. The bound
+    short-circuited the walk, but the three `-ef` stats ahead of it in
+    `_route1_hit` still ran on this 16 000-component path: 2.6 s of the 5 s
+    on Git Bash idle, and 6.86 s once in a full-suite run. The bound is asked
+    first now, and the call is about 0.15 s. The cap-sized shape, four at
+    once, is `test_a_path_the_walk_would_refuse_is_denied_before_any_stat`.
     """
     (tmp_path / ".loci" / "build").mkdir(parents=True)
     root = _to_bash_path(tmp_path)
@@ -2885,7 +2893,8 @@ def test_a_path_too_long_to_walk_is_denied_rather_than_allowed(tmp_path):
     assert _denied(_run(_edit(over), tmp_path)), (
         "a path over the segment bound was ALLOWED — the bound must deny, or "
         "it is F16 item 4 with a different constant")
-    assert time.monotonic() - start < 5.0, "the bound did not short-circuit"
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0, f"the bound did not short-circuit: {elapsed:.1f}s"
     # Carries `contract.yaml`, so the gate admits it; resolves to
     # `<root>/src/contract.yaml`, which is not guarded. Only the bound denies it.
     not_the_file = f"{root}/src/{'ab/' * 8000}contract.yaml"
@@ -2923,6 +2932,155 @@ def test_the_segment_bound_denies_on_the_guarded_side_too(tmp_path):
     assert _denied(_run(payload, tmp_path, env={"CLAUDE_PROJECT_DIR": ""})), (
         "the guarded side of the comparison swallowed the bound as 'not that "
         "file' and allowed the write")
+
+
+@pytest.mark.parametrize("tail,reason", [
+    ("contract.yaml", "The Contract Envelope (.loci/contract.yaml) is read-only"),
+    ("CONTRA~1.YAM", "This tool call names no path this guard could read"),
+], ids=["basename", "short-name"])
+def test_a_path_the_walk_would_refuse_is_denied_before_any_stat(
+        tmp_path, tail, reason):
+    r"""AAD-7767: the bound decides before the `-ef` arm, not only before the
+    walk.
+
+    `_ROUTE1_MAX_SEGMENTS` short-circuited `_walk`, and the three `-ef` stats
+    in `_route1_hit` ran ahead of it. On Git Bash a `stat` of a path that does
+    not resolve is quadratic in the named components past the first missing
+    one. At the 64 KB the field read caps
+    at — `ab/`x10800 then `../`x10800 — the hook took 5.8 s idle to deny
+    `contract.yaml` and 5.6 s to deny its 8.3 twin. Both are past the 5 s
+    kill, which fails OPEN, and Win32 opens both as the Contract Envelope.
+    Measured on `main` `3e856d6`. With the bound first, each call takes about
+    0.3 s, even four at once as review round 2 measured the walk.
+
+    The short name reaches the walk through the 8.3 gate, not the basename
+    gate, so it is denied as unread. That is the answer it had after the stats
+    too.
+
+    Linux stats this path in microseconds and stays green either way.
+    `test_the_bound_is_asked_before_the_ef_arm_and_counted_once` holds it
+    there.
+    """
+    (tmp_path / ".loci" / "build").mkdir(parents=True)
+    root = _to_bash_path(tmp_path)
+    # As much of the shape as fits the field read's cap: past it the read
+    # truncates and this would time the unread-path refusal instead.
+    n = (64_000 - len(root)) // 6
+    path = f"{root}/.loci/{'ab/' * n}{'../' * n}{tail}"
+    assert len(json.dumps(_edit(path))) < 65_536
+
+    def one(_):
+        start = time.monotonic()
+        decision = _run(_edit(path), tmp_path)
+        return decision, time.monotonic() - start
+
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(one, range(4)))
+    for decision, elapsed in results:
+        assert _denied(decision), (
+            f"{n * 2}-component spelling of {tail} past the segment bound was "
+            f"ALLOWED")
+        # Bash 3 reads a 4 KB head, so it refuses this as an unread file_path.
+        if not _legacy_bash():
+            assert decision["permissionDecisionReason"].startswith(reason), (
+                decision)
+        assert elapsed < 5.0, (
+            f"{elapsed:.1f}s, four at once, against the 5 s kill in hooks.json: "
+            f"something is touching this path before the bound refuses it — "
+            f"on MSYS a stat of it costs seconds")
+
+
+def test_the_bound_is_asked_before_the_ef_arm_and_counted_once():
+    """The half of the test above that Linux and macOS cannot see (AAD-7767).
+
+    A stat there costs microseconds, so moving `_w_over` back behind the `-ef`
+    arm leaves every POSIX run green. This test holds it by reading the guard,
+    the way `test_the_ef_arm_carries_no_length_test` holds the arm itself.
+
+    And the count is ONE function. If `_walk` or `_route1_hit` kept a copy of
+    it, the deny that skips the arm and the deny the walk reaches could
+    disagree about where the edge is.
+    """
+    src = GUARD.read_text(encoding="utf-8")
+
+    def code(header: str) -> list[str]:
+        start = src.index(header)
+        body = src[start:src.index(chr(10) + "}" + chr(10), start)]
+        return [ln.split(" #")[0] for ln in body.splitlines()
+                if not ln.strip().startswith("#")]
+
+    hit = code("_route1_hit() {")
+    ef = next(i for i, ln in enumerate(hit) if "-ef" in ln)
+    # Both gates that lead to a walk, each with its own ask, between it and
+    # the next gate (or the arm): either one alone leaves the other shape
+    # paying the stats.
+    gates = [('"${_g##*/}"', "a guarded basename"),
+             ("_cg_short_name", "an 8.3 last component")]
+    at = [next((i for i, ln in enumerate(hit[:ef]) if g in ln), None)
+          for g, _ in gates]
+    for (gate, shape), start, end in zip(gates, at, at[1:] + [ef]):
+        assert start is not None and end is not None and any(
+            "_w_over" in ln for ln in hit[start:end]), (
+            f"`_route1_hit` no longer asks the segment bound before its `-ef` "
+            f"arm for a path carrying {shape}. On Git Bash the arm's three "
+            f"stats cost 5.6-5.8 s on such a path at the field cap, which is "
+            f"past the 5 s kill, and that fails open")
+    assert any("_w_over" in ln for ln in code("_walk() {")), (
+        "`_walk` decides its bound without `_w_over`, so there are two counts")
+    readers = [ln.strip() for ln in src.splitlines()
+               if "$_ROUTE1_MAX_SEGMENTS" in ln.split(" #")[0]
+               and not ln.lstrip().startswith("#")]
+    assert len(readers) == 1 and readers[0] in chr(10).join(code("_w_over() {")), (
+        f"`_ROUTE1_MAX_SEGMENTS` is read outside `_w_over`: {readers}")
+
+
+def test_the_bound_ahead_of_the_ef_arm_has_the_walks_edge(tmp_path):
+    """At exactly `_ROUTE1_MAX_SEGMENTS` components a path is still walked. So
+    one that carries `contract.yaml` and is not the guarded file is ALLOWED,
+    and one component more is denied unwalked.
+
+    `test_the_walk_refuses_past_the_segment_bound` pins that edge on `_walk`
+    with a relative path. This one pins `_w_over`'s count on the whole hook
+    with an absolute path, where the anchor is the component a miscount would
+    gain or lose. It pins the COUNT, not the order. `_walk` and the ask ahead
+    of the `-ef` arm share one count since AAD-7767, so this test cannot tell
+    them apart, and it passes on `main` too. The order is
+    `test_the_bound_is_asked_before_the_ef_arm_and_counted_once`'s to pin.
+    """
+    (tmp_path / ".loci").mkdir()
+    src = GUARD.read_text(encoding="utf-8")
+    bound = int(re.search(r"^_ROUTE1_MAX_SEGMENTS=(\d+)$", src, re.M).group(1))
+    head = f"{_to_bash_path(tmp_path)}/src/"
+
+    def path(segments: int) -> str:
+        # Past its leading `/`, an absolute path has as many components as
+        # it has slashes.
+        return head + "a/" * (segments - head.count("/")) + "contract.yaml"
+
+    assert path(bound).count("/") == bound
+    assert _run(_edit(path(bound)), tmp_path) is None, (
+        f"{bound} components were denied, and they are within the bound — "
+        f"`_w_over` counts the anchor as a component, or is off by one")
+    assert _denied(_run(_edit(path(bound + 1)), tmp_path)), (
+        f"{bound + 1} components, carrying `contract.yaml`, were ALLOWED — "
+        f"past the bound the only safe answer is deny")
+
+
+def test_an_over_long_path_is_denied_under_the_name_its_suffix_reads(tmp_path):
+    """Review of AAD-7767. The ask ahead of the `-ef` arm denies under the
+    name of the first guarded basename the path carries ANYWHERE. Here that
+    is `contract.yaml`, in a directory name, while the path ENDS in the
+    recipe. `main` told the model the recipe reason, from its suffix arm, and
+    the first draft of the fix said "Contract Envelope". The suffix arms cost
+    no stat, so they name the file first.
+    """
+    (tmp_path / ".loci").mkdir()
+    path = (f"{_to_bash_path(tmp_path)}/contract.yaml-notes/{'./' * 1100}"
+            f"../.loci/build.yaml")
+    decision = _run(_edit(path), tmp_path)
+    assert _denied(decision), "an over-long spelling of the recipe was allowed"
+    assert decision["permissionDecisionReason"].startswith(
+        "The build recipe (.loci/build.yaml)"), decision
 
 
 def test_a_symlink_is_resolved_before_the_dot_dot_is_applied(tmp_path):

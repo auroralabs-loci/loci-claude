@@ -1,18 +1,18 @@
 {
   "skill_name": "stack-depth",
-  "description": "Tests that the stack depth skill correctly runs asm-analyze stack-depth, interprets the JSON output, and reports worst-case depth, call paths, per-function frames, warnings, and verdicts against a bound the user or the contract supplied. All functions are compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out.",
+  "description": "Tests that the stack depth skill correctly runs `loci analyse stack`, interprets the JSON envelope, and reports worst-case depth, call paths, per-function frames, warnings, and verdicts against a bound the user or the contract supplied. All functions are compiled into $LOCI_TEST_BLE_FRESH/basic_ble.out.",
   "note": "Set $LOCI_TEST_BLE_ROOT to your local BLE project root before running. Evals sd-5 and sd-6 instead use $LOCI_TEST_STALE_ROOT, a fixture run_evals.sh stages from evals/fixtures/stale-artifact/. It needs arm-none-eabi-gcc and a loci CLI with `build fresh`; without either, run_evals.sh skips them by detecting the unexpanded placeholder (there is no `requires` key to set — the placeholder itself is the gate, so a typo cannot bypass it). The fixture is deliberately UNINITIALIZED — no .loci/build.yaml — because that is the state every project is in for the length of the train-1 soak, and it is what makes the recipe provenance line's null branch reachable here. Staging a real recipe belongs to the Phase-4 eval rework (T14), when a CLI that can write one is everywhere.",
   "evals": [
     {
       "id": "sd-1",
       "category": "full-elf-entry-function",
       "prompt": "Analyze the stack depth for GAPBondMgr_ProcessEvent in $LOCI_TEST_BLE_FRESH/basic_ble.out. No stack budget — just show me the worst-case depth and the call path.",
-      "expected_output": "Runs asm-analyze stack-depth with --elf-path and --entry-functions GAPBondMgr_ProcessEvent. Reports worst-case depth in bytes, the worst-case call path as a chain of function names, average depth, and per-function frame sizes along the worst path, then a conclusion table. Because the prompt named no budget and no contract bounds this function, it does NOT report a usage percentage or any pass-fail check against a threshold. The conclusion footer closes on the reasoned vocabulary: `Verdict: \u25cb cleared \u2014 worst-case <N> bytes measured; no contract covers stack_depth`, naming what was missing. A `PASS` here would be wrong, because nothing was compared. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
+      "expected_output": "Runs `loci analyse stack` with --elf pointing to basic_ble.out and --entry-functions GAPBondMgr_ProcessEvent. Reports worst-case depth in bytes, the worst-case call path as a chain of function names, average depth, and per-function frame sizes along the worst path, then a conclusion table. Because the prompt named no budget and no contract bounds this function, it does NOT report a usage percentage or any pass-fail check against a threshold; a share of a figure this run measured (a frame as a percentage of the depth) is arithmetic on the run's own evidence and is allowed. GAPBondMgr_ProcessEvent's reach holds unresolved indirect-call sites, so the depth is a lower bound: the skill's lower-bound rule writes every figure as `≥<N> B`, the assessment is **Needs attention** with the indirect calls named — which composes to `CAUTION` on this uncontracted repo — and the verdict line closes as `Verdict: **CAUTION** — worst-case ≥<N> bytes, lower bound: <K> indirect call sites`, under the caption that no contract judged the run. A bare `PASS` is wrong because nothing bounded the depth and the figure is a floor; a `FAIL` is wrong because nothing was breached; the retired `○ cleared —` wire spelling never reaches the reader. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
       "files": [],
       "assertions": [
         {
-          "text": "Response runs asm-analyze stack-depth with --elf-path pointing to basic_ble.out and --entry-functions GAPBondMgr_ProcessEvent",
-          "description": "Must use the stack-depth subcommand with the correct entry function"
+          "text": "Response runs `loci analyse stack` with --elf pointing to basic_ble.out and --entry-functions GAPBondMgr_ProcessEvent",
+          "description": "Must use the stack verb with the correct ELF and entry function"
         },
         {
           "text": "Response reports a worst-case depth in bytes (a specific number, not fabricated)",
@@ -27,8 +27,8 @@
           "description": "Each function in the path should show its individual frame contribution"
         },
         {
-          "text": "Response does NOT report a usage percentage or a budget/threshold check, and closes on cleared rather than PASS",
-          "description": "No bound was supplied by prompt or contract, so usage % and any pass/fail comparison must be absent, and the verdict must use the reasoned vocabulary with the gap named"
+          "text": "Response reports no usage percentage against a budget and no pass/fail check against a threshold, and closes on `CAUTION` as a lower bound — every figure in the verdict line carries `≥` and the line names the unresolved indirect calls as the cause — never on a bare PASS, a FAIL, or the retired `○ cleared` spelling",
+          "description": "No bound was supplied by prompt or contract, so usage % and any pass/fail comparison must be absent. The depth is a floor (indirect calls in the function's reach), so the skill's lower-bound rule applies: Needs attention with the cause named, composed to CAUTION on a repo with no contract. A frame stated as a share of the measured depth is not a budget percentage"
         }
       ]
     },
@@ -36,7 +36,7 @@
       "id": "sd-2",
       "category": "full-elf-with-budget",
       "prompt": "Run stack depth analysis on GAPBondMgr_ProcessEvent in $LOCI_TEST_BLE_FRESH/basic_ble.out. Keep it under 768 bytes.",
-      "expected_output": "Reports worst-case depth, usage as a percentage of 768 bytes, and a PASS or FAIL verdict against 768 bytes. The 768 is a bound the user stated in the request, which is one of the three sources that reach a measured verdict, so judging against it is correct; the report quotes the figure back and says it came from the request. It must NOT invent a further band inside that bound, such as treating 50% or 80% of 768 as a caution line. Also reports the worst-case path and per-function frames. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
+      "expected_output": "Runs `loci analyse stack` with --elf and --entry-functions, and WITHOUT --stack-budget: the request's figure is the skill's own to compare, never the wheel's banded flag. Reports worst-case depth, usage as a percentage of 768 bytes, and a PASS or FAIL verdict against 768 bytes. The 768 is a bound the user stated in the request, which is one of the two sources that reach a measured verdict, so judging against it is correct; the report quotes the figure back and says it came from the request. The percentage is the measured depth over 768 — about 125% here — and it carries a `≥` (`≥125%`) because unresolved indirect calls in the function's reach make the depth a lower bound; the verdict is FAIL. It must NOT invent a further band inside that bound, such as treating 50% or 80% of 768 as a caution line. Also reports the worst-case path and per-function frames. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
       "files": [],
       "assertions": [
         {
@@ -44,8 +44,8 @@
           "description": "A bound stated in the request is the user's own, so it reaches a measured verdict"
         },
         {
-          "text": "Response reports usage as a percentage of the 768-byte budget",
-          "description": "Usage percentage is required when a bound supplies the denominator"
+          "text": "Response reports usage as a percentage of the 768-byte budget (about 125%, written `≥125%` since the depth is a lower bound)",
+          "description": "Usage percentage is required when a bound supplies the denominator; the request's figure is one. Stating only the overage in bytes does not meet this"
         },
         {
           "text": "Response includes a PASS or FAIL verdict against 768 bytes, with no additional percentage band inside it",
@@ -61,11 +61,11 @@
       "id": "sd-3",
       "category": "multi-function",
       "prompt": "Analyze stack depth for all root functions in $LOCI_TEST_BLE_FRESH/basic_ble.out. Don't specify entry functions — let the tool auto-detect them.",
-      "expected_output": "Runs asm-analyze stack-depth with --elf-path but without --entry-functions, letting the tool auto-detect root functions. Reports per-function results for multiple entry points, each with worst-case depth, path, and frame sizes. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
+      "expected_output": "Runs `loci analyse stack` with --elf but without --entry-functions, letting the verb walk the binary's own roots. Reports per-function results for multiple entry points, each with worst-case depth, path, and frame sizes. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
       "files": [],
       "assertions": [
         {
-          "text": "Response runs asm-analyze stack-depth without --entry-functions to auto-detect roots",
+          "text": "Response runs `loci analyse stack` without --entry-functions to auto-detect roots",
           "description": "Auto-detection mode should be used when no entry functions are specified"
         },
         {
@@ -82,11 +82,11 @@
       "id": "sd-4",
       "category": "recursion-warning",
       "prompt": "Analyze stack depth for osal_msg_send in $LOCI_TEST_BLE_FRESH/basic_ble.out. I suspect there may be recursive calls in the chain. Use --max-recursion-depth 3.",
-      "expected_output": "Runs asm-analyze stack-depth with --entry-functions osal_msg_send and --max-recursion-depth 3. If recursion is detected, reports a warning about the recursive call and notes the depth is bounded to 3 iterations. If no recursion is found, reports the depth normally. Either way, the tool should handle the flag and report clearly. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
+      "expected_output": "Runs `loci analyse stack` with --entry-functions osal_msg_send and --max-recursion-depth 3. If recursion is detected, reports a warning about the recursive call and notes the depth is bounded to 3 iterations. If no recursion is found, reports the depth normally. Either way, the tool should handle the flag and report clearly. Freshness: `loci build fresh` on this artifact may report `stale: null` (unknown) because sources named in its debug info are not on this machine; the freshness rule says to proceed on `null` and say so, quoting `.data.reason`, so a report that carries that caveat beside its `Artifact:` line is correct and complete, not hedged.",
       "files": [],
       "assertions": [
         {
-          "text": "Response runs asm-analyze stack-depth with --max-recursion-depth 3",
+          "text": "Response runs `loci analyse stack` with --max-recursion-depth 3",
           "description": "The recursion depth flag must be passed through"
         },
         {
@@ -103,7 +103,7 @@
       "id": "sd-5",
       "category": "stale-artifact-selection",
       "prompt": "I just changed kernel_main in $LOCI_TEST_STALE_ROOT/blink.c to call a new build_pattern() helper. Give me the worst-case stack depth for kernel_main against a 2048-byte budget. The project builds with `make` from $LOCI_TEST_STALE_ROOT (its Makefile links kernel.elf with arm-none-eabi-gcc).",
-      "expected_output": "This is the regression test for the reported bug, on a project a recipe governs: `.loci/build.yaml` records `build.system: make`, `full_build: make -C <root>`, `artifacts.elf: kernel.elf`, target armv6-m, validated compile-check. The tree contains kernel.elf linked BEFORE the edit (225 s older than blink.c; it does not contain build_pattern or render_frame at all) plus a post-edit object under .loci/build/objects/armv6-m/. The skill lets the CLI's freshness check refuse kernel.elf (`loci analyse stack` answers 'no artifact qualifies … stale') and must NOT report numbers from it — nor from the bare .o, whose unapplied R_ARM_THM_CALL relocation loses the call edge and reports kernel_main as 8 B / PASS while hiding a 3072-byte buffer. It rebuilds the way the recipe records — the project's own build, `make` (the recipe's `full_build`) — never a hand-typed link into LOCI's own build directory and never by editing the recipe. After the rebuild kernel_main's worst case is 3120 bytes along kernel_main -> build_pattern -> render_frame, 152.3% of the 2048-byte budget, verdict FAIL. The report carries the mandatory `Artifact:` provenance line naming the binary measured and the `Recipe:` line beside it — `.loci/build.yaml`, target armv6-m, validated compile-check — not a `null` and not an invented path. A run that reports 0.4% PASS (the stale ELF) or 8 B PASS (the bare .o), or that links by hand, is a FAIL of this eval.",
+      "expected_output": "The stale-selection regression, on a project a recipe governs: `.loci/build.yaml` records `build.system: make`, `full_build: make -C <root>`, `artifacts.elf: kernel.elf`, target armv6-m, validated compile-check. The tree contains kernel.elf linked BEFORE the edit (225 s older than blink.c; it does not contain build_pattern or render_frame at all) plus a post-edit object under .loci/build/objects/armv6-m/. The skill lets the CLI's freshness ladder refuse kernel.elf (`loci analyse stack` refuses the stale binary and falls to the object, `via: ranked`) and must NOT report numbers from kernel.elf. On the object `worst_case_depth` is not a depth — the unapplied R_ARM_THM_CALL relocation loses the call edge, so kernel_main reads as 8 B — so the report gives at most the 8 B own frame, labelled as such, and no depth, no percentage of the 2048-byte budget and no PASS against it. The rebuild is the user's: the envelope says `before_saved: false` with `before_reason: no_edit_this_turn`, and the house rules' relink rule for that case is to ask once — naming the refused kernel.elf and the recipe's own build, `make` (its `full_build`) — and run it only on a yes. In this single-turn eval no answer arrives, so the correct response carries that question or offer — anywhere in it: before or after the conclusion table and footer, the house rule is about asking, not about ordering — with the stale ELF refused and no depth measured in its place as the answer. Saying that a relink loses no baseline is correct, because `no_edit_this_turn` means exactly that; a `CAUTION` close saying the depth could not be judged against the budget is correct too. It never runs `make` unasked, never hand-types a link into LOCI's own build directory, never edits the recipe, and never presents a ranked list of candidate binaries. It carries the mandatory `Artifact:` line naming what was measured (the object, own-frame scope) and the `Recipe:` line beside it — `.loci/build.yaml`, target armv6-m, validated compile-check — not a `null` and not an invented path. The staged recipe was written by `loci init` and never confirmed (`confirmed_by_user: false`), so the line correctly carries the skill's qualifier `not confirmed by anyone` with `/loci:init` as what clears it, and the envelope's recipe warning is relayed beside it: that is the fixture's real state, not an invention. sd-6 is the same fixture WITH the user's yes in the prompt, and grades the rebuilt numbers (3120 B, 152%, FAIL). A run that reports 0.4% PASS (the stale ELF), 8 B PASS against the budget (the bare .o taken as a depth), or that relinks unasked or by hand, is a FAIL of this eval.",
       "files": [],
       "assertions": [
         {
@@ -115,32 +115,28 @@
           "description": "Detecting staleness but reporting the stale numbers anyway is still the bug"
         },
         {
-          "text": "Response rebuilds through the recipe's recorded build — runs `make` (the recipe's `full_build`) — rather than measuring the bare .loci/build object as the answer or linking by hand",
-          "description": "A relocatable .o loses cross-call edges, so switching to it reports 8 B / PASS: fresh artifact, confidently wrong answer. And the contract records no link line: the project's own build is the only rebuild"
+          "text": "Response does not present the object's `worst_case_depth` as a depth: at most the 8 B own frame, labelled own-frame / object scope, with no percentage of the 2048-byte budget and no PASS verdict against it",
+          "description": "A relocatable .o loses cross-call edges, so taken as a depth it reports 8 B / PASS: fresh artifact, confidently wrong answer"
         },
         {
-          "text": "Response reports a worst-case depth of 3120 bytes for kernel_main",
-          "description": "3120 = 8 + 3088 + 24, confirmed independently by gcc -fstack-usage; it is only obtainable from a relinked ELF, so it proves both that staleness was caught and that the rebuild happened"
+          "text": "Response names the recipe's recorded build, `make` (its `full_build`), as the relink that would make kernel.elf measurable, and asks for it or offers it as the user's step rather than running it unasked",
+          "description": "before_saved is false with reason no_edit_this_turn, so the house rules' relink rule is: ask once, run on a yes. Under `claude -p` / `copilot -p` the question tool cannot be answered and no yes arrives, so the response carries the question or the offer, wherever it places it — after the conclusion table and footer is fine. A plain next step handed to the user (`make -C <root>`, then re-run) satisfies this exactly as a yes/no question does, and 'relinking loses no baseline' is correct beside the question or offer, not instead of it (that is what no_edit_this_turn means); what fails it is running make, or linking by hand"
         },
         {
-          "text": "Response reports the worst-case path as kernel_main -> build_pattern -> render_frame",
-          "description": "The call chain only resolves in a linked binary"
+          "text": "Response does not run `make` unasked, does not link a binary by hand into .loci/build/, and does not edit the recipe",
+          "description": "The project's own build is the only rebuild, and it is the user's to approve; a hand-linked binary under LOCI's own directory has no provenance behind it"
         },
         {
-          "text": "Response reports a FAIL verdict at roughly 152% of the 2048-byte budget",
-          "description": "The budget verdict must invert relative to the stale artifact's PASS"
-        },
-        {
-          "text": "Response includes an `Artifact:` provenance line naming which binary was measured and when it was built",
+          "text": "Response includes an `Artifact:` provenance line naming which binary was measured (the object, own-frame scope) and when it was built",
           "description": "The durable safety net: even if selection regresses, the reader can see what was measured"
         },
         {
-          "text": "Response measures the one artifact the recipe names — kernel.elf, rebuilt — and does not present a ranked list of candidate artifacts it searched for",
+          "text": "Response does not present a ranked list of candidate artifacts it searched for",
           "description": "The recipe replaced candidate collection and provenance ranking with one recorded artifact. A response that reasons about which of several binaries to prefer is running the deleted flow"
         },
         {
-          "text": "Response carries the `Recipe:` provenance line beside `Artifact:`, naming `.loci/build.yaml` with target armv6-m and its validation tier, and does not print `null` or an invented path",
-          "description": "Every absolute report names the recipe its numbers rest on; this tree has one, so prose saying it has none is as wrong as a fabricated path"
+          "text": "Response carries the `Recipe:` provenance line beside `Artifact:`, naming `.loci/build.yaml` with target armv6-m and its validation tier (`validated compile-check`), and does not print `null` or an invented path; the qualifier `not confirmed by anyone` is correct here, because the staged recipe is unconfirmed",
+          "description": "Every absolute report names the recipe its numbers rest on; this tree has one, so prose saying it has none is as wrong as a fabricated path. The staging init writes the recipe with confirmed_by_user false, so the skill's confirmation qualifier and the relayed recipe warning are the fixture's state, not fabrication"
         }
       ]
     },
@@ -176,8 +172,33 @@
           "description": "Mandatory for every absolute report, fresh artifact or not"
         },
         {
-          "text": "Response carries the `Recipe:` provenance line beside `Artifact:`, naming `.loci/build.yaml` with target armv6-m and its validation tier, and does not print `null` or an invented path",
-          "description": "Every absolute report names the recipe its numbers rest on; this tree has one"
+          "text": "Response carries the `Recipe:` provenance line beside `Artifact:`, naming `.loci/build.yaml` with target armv6-m and its validation tier (`validated compile-check`), and does not print `null` or an invented path; the qualifier `not confirmed by anyone` is correct here, because the staged recipe is unconfirmed",
+          "description": "Every absolute report names the recipe its numbers rest on; this tree has one. The staging init writes it with confirmed_by_user false, so the skill's confirmation qualifier (with /loci:init as what clears it) is the fixture's state, not fabrication"
+        }
+      ]
+    },
+    {
+      "id": "sd-7",
+      "category": "full-elf-whole-image",
+      "prompt": "What's the worst-case stack depth of this image? $LOCI_TEST_BLE_FRESH/basic_ble.out",
+      "expected_output": "Runs `loci analyse stack` once with --elf and WITHOUT --entry-functions: the user named no roots, so the verb walks the binary's own roots (every function nothing calls) beside any contract functions, and `data.detail.roots` reads `binary`. Reports the deepest function in `data.detail.stack_analysis` as the image's worst case -- its depth in bytes and its worst-case path -- not the depth of one function a contract entry happens to name. The footer's N is `summary.total_functions_analyzed`, the roots walked (hundreds on this image), never 1. With indirect-call sites in the roots' reach the depth is a lower bound and every figure takes a `>=` with the cause named. Does not run `loci elf stack`.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Response's one analysis call passes no --entry-functions",
+          "description": "The user named no roots, so the binary's own roots are walked (AAD-7619)"
+        },
+        {
+          "text": "Response reports the deepest reported function's depth and its worst-case path as the image's worst case",
+          "description": "The whole-image question is answered from the deepest root, not from a contract's function"
+        },
+        {
+          "text": "Response's footer N is the count of roots walked (summary.total_functions_analyzed), not 1",
+          "description": "N is every root walked; a 1 is the collapsed sample the ticket reports"
+        },
+        {
+          "text": "Response does not run loci elf stack",
+          "description": "The envelope carries the figures; the elf verbs are not this skill's to call"
         }
       ]
     }

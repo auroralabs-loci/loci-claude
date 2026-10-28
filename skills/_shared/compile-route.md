@@ -160,15 +160,15 @@ the names nor the contract reached a function.
 
 Two rules follow:
 
-- A step that must run through the shell — a generator, a stream-edit pass — is preceded by
-  `loci build snapshot --source <f> --turn <id>` for each source it will change. After
-  the fact there is nothing to recover: the pre-edit bytes are gone.
-- To recover in the same turn: restore the source, then make the edit with Edit. The
-  object on disk was built from the edited source, so `snapshot` refuses to freeze it
-  (`snapshotted: false`, reason names both hashes) — but the overlay captures the
-  restored text, and `analyse prepare` rebuilds the Before from it
-  (`provenance[].before_kind: reconstructed`, `verified: true`). Never delete a
-  `.prev` by hand to get there.
+- A shell step (a heredoc, `sed -i`) needs no snapshot of its own when the source was
+  clean in git as the turn began or already had a built object: the turn's start is
+  recorded at the prompt, and `analyse prepare` rebuilds the Before from it
+  (`provenance[].before_kind: reconstructed`, `verified: true`), or `build snapshot`
+  freezes an object built from that text as a plain snapshot. The PostToolUse Bash
+  notice says which; relay it.
+- Only a source dirty at the turn's start with no object before the turn has no Before:
+  its bounds stay unjudged this turn, and that is final. Never restore and re-edit to
+  manufacture a Before, and never delete a `.prev` by hand.
 
 ---
 
@@ -446,7 +446,7 @@ Six things to know before you trust a quiet answer:
   be compared and tell the user to run `! loci login`.
 - **The ROM/RAM totals here are this translation unit's, not the firmware's.** Report them as
   such, and never send them to `loci contract check` as a `rom_size` / `ram_size`
-  measurement: those bounds are firmware-scale, and a 361-byte object judged against a
+  measurement: an unscoped bound is firmware-scale, and a 361-byte object judged against a
   512 KB budget produces a green row on a claim nobody made. When the contract does
   bound ROM/RAM, escalate to `memory-report`, which measures the linked binary.
 - **Frame sizes are only as good as the installed CLI.** Before **0.1.107** every frame

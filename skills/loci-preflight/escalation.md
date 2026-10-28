@@ -51,8 +51,8 @@ the pass and the re-query loop, which `SKILL.md` also links directly.
 
 ## When to offer a relink
 
-No edit has happened, so there is no Before to protect and a relink loses
-nothing. Read the child's envelope once it returns:
+No edit has happened, so there is no Before to protect; the relink may be
+offered, never run unasked. Read the child's envelope once it returns:
 
 1. **Only when the child landed on the object over a stale link**:
    `data.artifact.kind` is `object`, `data.artifact.refused` names the recipe's

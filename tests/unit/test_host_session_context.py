@@ -44,19 +44,19 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 #: hook reports as `loci version:`. Any value works; it need not track the pin.
 STAGED_VERSION = "0.2.74"
 
-CLAUDE_EDIT_SENTENCE = "After an Edit/Write to a C/C++/Rust/Go source"
+CLAUDE_EDIT_SENTENCE = "After an Edit/Write to a C/C++/Rust/Go/Python source"
 CLAUDE_PERMISSION_SENTENCE = (
     "outside the working directory — Claude Code prompts the user for permission "
     "on every out-of-project access, halting automated preflight/post-edit/eval "
     "runs. Always write inside the project")
-COPILOT_EDIT_SENTENCE = "After an edit/create to a C/C++/Rust/Go source"
+COPILOT_EDIT_SENTENCE = "After an edit/create to a C/C++/Rust/Go/Python source"
 COPILOT_PATH_SENTENCE = ("outside the working directory. Always write inside the "
                          "project")
-CLAUDE_PLAN_CLAUSE = ("In /plan mode, when the user describes new C/C++/Rust/Go logic "
+CLAUDE_PLAN_CLAUSE = ("In /plan mode, when the user describes new C/C++/Rust/Go/Python logic "
                       "in a project a LOCI recipe governs, you MUST invoke "
                       "loci:loci-preflight on its existing callees before proposing edits.")
 COPILOT_PLAN_CLAUSE = ("In plan mode (a [[PLAN]] prompt), when the user describes new "
-                       "C/C++/Rust/Go logic in a project a LOCI recipe governs, you MUST "
+                       "C/C++/Rust/Go/Python logic in a project a LOCI recipe governs, you MUST "
                        "invoke loci:loci-preflight on the functions it changes and the "
                        "existing callees of its new code (a new function changes its "
                        "caller) before proposing edits. Outside plan mode: never, "
@@ -143,10 +143,16 @@ def _pinned_cli_shim(d: Path) -> Path:
     assert m, "lib/setup-steps.sh no longer declares LOCI_CLI_VERSION"
     d.mkdir(parents=True, exist_ok=True)
     shim = d / "loci"
-    shim.write_text(
+    # Written beside and renamed over, never rewritten in place: a test runs the
+    # hook twice with one shim, and the first run's detached installer can still
+    # be executing it — Linux refuses to open that file for writing (ETXTBSY,
+    # "Text file busy"), and a rename leaves the running copy its own inode.
+    tmp = d / f"loci.tmp.{os.getpid()}"
+    tmp.write_text(
         '#!/bin/bash\ncase "$1" in\n  --version) echo "loci %s" ;;\n  *) exit 1 ;;\nesac\n'
         % m.group(1), encoding="utf-8", newline="\n")
-    shim.chmod(0o755)
+    tmp.chmod(0o755)
+    os.replace(tmp, shim)
     return d
 
 

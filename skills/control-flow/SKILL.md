@@ -1,14 +1,14 @@
 ---
 name: control-flow
 description: >
-  Annotated control-flow graphs for compiled C/C++/Rust/Go: per-function basic
-  blocks, loops with derived trip counts, recursion and irreducible cycles, call
-  sites, in text optimised for LLM analysis. Renders the graph and judges the two
-  structural signals it determines, recursion cycles and indirect calls, and the
-  contract's text-only rules on the functions it draws. Use when the user asks
-  what the control flow of compiled code looks like: call dependencies, function
-  impact, which branches and loops exist, where the hot path could run, or what
-  a change did to the shape of a function.
+  Annotated control-flow graphs for compiled C/C++/Rust/Go and Python (Cython):
+  per-function basic blocks, loops with derived trip counts, recursion and
+  irreducible cycles, call sites, in text optimised for LLM analysis. Renders the
+  graph and judges the two structural signals it determines, recursion cycles and
+  indirect calls, and the contract's text-only rules on the functions it draws.
+  Use when the user asks what the control flow of compiled code looks like: call
+  dependencies, function impact, which branches and loops exist, where the hot
+  path could run, or what a change did to the shape of a function.
 when_to_use: >
   It judges the signals the graph itself determines; the rest belong elsewhere —
   a stack budget, whether a cycle is bounded, or a callee missing from the link
@@ -77,7 +77,9 @@ selection is *not* yours either: the verb owns the freshness ladder,
 refuses a stale binary rather than measuring it, and names what it read in the
 envelope — [The artifact a run measures](../_shared/house-rules.md#the-artifact) says how it ranks
 (the recipe's recorded artifact first), and you never re-run that ranking in
-prose beside it.
+prose beside it. On a Python recipe it reads LOCI's own module links until [the
+project's full build](../_shared/house-rules.md#python-full-build) is recorded, which
+that section says when to offer.
 
 **Tool boundary (reminder):** `loci` only — never `objdump`, `readelf`,
 `addr2line`, or `nm`. This skill needs the annotated CFG that binutils cannot
@@ -160,6 +162,15 @@ The two signals come off the same graph: `recursion_cycles` is `recursion` plus
 sites the CFG text leaves with no resolved target. Both are counts — the signals
 have no unit — and both are the whole binary's, never a per-function figure.
 
+**A Python function** is drawn through its Cython C, so most blocks are CPython
+runtime; where its own code runs apart, it is drawn as `<name>.body` or
+`<name>.gen` and the name alone is argument parsing. Name a loop by the `.py`
+lines its blocks map to (the header often maps to `cython_utility`); one whose
+only `.py` line is the `def` is argument parsing. Cycles off `.py` lines, and
+indirect calls whose `indirect-call` line is no `.py`, are runtime glue: say so in
+the Note, never flag on them alone, and say a zero is silent on Python-level
+recursion and dispatch.
+
 ## Step 3: judge the two signals, and route the two you cannot
 
 **This skill observes the two signals the graph determines. It does not judge a
@@ -172,8 +183,6 @@ all to **`stack-depth`**, which reads the linked image and can discharge them.
 
 So: **a contract entry on any of the four is stack-depth's**, and what you found
 goes to it as evidence — the cycles, the call sites, the functions they are in.
-That is already what you do for `unbounded_recursion` and `unknown_callees`; it is
-now all four, which makes the hand-over consistent.
 
 **Two branches here, and the run closes on a word in both.**
 
@@ -185,10 +194,6 @@ now all four, which makes the hand-over consistent.
   read is not a zero over the binary — or **Needs attention** where the graph gives
   you a specific concern you can point at, which composes to `CAUTION`.
 
-**Where the composed word goes.** On `data.contract: none` it fills `STATUS`. On
-`project` the row keeps `—` and your assessment beside it, and an entry on the
-signal gets its word from stack-depth's run.
-
 **Text-only entries: `data.agent_judged`.** Each is a rule on a function this run
 drew. Judge it `flagged`, `cleared` or `no_opinion` against the graph and the
 source lines its blocks name — a loop rule by `data.loops` (`trips`,
@@ -196,9 +201,7 @@ source lines its blocks name — a loop rule by `data.loops` (`trips`,
 site; `cleared` only where the graph shows the rule holds, never because nothing
 looked wrong. Each is a row (Step 4).
 
-The other two signals leave here the same way: hand `unbounded_recursion` and
-`unknown_callees` to **`stack-depth`** with the cycles and call sites you
-found. Timing, energy and ROM/RAM on an edit go to **`loci-post-edit`**, and a
+Timing, energy and ROM/RAM on an edit go to **`loci-post-edit`**, and a
 bound the user is stating to **`contract`**.
 
 ## Step 4: report the CFG and the loop table
@@ -284,24 +287,21 @@ them — of the eleven names this skill reaches `Safety (Recursion)` and
 ```
 | ENTRY | FUNCTION | STATUS | AGENT ASSESSMENT | NOTE |
 |---|---|---|---|---|
-| <qualified signal> | <fn or —> | <word or —> | <assessment> | <cause, with its number> |
+| <qualified signal> | <fn or artifact> | <word or —> | <assessment> | <cause, with its number> |
 
 Verdict: **<PASS|CAUTION|FAIL>** — <one sentence cause> [(<N> of <M> judged)]
 ```
 
-`ENTRY` is the qualified signal name and `FUNCTION` is what the row is bounded
-on, an em dash where the row covers every function this run read. `STATUS` is
-`PASS` / `CAUTION` / `FAIL` for a compared bound or an observed hazard, and `—`
-where nothing was computed. `AGENT ASSESSMENT` is **Needs attention**, **Looks
-good** or **As reported**. A row that reached neither — no `STATUS` and no
+`ENTRY` is the qualified signal name. `STATUS` is `PASS` / `CAUTION` / `FAIL` for
+a compared bound or an observed hazard, and `—` where nothing was computed.
+`AGENT ASSESSMENT` is **Needs attention**, **Looks good** or **As reported**. A row that reached neither — no `STATUS` and no
 assessment — is not drawn; it is counted beside the verdict.
 
 ### Row catalogue (order when present)
 
-1. **Recursion cycles** — `Safety (Recursion)`, on the function an entry bounds,
-   an em dash where the row is the count over the whole scope. Always, when the
-   graph answered it. The Note carries the count and the functions the cycles are
-   in, or `unmeasured` with its reason in place of a zero this scope cannot prove.
+1. **Recursion cycles** — `Safety (Recursion)`, on the function an entry bounds or
+   on the whole scope. Always, when the graph answered it. The Note carries the
+   count and the functions the cycles are in, or `unmeasured` with its reason in place of a zero this scope cannot prove.
    `STATUS` is `PASS`/`CAUTION`/`FAIL` against an enabled entry bounding
    `recursion_cycles`, and otherwise `—` on a contracted run or your assessment's
    word on a `none` one. **Spend no caution on a cycle**: whether anything bounds it
@@ -351,11 +351,11 @@ judged by `/loci:stack-depth`, and a Rule row's word is the agent's reading.
 ```
 Artifact: build/app.elf (linked <build time>, sources current)
 
-| ENTRY                   | FUNCTION   | STATUS  | AGENT ASSESSMENT | NOTE |
-|-------------------------|------------|:-------:|:----------------:|------|
-| Safety (Recursion)      | —          |    —    | Looks good       | 0 cycles across the 12 functions this run read — not a zero over the binary |
-| Safety (Indirect Calls) | dispatch   | CAUTION | Needs attention  | 3 call sites (sched.c:118, sched.c:121, sched.c:140), targets not in the graph |
-| Safety (Rule)           | sched_tick |    —    | Looks good       | "every loop in sched_tick stays bounded by n_tasks": the loop at sched.c:94-99 exits on i < n_tasks |
+| ENTRY                   | FUNCTION         | STATUS  | AGENT ASSESSMENT | NOTE |
+|-------------------------|------------------|:-------:|:----------------:|------|
+| Safety (Recursion)      | app.elf (elf)    |    —    | Looks good       | 0 cycles across the 12 functions this run read — not a zero over the binary |
+| Safety (Indirect Calls) | dispatch         | CAUTION | Needs attention  | 3 call sites (sched.c:118, sched.c:121, sched.c:140), targets not in the graph |
+| Safety (Rule)           | sched_tick       |    —    | Looks good       | "every loop in sched_tick stays bounded by n_tasks": the loop at sched.c:94-99 exits on i < n_tasks |
 
 No bound was computed here — an entry on recursion_cycles or indirect_calls is
 judged by `/loci:stack-depth`, and a Rule row's word is the agent's reading.
@@ -368,10 +368,6 @@ The first row's `—` is a contracted run's: no bound was computed, and your
 **Looks good** composes it to `PASS` — a reading of twelve functions, not a claim
 about the binary. A repo that bounds `recursion_cycles` gets that answer from
 stack-depth.
-
-The `CAUTION` is a hazard observed with no entry behind it, which is why the word
-is your **Needs attention** beside a `STATUS` the graph itself set. The Rule row's
-word is yours alone, and its Note names the exit test the rule rests on.
 
 ## Step 5: record it
 

@@ -28,7 +28,8 @@ CLI_FIELDS = {
     # Generated: every string key a dict literal assigns, plus `data[...] =`
     # assignments, across `loci-cli/src/loci/**/*.py` at the pinned version, and
     # the two tuple-named payload groups `elf memmap` emits.
-    "added", "added_functions", "agent_judged", "escalations", "ambiguous_functions", "artifact",
+    "added", "added_functions", "agent_judged", "escalations", "escalations_owed",
+    "ambiguous_functions", "artifact",
     "baseline_selection", "baseline_withheld", "candidates", "checks",
     "compiled", "compiled_out", "context_file", "contract", "control_flow", "count",
     "counts", "daily",
@@ -43,7 +44,7 @@ CLI_FIELDS = {
     "requests", "resolved",
     "rows",
     "run", "state_notice", "status", "summary", "symbol_deltas", "symbols", "symbols_file",
-    "timing_architecture", "timing_csv", "trends", "unattributed_changes",
+    "timing_architecture", "timing_csv", "trends", "triggers", "unattributed_changes",
     "unchanged", "units", "unjudged", "unscoped_units", "unselectable", "verdict",
     "warnings",
 }
@@ -95,7 +96,7 @@ UNRELEASED_FIELDS: set[str] = set()
 # Moved as main re-pinned underneath this branch: 0.2.29 -> 0.2.36 -> 0.2.37 ->
 # 0.2.39 -> 0.2.41. Checked each time — no release carried either field until
 # 0.2.41 did, and at the move to 0.2.42 both were folded into `CLI_FIELDS`.
-PIN_WHEN_PARKED = "0.2.88"
+PIN_WHEN_PARKED = "0.2.93"
 
 
 def _pinned_version() -> str:

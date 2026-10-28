@@ -132,10 +132,13 @@ grade_bash() {
   echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:[[:space:]]*(stopped|blocked)' && IS_BLOCKED=true
   # Two verdict vocabularies since 2026-09-03 (`_shared/verdicts.md`): a contract
   # bound JUDGES — `**GOOD|ADJUST PLAN|STOP**` — and with no bound the skill ARGUES —
-  # `⚑ flagged —` / `○ cleared —`. Both are the real verdict line; the glyph is
-  # matched as "not a letter or digit" so the check does not depend on the
-  # terminal's UTF-8 handling.
-  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*(\**[[:space:]]*(good|adjust[[:space:]]+plan|stop)\b|[^[:alnum:]]*(flagged|cleared)\b)' && HAS_VERDICT=true
+  # `⚑ flagged —` / `○ cleared —`. Both are the real verdict line, and either
+  # word may follow a glyph: the skill's Checkpoint words print `✅ **GOOD**`,
+  # `⚑ **ADJUST PLAN**` and `❌ **STOP**` (AAD-8002: a correct Copilot
+  # `Execution fit: ✅ **GOOD**` graded as no verdict). The glyph is matched as
+  # "not a letter or digit" so the check does not depend on the terminal's
+  # UTF-8 handling.
+  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*[^[:alnum:]]*(good|adjust[[:space:]]+plan|stop|flagged|cleared)\b' && HAS_VERDICT=true
 
   if [[ "$SHOULD_TRIGGER" == "true" ]]; then
     if $IS_BLOCKED; then
@@ -309,7 +312,7 @@ grade_bash_combined() {
   local HAS_PE_HEADER=false HAS_PE_VERDICT=false
 
   echo "$RESPONSE" | grep -qiE '^[[:space:]]*#{2,}[[:space:]]*preflight:' && HAS_PF_HEADER=true
-  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*(\**[[:space:]]*(good|adjust[[:space:]]+plan|stop)\b|[^[:alnum:]]*(flagged|cleared)\b)' && HAS_PF_VERDICT=true
+  echo "$RESPONSE" | grep -qiE 'execution[[:space:]]+fit:[[:space:]]*[^[:alnum:]]*(good|adjust[[:space:]]+plan|stop|flagged|cleared)\b' && HAS_PF_VERDICT=true
   # Post-edit presence: a markdown header OR the LOCI post-edit footer line.
   echo "$RESPONSE" | grep -qiE '(^[[:space:]]*#{2,}[[:space:]]*post-edit|loci[[:space:]]+post-edit)' && HAS_PE_HEADER=true
   # Post-edit verdict: the body 'Verdict: **OK|CAUTION|FLAG**' line OR the footer scalar.

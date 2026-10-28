@@ -360,10 +360,68 @@ def test_every_source_extension_is_snapshotted(tmp_path, ext):
     assert r.snapshots, f"{ext} must reach the CLI"
 
 
-@pytest.mark.parametrize("path", ["/p/notes.md", "/p/build.py", "/p/Makefile", "/p/x"])
+@pytest.mark.parametrize("path", ["/p/notes.md", "/p/Makefile", "/p/x"])
 def test_a_non_source_path_never_invokes_loci(tmp_path, path):
     r = _run(tmp_path, _edit(path), stub=_OK)
     assert r.calls == [], f"{path} must be filtered in the hook; got {r.calls!r}"
+
+
+# ── Python: only under a recipe ─────────────────────────────────────────────
+
+def _recipe_at(root: Path) -> Path:
+    (root / ".loci").mkdir(parents=True, exist_ok=True)
+    (root / ".loci" / "build.yaml").write_text("version: 1\n", encoding="utf-8")
+    return root
+
+
+def _py_at(path: Path) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("def f(x):\n    return x\n", encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize("path", ["/p/build.py", "/p/x.pyx"])
+def test_a_py_with_no_recipe_above_makes_no_cli_call(tmp_path, path):
+    r = _run(tmp_path, _edit(path), stub=_OK)
+    assert r.calls == [], f"{path} has no recipe above it; got {r.calls!r}"
+
+
+def test_a_py_under_a_recipe_reaches_the_cli_and_is_snapshotted(tmp_path):
+    project = _recipe_at(tmp_path / "lab")
+    r = _run(tmp_path, _edit(_py_at(project / "lab" / "dsp.py")), stub=_OK)
+    assert r.scans and r.snapshots, f"calls={r.calls!r}"
+
+
+def test_a_relative_py_is_looked_up_from_the_payload_cwd(tmp_path):
+    project = _recipe_at(tmp_path / "lab")
+    _py_at(project / "lab" / "dsp.py")
+    r = _run(tmp_path, _edit("lab/dsp.py", cwd=str(project)), stub=_OK)
+    assert r.scans, f"calls={r.calls!r}"
+
+
+@pytest.mark.parametrize("shape", ["at-home", "beyond-git"])
+def test_the_python_walk_stops_where_the_clis_does(tmp_path, shape):
+    """`$HOME` is exclusive and the nearest `.git` is the last directory looked at."""
+    if shape == "at-home":
+        _recipe_at(tmp_path)
+        repo = tmp_path / "repo"
+    else:
+        repo = _recipe_at(tmp_path / "outer") / "repo"
+        (repo / ".git").mkdir(parents=True)
+    r = _run(tmp_path, _edit(_py_at(repo / "x.py")), stub=_OK)
+    assert r.calls == [], f"{shape}: got {r.calls!r}"
+
+
+def test_the_python_walk_follows_a_linked_directory(tmp_path):
+    project = _recipe_at(tmp_path / "real" / "proj")
+    (project / "src").mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(project / "src", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create a directory link here")
+    r = _run(tmp_path, _edit(_py_at(link / "x.py")), stub=_OK)
+    assert r.scans, f"calls={r.calls!r}"
 
 
 def test_the_pre_scan_still_runs(tmp_path):

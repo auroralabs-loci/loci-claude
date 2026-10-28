@@ -77,13 +77,43 @@ loci_log INFO post-edit "start: PostToolUse post-edit (file=$fp)"
 _po_state="skipped"
 trap 'loci_log INFO post-edit "end: $_po_state (hook rc=$?)"' EXIT
 
-# Only C/C++/Rust/Go sources. Kept in step with `pre-edit-hook.sh` and with the
+# `recipe.discover`'s walk and ceilings (nearest `.git`, `$HOME` exclusive), without a
+# spawn. Its one divergence, a logical `$HOME`, can only send a file on to the CLI.
+_loci_recipe_above() {
+    local d="${1//\\//}" base="${2//\\//}" p i=0
+    case "$d" in /*|[A-Za-z]:/*) ;; *) [ -n "$base" ] && d="$base/$d" ;; esac
+    while [ "$i" -lt 64 ]; do
+        case "$d" in */*) d="${d%/*}"; d="${d:-/}" ;; *) d=. ;; esac
+        [ -d "$d" ] && break
+        i=$((i + 1))
+    done
+    p=$(cd "$d" 2>/dev/null && pwd -P) && d="$p"
+    d="${d%/}"
+    i=0
+    while [ "$i" -lt 64 ]; do
+        [ -n "${HOME:-}" ] && [ "$d" = "${HOME%/}" ] && return 1
+        [ -f "$d/.loci/build.yaml" ] && return 0
+        [ -e "$d/.git" ] && return 1
+        [ -n "$d" ] || return 1
+        d="${d%/*}"; i=$((i + 1))
+    done
+    return 1
+}
+
+# Only C/C++/Rust/Go/Python sources. Kept in step with `pre-edit-hook.sh` and with the
 # CLI's `_SNAPSHOT_SOURCE_EXTS` — see the longer note there for why narrowing this
 # list is a correctness bug and not a scoping choice.
+# Only an arm that sets `_po_nudge` may nudge /loci:init: the nudge's premise is a
+# C/C++/Rust/Go project, and a new arm must opt in rather than inherit it.
+_po_nudge=""
 case "$_po_gate" in
-    *.c|*.cc|*.cpp|*.cxx|*.c++|*.rs|*.go) ;;
-    *.h|*.hpp|*.hxx|*.h++|*.hh|*.inc|*.ipp|*.tcc|*.inl|*.tpp|*.def) ;;
-    *.S|*.s) ;;
+    *.c|*.cc|*.cpp|*.cxx|*.c++|*.rs|*.go) _po_nudge=1 ;;
+    # Python (Cython), measured through its generated `.c`. Only under a recipe.
+    *.py|*.pyx)
+        _loci_recipe_above "$fp" "$_nroot" \
+            || { _po_state="skipped (python outside any recipe)"; exit 0; } ;;
+    *.h|*.hpp|*.hxx|*.h++|*.hh|*.inc|*.ipp|*.tcc|*.inl|*.tpp|*.def) _po_nudge=1 ;;
+    *.S|*.s) _po_nudge=1 ;;
     *) _po_state="skipped (extension not measurable)"; exit 0 ;;
 esac
 # Skip plan/settings files that carry a source-ish extension. Copilot's plan
@@ -158,6 +188,8 @@ fi
 remind=1
 cli_note=""
 route=""
+_po_module=""
+_po_secs=""
 _po_governed=""
 envelope=$(printf '%s' "$payload" | loci hook edit-scan 2>&1)
 rc=$?
@@ -202,6 +234,8 @@ else
         # header suffixes: that list would be the FOURTH copy of the same set, and the
         # only one no test can compare against the CLI's.
         route=$(loci_json_get measure_via)
+        _po_module=$(loci_json_get module)
+        _po_secs=$(loci_json_get compile_seconds)
     fi
     [ -n "$turn" ]   || turn=$(loci_json_get turn)
     [ -n "$agent" ]  || agent=$(loci_json_get agent)
@@ -251,10 +285,7 @@ fi
 # no `init_status`, or with `uninitialized` (what session-init wrote for an armed
 # project before AAD-7531), reads the same way for the same reason.
 #
-# Every extension this hook already accepted, not a narrower C/C++/Rust/Go list: the
-# filter at the top of this file is the one the CLI's `_SNAPSHOT_SOURCE_EXTS`
-# agrees with, and a second, shorter copy here would be the fourth spelling of a
-# set that has already cost this repo a defect.
+# Only an extension the filter at the top marks `_po_nudge` is nudged.
 #
 # Cost. Measured INTERLEAVED against the pre-task hook (alternate runs, so drift
 # and load hit both sides), median of 9, real branch CLI, Git Bash under Windows
@@ -356,7 +387,7 @@ fi
 # `hash_cwd`'s `realpath` fallback keys a path that does not exist just as
 # happily as one that does, so a rung that is not a directory must never reach
 # it: the same project would be nudged twice, once under each key.
-if [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
+if [ -n "$_po_nudge" ] && [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
     PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
     # The same ladder as session-init.sh, pre-edit-hook.sh and the CLI's
     # `stats._resolve_state_dir`: the fallback is taken when the directory cannot
@@ -603,6 +634,7 @@ if [ "$remind" = "1" ]; then
     _ctx="[loci] ${fname} was modified. You MUST invoke the loci:loci-post-edit skill NOW — do not proceed to the next edit or respond to the user first. "
     [ -n "$turn" ] && _ctx="${_ctx}Pass turn id ${turn} to the skill as its --turn value. "
     [ "$route" = dependents ] && _ctx="${_ctx}This file emits no object of its own; pass it to \`loci analyse prepare --source\` like any file and it is measured through the translation units that #include it — Step 0b. "
+    [ -n "$_po_module" ] && [ "${_po_secs%%.*}" -ge 20 ] 2>/dev/null && _ctx="${_ctx}Its module ${_po_module} took ${_po_secs} s to compile last time. "
     [ -n "$agent" ] && _ctx="${_ctx}You are running as a subagent: the user sees your final report, not this transcript. Include the LOCI verdict (the timing/energy delta, or why it could not be measured) in that report. "
     _ctx="${_ctx}EXCEPTION: if this edit was made as part of a loci-preflight pass (predictive measurement of a candidate function), do NOT invoke loci-post-edit — preflight will report the analysis itself."
 fi

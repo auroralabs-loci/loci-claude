@@ -421,17 +421,31 @@ def test_preflight_escalates_on_a_structural_hazard_whether_or_not_one_is_bounde
 
 
 def test_post_edit_escalates_with_no_contract():
-    """`data.escalations` is built from contract requests, so with no contract it is
-    always empty. v0.2.84 and v0.2.85 keyed Step 4a on that list alone and post-edit
-    stopped escalating in every uncontracted repo."""
+    """`data.escalations` was built from contract requests alone, so with no contract
+    it was always empty. v0.2.84 and v0.2.85 keyed Step 4a on that list and post-edit
+    stopped escalating in every uncontracted repo; v0.3.3 handed the no-contract
+    decision to the agent in prose, and v0.3.22 skipped it again (AAD-7934). Since
+    loci-tools 0.2.92 the CLI lists the triggers the objects justify in the same
+    field, contract or not, and Step 4a is keyed on the list on every run."""
     step = _section(_skill("loci-post-edit"),
                     "## Step 4a: what the escalated skills still answer",
                     "## Step 5:")
-    assert "`none`: that list is always empty" in step, (
-        "Step 4a no longer says the escalation list is empty with no contract, so "
-        "an agent reads the empty list as nothing to escalate")
-    assert "yours to argue" in step, (
-        "Step 4a no longer hands the no-contract escalation to the agent")
+    assert "**Invoke every skill `data.escalations` lists**" in step, (
+        "Step 4a no longer keys the escalation on the list the CLI fills")
+    assert "`triggers`" in step and "whatever `data.contract` says" in step, (
+        "Step 4a no longer says the list is filled from the objects on a `none` "
+        "contract, so an agent reads an empty list as the contract's silence")
+    assert "that list is always empty" not in step and "yours to argue" not in step, (
+        "Step 4a hands the no-contract escalation back to the agent's judgement, "
+        "which is what skipped it twice")
+    assert "The diff can still add one" in step, (
+        "Step 4a dropped the diff-read triggers for what an object cannot show")
+    reasoning = _section(_skill("loci-post-edit"), "## Step 5:", "## The turn's intent note")
+    assert "**Step 4a is answered.**" in reasoning, (
+        "the reasoning pass no longer checks that each listed escalation has a row")
+    record = _section(_skill("loci-post-edit"), "## Step 7:", "## LOCI voice remark")
+    assert "`data.escalations_owed`" in record and "--parent-run" in record, (
+        "Step 7 no longer reads the record reply's owed-escalation cue")
 
 
 def test_post_edit_offers_the_relink_before_the_child():
@@ -477,3 +491,33 @@ def test_preflight_offers_the_relink_after_the_child():
     assert "the same `--turn` and `--parent-run`" in rules
     assert "linked_before" not in rules, (
         "preflight reads the child's envelope; `measure` adds no field for it")
+
+
+def test_the_no_edit_relink_branch_leads_with_the_ask():
+    """AAD-8054: under GitHub Copilot CLI the model read the house rules' own
+    "nothing changed this turn, so a relink loses nothing" — the sentence BEFORE
+    "Ask once" — as permission, ran `make` itself and reported the rebuilt numbers
+    (sd-5, 2 of 3 runs). The branch now opens on the ask; the fact that nothing is
+    lost is given as the reason the question is allowed, and said not to be a yes."""
+    rule = _section(_text(HOUSE_RULES),
+                    "**Never relink mid-turn without a saved Before and the user's yes.**",
+                    "**Any other `error.code`")
+    assert "Except `no_edit_this_turn`" in rule
+    branch = rule.split("Except `no_edit_this_turn`", 1)[1]
+    assert "Ask once with" in branch
+    assert "loses no Before" in branch
+    assert branch.index("Ask once with") < branch.index("loses no Before"), (
+        "the 'loses nothing' fact precedes the ask again, which is what read as permission")
+    assert "loses nothing" not in branch, "the sentence that read as permission is back"
+    assert "never run unasked" in branch, (
+        "a bare 'never run' contradicts 'a yes runs it' one sentence later (sd-6)")
+    assert "allows the ask, not the relink" in branch
+    assert "information, not approval" in branch, (
+        "sd-5's prompt names the build; the rule must say that is not approval")
+    assert "a request to rebuild is" in branch, (
+        "the rule says what is not a yes and must say what is: sd-6's prompt")
+
+    offer = _section(_ref("loci-preflight", "escalation.md"),
+                     "## When to offer a relink", "1. **Only when")
+    assert "never run unasked" in offer
+    assert "loses nothing" not in offer, "preflight's opener reads as permission again"

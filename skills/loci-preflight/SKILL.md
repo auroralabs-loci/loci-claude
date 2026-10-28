@@ -5,7 +5,7 @@ description: >
   functions an edit touches and the callees of any new code, using compiled
   artifacts, to catch problems while the design is still cheap to change.
   MANDATORY in plan mode (/plan; a [[PLAN]] prompt under GitHub Copilot CLI)
-  when the user describes new C/C++/Rust/Go logic or a modification in a
+  when the user describes new C/C++/Rust/Go/Python logic or a modification in a
   project a LOCI recipe governs. Outside plan mode do NOT invoke, whatever the
   words: a "how should I …" question with plan mode off is answered without
   it, as are review/explain requests and direct edits. Plan mode is the host's
@@ -20,8 +20,11 @@ when_to_use: >
 
 **Gate: plan mode only.** This skill applies when the host is in plan mode:
 `/plan` under Claude Code; under GitHub Copilot CLI a `[[PLAN]]` prefix on the
-prompt. If plan mode is off, stop here, whatever the request says: answer it
-as asked, run no `loci` command for it and print no `## Preflight:` report.
+prompt. In a project a recipe governs the prompt-submit hook says so too, in a
+`[loci] plan mode:` line under the turn id: invoke this skill when that line
+arrives, before the plan is written. If plan mode is off, stop here, whatever
+the request says: answer it as asked, run no `loci` command for it and print
+no `## Preflight:` report.
 
 This skill is a **thinking tool, not a write-gate**. Run it in plan mode —
 while you are still deciding what to write — so the execution fit is visible
@@ -87,12 +90,13 @@ the plan is handed over for approval — never a one-line summary — and open t
 plan with the verdict box ([Output format](#output-format)). The hand-over is
 `ExitPlanMode` under Claude Code. Under GitHub Copilot CLI, where a `[[PLAN]]`
 prompt is plan mode, it is `exit_plan_mode`, which follows the plan file you
-save in the session folder. That file is what the user approves — and what
-`--plan --mode autopilot` implements unasked — so it carries the full report
-after the verdict box and before the steps. The reply carries the full report
-on every host; the plan file is in addition to it, never instead, and a
-one-line summary is not it. Copilot's plan mode blocks a shell command that
-redirects or pipes (`2>&1`, `| …`) as a workspace write; a bare `loci …` runs.
+save in the session folder. On both hosts the plan is what the user approves —
+the approval dialog shows it and nothing else, and Copilot's `--plan --mode
+autopilot` implements it unasked — so it carries the full report after the
+verdict box and before the steps: a verdict box alone hides every figure the
+run measured. The reply carries the full report on every host; the plan file is
+in addition to it, never instead, and a one-line summary is not it. Copilot's
+plan mode blocks a shell command that redirects or pipes (`2>&1`, `| …`) as a workspace write; a bare `loci …` runs.
 
 ## Step 0: Resolve the project
 
@@ -248,9 +252,7 @@ whether the top-ranked one really is the normal case.
 
 Each candidate is `{id, request, fn, rank, scope, blocks, lines, why}`. `lines` maps
 each block to a **source line range** (`msg.c:46-52`) — read those ranges against the
-files you already have open. That is what tells you `bb_0x2034` is
-`if (err) goto fail;` rather than something you inferred from a `bne`, and it is what
-still works for a callee in a translation unit you never opened.
+files you already have open.
 
 - **The proposal is `data.proposed`** — the rank-1 candidate id per request. Confirm
   it by passing nothing: `measure` records it as the confirmed selection.
@@ -263,8 +265,10 @@ still works for a callee in a translation unit you never opened.
   `for(;;)` main loop), where the figure is per iteration of the outer loop. A
   per-iteration figure must never be compared with, or summed into, a per-call one —
   say so in the row's Note.
-- **Callees reached from the path take their own top-ranked candidate
-  automatically.** You confirm the top-level path only, never one per callee.
+- **A callee is costed at its call site, never its body**: a function is measured
+  only when `--functions` or a bound names it. A Python name whose own code runs
+  apart comes with `<name>.body` or `<name>.gen`, which is the function: the name
+  alone is argument parsing, its lines mostly CPython headers.
 
 A request may have **no candidate** — requested, but no path could be selected for
 it. It is still reported.
@@ -502,10 +506,9 @@ the first-pass draft.
 Emit the preflight report in the **response text**, before describing what
 you will write — before the hand-over ([Plan mode](#plan-mode)),
 so the user approves the plan having seen it. A one-line summary is not the report: the table, the Execution fit
-line and the footer are. The approval dialog shows the plan and nothing else, so the
-plan body opens with the verdict in the LOCI box, then only the adjusted steps
-under Claude Code; under Copilot the plan file also carries the report between
-the two ([Plan mode](#plan-mode)):
+line and the footer are. The approval dialog shows the plan and nothing else, so on
+every host the plan body opens with the verdict in the LOCI box, then the report,
+then the adjusted steps ([Plan mode](#plan-mode)):
 
 ```
 ─── LOCI · preflight ───────────────────
@@ -574,25 +577,25 @@ Each row is `{fn, gate, status, before, after, note, entries}`:
   not, **As reported** where the run gave you nothing to judge it on.
 - **`before`** — `null` in the usual preflight case (no baseline). When every
   row has `before: null`, drop the column rather than printing blanks.
-- **`note`** — verbatim. `measure` has already named the path a time figure was
-  computed on (`— on the ranked hot path (<file>:<lines>)`, plus
+- **`note`** — verbatim. `measure` already names the path a time figure was
+  computed on (`— on the ranked hot path (<file>:<lines>)`, `selected`
+  via `--select`, plus
   `per iteration of the outer loop` for an
   iteration-scope candidate, and `(≥ lower bound)`); that is what stops a
   typical-case number reading as a hard-real-time promise, so never trim it. Append
   a skill-side sub-finding after it, comma-separated (e.g.
   `hot block msg.c:46-52`). The source range in that Note is how the path is
-  named for the rest of the report: the candidate id it came from
-  (`hot_path.candidate`) stays out of the prose, per the shared contract's **Naming a
+  named for the rest of the report: `hot_path.candidate` stays out of the
+  prose, per the shared contract's **Naming a
   path or a loop in the report**. A loop you name carries its trip count with it, and
-  a user who asks which path was ranked gets the id and the manifest's `why`.
+  a user who asks which path was ranked gets the id and its `why`.
 - **Which time question the row answers** is the entry's, not yours. A
   `hot_path_time` row is the normal case on the named path; a **worst path**
   (`worst_path_time`) row appears only when the repo declared that entry, and the two
   are never summed or compared.
-- **`fn: null`** — a whole-binary row (the structural Safety signals), so its
-  `FUNCTION` cell is an em dash. Report it once per run, in the first function's
-  table. An entry this run measured
-  nothing for is "not checked", never "passed", and produces no row: the four
+- **`fn: null`** — a whole-binary row (the structural Safety signals). Report it
+  once per run, in the first function's table. An entry this run measured nothing
+  for is "not checked", never "passed", and produces no row: the four
   structural invariants are whole-binary while this run saw one object, so a
   hazard breaches the entry but a clean object does not satisfy it — omit the
   row rather than render ✅ against an entry this run did not measure. Only a
