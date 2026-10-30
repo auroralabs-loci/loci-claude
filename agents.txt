@@ -1,7 +1,7 @@
 LOCI: install and setup
 =======================
 
-LOCI version: 0.3.60
+LOCI version: 0.3.61
 Canonical source: agents.txt in the loci-claude repository root.
 
 The machine-readable install guide for LOCI: a coding agent can follow it from
@@ -87,7 +87,7 @@ run twice.
 If you cannot run a skill, install the CLI directly, at the version this
 plugin release is built against:
 
-  uv tool install -p 3.12 loci-tools==0.2.122
+  uv tool install -p 3.12 loci-tools==0.2.126
 
 
 STEP 3: SIGN IN

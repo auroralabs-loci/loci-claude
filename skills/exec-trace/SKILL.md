@@ -290,7 +290,9 @@ hot path `ns` and `energy_nws` on the confirmed candidate, and worst path `ns_wo
 **where an entry bounds `worst_path_time` or the user asked for it**; `ties` > 0
 means that many other paths cost the same — say so. Call them **hot path time** and **worst path time**, LOCI's signal vocabulary. The
 numbers come from LOCI's model trained on real workloads and platform traces; they
-describe the target silicon, not an IPC estimate.
+describe the target silicon, not an IPC estimate. Where `data.frequency.scaled` is true
+timing and energy both scale linearly from the trained clock to the board's, and the
+`Recipe:` line names [the clock](../_shared/house-rules.md#recipe-clock).
 
 ### Example (`none` envelope — the agent's assessment fills `STATUS`)
 

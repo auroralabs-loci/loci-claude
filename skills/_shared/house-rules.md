@@ -997,6 +997,34 @@ it refuses, and the degraded states leave them stale from an earlier successful
 init, so a non-null value is not by itself proof that a recipe is governing this
 session — the verb's own answer is.
 
+<a id="recipe-clock"></a>
+
+#### The clock, on a report with timing figures
+
+A run that timed something closes the `Recipe:` line with the clock its figures are at:
+
+    Recipe: .loci/build.yaml (target armv7e-m, validated replay-compare, confirmed by user); clock 168 MHz (scaled from 100 MHz)
+
+Read it from the timing verb's `data.frequency` (`analyse measure`, `loci timing`;
+`prepare` carries none), never from the recipe or a table of cores, in MHz (GHz from
+1 GHz up):
+
+- `reason: target_mismatch` → `clock not applied (target mismatch)`, with the CLI's
+  own mismatch line relayed as it stands: the board's core is not this target, so the
+  figures are at the trained clock.
+- `clock_hz` equal to `trained_hz` (the report's `same as the trained clock`) →
+  `clock <trained_hz> (trained)`.
+- `scaled: true` → `clock <clock_hz> (scaled from <trained_hz>)`.
+- `source: trained` → `clock <trained_hz> (trained)`.
+- `note` present → print it once on the provenance or caveat line, as it stands.
+
+With no `Recipe:` line, print the clause alone as `Clock: …`. A delta report carries it
+on [the caveat line](#recipe-caveat), only when `scaled` is true or a `reason` or `note`
+is present. No `frequency` block, no clause.
+
+Timing and energy both scale linearly from the trained clock to the board's; nothing
+here is a cycle count, never say cycles change.
+
 <a id="recipe-caveat"></a>
 
 #### The caveat half, for a skill that prints no full line

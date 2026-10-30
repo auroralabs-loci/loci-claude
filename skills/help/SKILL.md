@@ -226,6 +226,10 @@ should know what's possible even if their setup isn't complete yet.
                        planning and coding: the costliest functions, every catch,
                        and the contract state. Open it in a separate terminal
 
+## Board clock
+
+  loci frequency set   Run for you when you say "my board now runs at 100 MHz"
+
 ## What the verdict words mean
 
   A report closes on one word, composed from two columns on every row.
@@ -254,6 +258,14 @@ should know what's possible even if their setup isn't complete yet.
     preflight   GOOD write the plan · ADJUST PLAN change it first · STOP replace it
     post-edit   OK nothing to do · CAUTION a fix is proposed · FLAG not shippable as is
 ```
+
+When the user says their board's clock changed, run `loci frequency set <clock>`
+yourself and relay `data.report` as it stands. Timing and energy both scale linearly
+from the trained clock to the board's; nothing here is a cycle count, never say
+cycles change.
+When the user asks what clock a model is trained at, which cores LOCI covers, or a
+target's trained frequency, run `loci frequency models` and relay `data.report` as it
+stands; never quote a trained clock from memory.
 
 ## Step 3: Contextual Next Step
 

@@ -894,7 +894,8 @@ HOT_FILE_CEILINGS = {
     # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
     # paid once — control-flow now costs 18 KB MORE per run than before.
     "skills/control-flow/SKILL.md": 24_700,                  # 22,518 B
-    "skills/exec-trace/SKILL.md": 26_900,                    # 24,450 B
+    # Raised from 26_900 for AAD-8091's clock sentence; the trim is AAD-8030.
+    "skills/exec-trace/SKILL.md": 27_200,                    # 27,084 B
     # +400 B on 2026-09-11: the verdict explainer this skill prints to the user now
     # describes two columns rather than one vocabulary — four `STATUS` values and
     # three assessment words, where there were three and two. The section was trimmed
@@ -907,7 +908,8 @@ HOT_FILE_CEILINGS = {
     "skills/help/SKILL.md": 15_600,                          # 14,247 B
     # Raised from 17_600 for AAD-8020's Python route; the trim is AAD-8030.
     # Raised from 17_800 for the Python questions and recognition; the trim is AAD-8030.
-    "skills/init/SKILL.md": 18_200,                          # 18,168 B
+    # Raised from 18_200 for AAD-8091's clock question; the trim is AAD-8030.
+    "skills/init/SKILL.md": 19_100,                          # 19,052 B
     # 3,600 -> 6,000 for Step 0's CLI-version gate. Two states that used to be
     # handled inline (or not at all) now route through `/loci:setup` first, and the
     # routes are procedure, which is what this file exists to hold: a MISSING `loci`
@@ -947,7 +949,8 @@ HOT_FILE_CEILINGS = {
     # Raised from 2_480 for the rewrite against the design (questions, refusals); the trim is AAD-8030.
     # Raised from 5_000 for AAD-8084's compiler question; the trim is AAD-8030.
     # Raised from 5_102 for AAD-8084's python_version question; the trim is AAD-8030.
-    "skills/init/python.md": 5_270,                         # 5,270 B
+    # Raised from 5_270 for AAD-8088's quoted `--cython` answer; the trim is AAD-8030.
+    "skills/init/python.md": 5_272,                         # 5,272 B
     # AAD-7641, new: the container-toolchain branch of `/loci:init` Step 3 — what
     # `toolchain_unreachable` carries, the one fact-finding question it may cost,
     # the `toolchain:`/`mount:` lines Step 4 relays, and the codes only a
@@ -1018,7 +1021,7 @@ HOT_FILE_CEILINGS = {
     # usually at the call site. Compressed four times before raising.
     # Raised from 36_100 for the Python full-build link; the trim is AAD-8030.
     "skills/stack-depth/SKILL.md": 36_300,                   # 36,282 B
-    "skills/trends/SKILL.md": 4_000,                        # 3,611 B
+    "skills/trends/SKILL.md": 4_000,                        # 3,909 B
 }
 
 #: The three the design named, spelled SEPARATELY from the dict above so that
@@ -1084,7 +1087,9 @@ CEILINGED_FILES = ("skills/loci-post-edit/SKILL.md",
 # Raised from 556_200 for the Python full-build rule; the trim is AAD-8030.
 # Raised from 557_900 for AAD-8084's compiler question; the trim is AAD-8030.
 # Raised from 557_940 for AAD-8084's python_version question; the trim is AAD-8030.
-SHIPPED_PROSE_CEILING = 558_169
+# Raised from 558_169 for AAD-8091's clock clause and init's clock question; the trim is AAD-8030.
+# Raised from 561_600 for help's `loci frequency models` sentence; the trim is AAD-8030.
+SHIPPED_PROSE_CEILING = 561_800
 
 
 def _lf_bytes(p: Path) -> int:

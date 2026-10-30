@@ -34,7 +34,7 @@ CLI_FIELDS = {
     "compiled", "compiled_out", "context_file", "contract", "control_flow", "count",
     "counts", "daily",
     "demangle", "detail", "diff_file", "draft", "duplicates", "eligible", "exists", "files",
-    "findings", "frame_deltas", "functions", "functions_not_found", "gates",
+    "findings", "frame_deltas", "frequency", "functions", "functions_not_found", "gates",
     "headers", "healthy", "id", "inlined", "judgements", "linked_before", "loops", "measured", "meta_file",
     "meta_prev", "missing", "modified", "not_found", "orphaned_entries", "output",
     "output_prev",
@@ -88,6 +88,8 @@ UNVERIFIED_UPSTREAM = {
 # post-edit can offer the relink before a stack/memory child) is parked against
 # 0.2.74 and shipped in loci-tools 0.2.75; moved into `CLI_FIELDS` at the pin to
 # 0.2.75. Empty again.
+# `frequency` (AAD-8091) was parked against 0.2.123 and shipped in loci-tools 0.2.124;
+# moved into `CLI_FIELDS` at the pin to 0.2.124. Empty again.
 UNRELEASED_FIELDS: set[str] = set()
 
 #: The pin `UNRELEASED_FIELDS` was written against. When it moves, the release either
@@ -96,7 +98,7 @@ UNRELEASED_FIELDS: set[str] = set()
 # Moved as main re-pinned underneath this branch: 0.2.29 -> 0.2.36 -> 0.2.37 ->
 # 0.2.39 -> 0.2.41. Checked each time — no release carried either field until
 # 0.2.41 did, and at the move to 0.2.42 both were folded into `CLI_FIELDS`.
-PIN_WHEN_PARKED = "0.2.93"
+PIN_WHEN_PARKED = "0.2.123"
 
 
 def _pinned_version() -> str:

@@ -367,7 +367,8 @@ that section's caption under them.
   on that entry; its cost is callee-excluded, like every timed number.
 **Do not compute any of this yourself.** Path cost, in every part, is `measure`'s
 arithmetic. A figure you derived by hand is a different measurement from the one the
-record holds.
+record holds. Where `data.frequency.scaled` is true timing and energy both scale
+linearly from the trained clock to the board's, and the report names [the clock](../_shared/house-rules.md#recipe-clock).
 
 **Not signed in** — an `auth_required` error means nothing was billed. Relay it
 as [`auth_required`](../_shared/house-rules.md#auth-required) says, and

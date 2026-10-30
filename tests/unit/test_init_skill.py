@@ -141,7 +141,8 @@ INSTALLER_REL = "hooks/ensure-loci-cli.sh"
 #: Raised from 17 * 1024 + 384 for AAD-8020's Python route; the trim is AAD-8030.
 #: Raised from 17 * 1024 + 640 for the Python questions and recognition; the trim is AAD-8030.
 #: Raised from 17 * 1024 + 1056 for the python_interpreter question; the trim is AAD-8030.
-SIZE_BUDGET = 17 * 1024 + 1070
+#: Raised from 17 * 1024 + 1070 for AAD-8091's clock question; the trim is AAD-8030.
+SIZE_BUDGET = 17 * 1024 + 1950
 
 #: Terminated comments, and an unterminated one, which hides the rest of the file.
 _COMMENTS = (re.compile(r"<!--.*?-->", re.S), re.compile(r"<!--.*\Z", re.S))
@@ -293,6 +294,8 @@ DATA_FIELDS = {
     "go",
     # AAD-8020: what `loci init --python` recorded, which python.md shows the user.
     "python",
+    # AAD-8091: the clock init recorded, relayed in Step 4.
+    "frequency",
 }
 ERROR_FIELDS = {"code", "message", "candidates", "supported", "regen", "detail",
                 "recorded_target", "target",
@@ -302,7 +305,9 @@ ERROR_FIELDS = {"code", "message", "candidates", "supported", "regen", "detail",
                 "exec_candidates", "inferred_mount", "exec_symptoms",
                 # AAD-8020: the path a `--python-modules` refusal names, the modules
                 # `python_module_unknown` offers, the recipe `python_recipe_conflict` met.
-                "module", "modules", "system"}
+                "module", "modules", "system",
+                # AAD-8091: the `clock` question's payload.
+                "core", "trained_hz"}
 #: Only ever `LociError(**details)` kwargs, so they have no quoted form to find —
 #: `error_envelope` merges `err.details` into the body, so the key never appears as a
 #: literal. Named individually rather than by loosening the pattern for all 24, which
@@ -506,14 +511,15 @@ def test_the_only_loci_verbs_the_docs_invoke_are_init_login_doctor_project_and_c
     `cockpit` is named but never invoked — it is one of the three commands the user
     runs, and a fresh recipe is when there is first something in it to see. `project`
     is the CLI's read-only root resolver, which Step 1 asks for the candidates
-    (AAD-7807)."""
+    (AAD-7807). `frequency` is named, never invoked: recovery.md says a later clock
+    change is `loci frequency set`, not an `init set` key (AAD-8091)."""
     verbs: set[str] = set()
     for path in DOCS:
         # python.md names `loci build python` as the build init itself ran; only that
         # one `build` subcommand is exempt.
         flat = _flat(path).replace("`loci build python`", "")
         verbs |= {m.group(1) for m in re.finditer(r"loci ([a-z][a-z0-9-]*)", flat)}
-    extra = sorted(verbs - {"init", "login", "doctor", "project", "cockpit"})
+    extra = sorted(verbs - {"init", "login", "doctor", "project", "cockpit", "frequency"})
     assert not extra, f"unexpected `loci` verbs: {extra}"
 
 
@@ -1836,6 +1842,11 @@ CONTRADICTIONS: tuple[tuple[Path, str, str, str], ...] = (
      r"`--confirmed` (?:answers|is (?:the|its) answer|also answers|counts)"
      r"|(?:pass|add) `--allow-run` (?:yourself|unasked|without asking|by default)",
      "takes `--confirmed` as the run consent, or runs the declaration unasked"),
+    # AAD-8094: cythonizing a plain Python project is the user's yes, never `--auto`'s.
+    (PYTHON, "Running it",
+     r"(?:pass|add) `--cythonize` (?:yourself|unasked|without asking|by default)"
+     r"|`--(?:auto|allow-run)` (?:answers|also answers|counts for) `?python_cythonize",
+     "cythonizes a plain Python project without the user's yes"),
     (PYTHON, "What init shows",
      r"(?:skip|no need for) (?:the |confirming the )?(?:module list|confirmation)"
      r"|(?:target|`python_run`) answer (?:is|counts as) (?:the|this) confirmation"
@@ -2529,6 +2540,26 @@ def test_python_md_routes_every_python_code_the_cli_raises():
     text = _flat(PYTHON)
     missing = sorted(c for c in raised if f"`{c}`" not in text)
     assert not missing, f"python.md does not route {missing}"
+
+
+def test_python_md_routes_the_cythonize_question_to_its_flag():
+    sect = _section("Running it", PYTHON)
+    assert "`python_cythonize`" in sect and "`--cythonize`" in sect
+    assert "`--allow-run` is not this answer" in sect
+
+
+def test_python_md_offers_a_fix_for_a_module_left_out_and_never_edits_unasked():
+    """Owner decision (29 Oct): a module Cython rejects gets one offer of a fix, never an edit."""
+    assert "never edit unasked" in _section("What init shows", PYTHON)
+    row = _row("| `python_nothing_to_link`", PYTHON)
+    assert "fix offer" in row, row
+
+
+@needs_cli_src
+def test_the_cythonize_question_and_flag_python_md_names_are_the_cli_s():
+    src = (_cli_src() / "init.py").read_text(encoding="utf-8")
+    assert 'QUESTION_PYTHON_CYTHONIZE = "python_cythonize"' in src
+    assert 'CYTHONIZE_FLAG = "--cythonize"' in src
 
 
 @needs_cli_src

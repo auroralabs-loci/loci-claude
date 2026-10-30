@@ -1259,7 +1259,8 @@ ALLOWED_GUARDED_MENTIONS = {
         # "(written by --auto)" -- the recipe does not record that. Describes; no write.
         # Re-hashed by AAD-7615: the block's path is named per verb (prepare carries it
         # per unit, measure not at all). Still describes; instructs no write.
-        "6520df2da0",  # ### The recipe provenance line Every **absolute** report — exec-
+        "87adddc1d3",  # ### The recipe provenance line Every **absolute** report — exec-
+        "335d9c6f62",  # #### The clock, on a report with timing figures A run that timed
         # Re-hashed 2026-10-06: the supported-ISA list gains `neoverse-v2`. Read: it
         # describes the recipe and instructs no write.
         # Re-hashed by AAD-7615: the recipe-provenance-line anchor sits in this chunk.
@@ -1372,7 +1373,7 @@ ALLOWED_GUARDED_MENTIONS = {
         # and /loci:contract write; it instructs no write.
         # Re-hashed 2026-09-29 by the checkpoint words (GOOD / ADJUST PLAN / STOP,
         # OK / CAUTION / FLAG) added under the verdict legend. Read: no write.
-        "ba0d7032f3",  # ## Step 2: Show Available Skills Always show the full skill list
+        "bd89c31353",  # ## Step 2: Show Available Skills Always show the full skill list
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed: the listing gained a `## Live view` entry for `loci cockpit`,
         # then the note that it needs a separate terminal.
@@ -1387,7 +1388,7 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed by AAD-8003: `cython_missing` joins the routed codes. Read: no write.
         # Re-hashed by AAD-8020: the five `python_*` codes join them. Read: no write.
         # Re-hashed by AAD-8020 pass 2: the codes follow the CLI's. Read: no write.
-        "bd24aca33e",  # --- name: init argument-hint: "[project path]" description: > Re
+        "ea84088973",  # --- name: init argument-hint: "[project path]" description: > Re
         # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
         # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
         # describes a guarded file, forbids a write to it, or reads it back —
@@ -1433,7 +1434,7 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed 2026-10-20: `energy_nws` and `worst_path` are present where a
         # request named the function, an entry's or `--signals`', not only an
         # entry's. Read: names the contract as input only; no write.
-        "0ffc9aa03f",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
+        "064dd9c5d8",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044 (the target is read out of the context file, not
         # by "the contract's own `jq`") and by F06 round 2, which made this step
@@ -1477,7 +1478,7 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed 2026-09-29: a `≥` figure the change did not cause is carried.
         # Read: names the contract as input only; no write.
         # Re-hashed 2026-10-07, on the same change as post-edit's.
-        "c3e8a6b473",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
+        "d022a998d7",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044, on the same change as post-edit's.
         # Re-hashed by todo 048 (the `prepare` invocation dropped `--context`,
@@ -1670,7 +1671,8 @@ ALLOWED_GUARDED_MENTIONS = {
 # file once their project facts came from `loci project`.
 # 43 -> 42 (AAD-7531): exec-trace's Step 0 stopped naming the recipe once `prepare`
 # selected the binary itself.
-_REVIEWED_SECTIONS = 42
+# 42 -> 43 (AAD-8091): the clock clause's example `Recipe:` line names the recipe.
+_REVIEWED_SECTIONS = 43
 
 
 def test_every_mention_of_a_guarded_file_is_registered():
@@ -2027,6 +2029,7 @@ CONTRACT_HEADINGS = (
     "### A Python recipe: LOCI's module links until the full build is recorded",
     '## The build recipe: what every measurement rests on',
     '### The recipe provenance line',
+    '#### The clock, on a report with timing figures',
     '#### The caveat half, for a skill that prints no full line',
     '## When a `loci` call refuses: the eleven coded errors',
     '### Fast-fail mode',

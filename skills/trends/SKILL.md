@@ -60,7 +60,9 @@ Computing the summary line:
 
 The table shows only columns that have data — timing from post-edit
 auto-runs, stack from /loci:stack-depth invocations, memory from /loci:memory-report
-invocations. No empty columns, no missing-data notices.
+invocations. No empty columns, no missing-data notices. Series are segmented by
+clock: rows measured at different clocks are never diffed into one
+delta, so a clock change is neither an improvement nor a regression.
 
 ## Step 3: Single-function drill-down (optional)
 

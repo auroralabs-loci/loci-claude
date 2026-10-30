@@ -415,7 +415,10 @@ Four things the numbers mean:
 
 **Do not compute any of this yourself.** Path cost, in every part, is `measure`'s
 arithmetic, run identically on the Before and the After sides. A figure you derived
-by hand is a different measurement from the one the record holds.
+by hand is a different measurement from the one the record holds. Where
+`data.frequency.scaled` is true timing and energy both scale linearly from the trained
+clock to the board's, and the report names
+[the clock](../_shared/house-rules.md#recipe-clock).
 
 ## Step 4a: what the escalated skills still answer
 

@@ -78,8 +78,8 @@
           {
             "type": "command",
             "command": "bash -c 'exec bash \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-bypass.sh\"'",
-            "timeout": 5,
-            "timeoutSec": 5
+            "timeout": 15,
+            "timeoutSec": 15
           }
         ]
       }

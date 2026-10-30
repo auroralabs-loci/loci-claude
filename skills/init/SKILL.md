@@ -4,8 +4,8 @@ argument-hint: "[project path]"
 description: >
   Record how this project builds — one machine-local recipe
   (`.loci/build.yaml`) naming the target ISA, the compiler, the build system and
-  the artifact — so every LOCI measurement compiles the way the project itself
-  does. Use on /loci:init, "initialize LOCI", "set up this project for
+  the artifact — and the clock its board runs at, so every LOCI measurement
+  compiles and times the way the project itself does. Use on /loci:init, "initialize LOCI", "set up this project for
   LOCI", "switch the LOCI target" or "LOCI says this project is not
   initialized", or a LOCI analysis failed with a recipe-related `error.code`
   on a project that already has a recipe.
@@ -134,9 +134,8 @@ leave an untracked `Cargo.lock`.
 
 **Go and TinyGo also build for real**, and what you say afterwards differs — the
 board, and Go's inlining. Read [go.md](go.md), which replaces `compdb.md` for them.
-A Cython project (`.data.python` set, or a `setup.py`, `pyproject.toml`,
-`CMakeLists.txt` or `meson.build` naming `.pyx` or `cython`) follows
-[python.md](python.md) from here, Step 3's command included.
+A Python project (`.data.python` set, only `.py` sources, or build files naming `.pyx`
+or `cython`) follows [python.md](python.md) from here, Step 3's command included.
 
 Otherwise the gate is not "does one exist" but **current, and covering the target you
 are about to record**:
@@ -161,8 +160,8 @@ for you, and neither should you.
 
 Hand it over with `--compdb="<path>" --compdb-kind=generated|synthesized`, and **carry
 every answer flag through every later init call in this run** — the target pick and the
-confirmation included. That means `--compdb`/`--compdb-kind`, and `--accept-tier` once a
-tier has been accepted: init re-derives from scratch each time, so a `--confirmed` that
+confirmation included. That means `--compdb`/`--compdb-kind`, `--clock` once answered, and
+`--accept-tier` once a tier has been accepted: init re-derives from scratch each time, so a `--confirmed` that
 drops a flag meets the refusal you already resolved.
 
 ## Step 3: run init, ask at most one question
@@ -173,7 +172,7 @@ Run `loci init --project-root "<root>" [--compdb="<path>" --compdb-kind=<kind>] 
 
 | code | what it is | what you do |
 |---|---|---|
-| `init_needs_user` | `.error.question`: `target` (several ISAs), `toolchain_unreachable`, `compdb_regen`, `compdb`, or `python_run`, `python_include`, `cython`, `python_interpreter`, `python_version`, `compiler` | `target` → the one question, below. `toolchain_unreachable` → [`container-toolchain.md`](container-toolchain.md) — before the ISA, never beside it. `compdb_regen` → [`compdb-container.md`](compdb-container.md). `compdb` → no database: Step 2; the no is [`compdb.md`](compdb.md)'s last section. the rest → [python.md](python.md) |
+| `init_needs_user` | `.error.question`: `target` (several ISAs), `toolchain_unreachable`, `compdb_regen`, `compdb`, or `python_run`, `python_cythonize`, `python_include`, `cython`, `python_interpreter`, `python_version`, `compiler`, `clock` | `target` → the one question, below. `clock` → the clock question, below. `toolchain_unreachable` → [`container-toolchain.md`](container-toolchain.md) — before the ISA, never beside it. `compdb_regen` → [`compdb-container.md`](compdb-container.md). `compdb` → no database: Step 2; the no is [`compdb.md`](compdb.md)'s last section. the rest → [python.md](python.md) |
 | `init_unsupported` | not an ISA LOCI predicts for; never retried automatically | relay `.error.message` **plus `.error.detail`**, then **stop**. [`recovery.md`](recovery.md) has the caveat to pass on |
 | `init_failed` + `.error.transient` | a temporary state of the tree — unbuilt checkout, broken build, database gone or for another image | **read [`recovery.md`](recovery.md)'s `init_failed` shapes first, top-down in the order given** — the first is a dead end that repeats every session. Otherwise relay `.error.message` (it names the fix) and stop: no recipe was written, the user runs `/loci:init` again once the tree is fixed, and you must **not loop** |
 | `auth_required` | not signed in | `bootstrap.md`'s sign-in line |
@@ -199,11 +198,20 @@ Single candidate and no refusal? Init has already written the recipe with
 `confirmed_by_user: false`. Do not skip the confirmation or add a second question for it —
 Step 4's confirm *is* your one question.
 
+**The clock question** — a fact only the user knows, so it re-opens nothing. One
+question-tool call, header `Clock`, built only from `.error.target`, `.error.core` and
+`.error.trained_hz` (in MHz): "The <target> target is measured on the <core> model,
+trained at <trained> MHz. What clock does your board run at?" Options: **<trained> MHz,
+same as the model** (Recommended) → `--clock=trained`; **Different clock** ("choose Other
+and type it with its unit, e.g. 168 MHz"). A typed answer → `--clock=<as typed>`; that
+option picked with no value → ask once more, same header, for the value alone.
+
 ### Headless runs: never ask
 
 With no user to answer — a pipeline, CI, print mode, a hook — **do not attempt
 the question tool.** On `init_needs_user`, print the candidates with their evidence and
-the exact line the pipeline's author needs (`loci init --target=<isa>`), then stop; the
+the exact line the pipeline's author needs (`loci init --target=<isa>`, or
+`--clock=<value>` for the clock), then stop; the
 outcome is recorded and the next interactive session asks. Do **not** pick a target
 yourself: an unattended guess measures the wrong image for as long
 as the recipe lives.
@@ -228,7 +236,8 @@ lists. A caveat goes **under** that line, never folded into it.
 from `.data.recipe_summary`. What survives: **target**, **compiler**, **build system +
 compile-database kind**, the **artifact** where the report has one (cargo: the linked
 program, once built), every **`toolchain:` and `mount:`**
-line ([`container-toolchain.md`](container-toolchain.md)), `.data.validated`,
+line ([`container-toolchain.md`](container-toolchain.md)), the clock as `.data.frequency`
+gives it (never inferred; timing and energy scale with it, cycle counts are not reported), `.data.validated`,
 `.data.confirmed_by_user`, and — the part a trim always drops — **every line of
 `.data.notes`, every line of `.data.warnings`, and every `!` line in the report**. Those
 say a recipe it could not vouch for was replaced, that nobody confirmed this one, or
