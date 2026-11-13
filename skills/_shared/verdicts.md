@@ -19,24 +19,24 @@ indirect calls and unknown callees are measured on every run whether or not
 anyone asked; the count is a fact and belongs in the Note, and where no entry
 covers it the word comes from your assessment like any other.
 
-**On a `none` envelope the column is yours** — see [No contract: the agent fills
-`STATUS`](#no-contract) below. Nothing above changes for a repo that has a
-contract, and the prohibition on inventing a band is not lifted by either
-route.
+**Where no bound covers a row, the column is yours** — see [No bound behind a
+row: the agent fills `STATUS`](#no-contract) below; the prohibition on inventing
+a band is not lifted there.
 
 | Icon | `STATUS` | Means |
 |:--:|---|---|
 | ✅ | `PASS` | Every compared bound holds. |
 | 🔶 | `CAUTION` | Worth a look, not blocking: tight against a bound, a regression inside what an entry allows, or a benign hazard. |
 | ❌ | `FAIL` | A bound is breached. |
-| — | *(nothing computed)* | No bound behind the row, or a comparison that could not be made. An em dash, never a word. |
+| — | *(nothing to judge)* | The run gave you nothing to judge the row on (**As reported**), or a comparison that could not be made. An em dash, never a word; a row no entry covers carries your composed word instead. |
 
 **Those four are the whole column.** `STATUS` takes `PASS`, `CAUTION`, `FAIL` or
 `—` and nothing else — not `not seen`, not `unknown`, not `n/a`, not a phrase
 describing why you could not fill it. A reader scans that column for one of four
 shapes; a fifth one is unreadable to them and unparseable to every surface that
-renders it. **If you do not have the tool's word, the cell is `—` and the Note says
-why** — and before you write that em dash, go and get the word: a measured run's
+renders it. **If a bound covers the row and you lack the tool's word,
+the cell is `—` and the Note says why** — and before you write that em dash, go
+and get the word: a measured run's
 verdict is on disk, and the house rules' **Output: the JSON envelope** says how to
 read it back for free.
 
@@ -49,45 +49,54 @@ two checkpoints, a minimum the change did not cause is a Note only.
 
 **There is no fourth source, and you supply no band.** A percentage, a delta or
 an absolute figure reaches none of these words by its size, however large it is:
-on a contracted run with no entry behind it its `STATUS` is `—`, and on an
-uncontracted one the word comes from your assessment of the row, which is a
-reading you can name a block for — never a threshold you chose. Which numbers a skill
+with no entry behind it, on either envelope, the word comes from your
+assessment of the row, which is a reading you can name a block for — never a
+threshold you chose. Which numbers a skill
 may still state is the house rules' **A measurement inherits a verdict from a bound,
-never from a band**. Prose copies are how the old
-bands drifted from each other.
+never from a band**.
 
 <a id="no-contract"></a>
 
-### No contract: the agent fills `STATUS`
+### No bound behind a row: the agent fills `STATUS`
 
-`data.contract` is `none` — no `.loci/contract.yaml`, so no entry judged
-anything and the verb assembled no rows. The column is still drawn, and your
-assessment is what fills it:
+A row no enabled entry covers has no bound to inherit a word from — every row
+on a `none` envelope (no `.loci/contract.yaml`, so no entry judged anything and
+the verb assembled no rows), and on a `project` one every row whose request,
+judgement or stub carries `entry_key: null`. The column is still drawn, and your
+assessment fills it:
 
-| `AGENT ASSESSMENT` | `STATUS` on a `none` envelope |
+| `AGENT ASSESSMENT` | `STATUS` with no bound behind the row |
 |---|:--:|
 | **Needs attention** | `CAUTION` |
 | **Looks good** | `PASS` |
 | **As reported** | `—` |
 
 **As reported keeps the em dash**, because that is the one assessment that
-concluded nothing, and `—` is what says so. It should be **rare** here: this is
-the route where your reading is the only word the reader gets, so a row you looked
-at and raised nothing about is **Looks good**, not a shrug. A `—` on an
-uncontracted run says the run gave you nothing to judge the row on — and since an
-`INCOMPLETE` row is never drawn, the row leaves the table for the coverage count.
-Composition is then the identity —
+concluded nothing, and `—` is what says so. It should be **rare**: your reading
+is the only word the reader gets on such a row, so one you looked at and raised
+nothing about is **Looks good**, not a shrug. A `—` says the run gave you
+nothing to judge the row on — and since an `INCOMPLETE` row is never drawn, the
+row leaves the table for the coverage count. Composition is then the identity —
 the table below already maps `—` + Needs attention to `CAUTION`, `—` + Looks good
 to `PASS`, and `—` + As reported to `INCOMPLETE` — so a run's verdict is the same
 word either way. What changes is only where the reader finds it.
 
-**Say it under the table, on every such run**, immediately after the rows:
+**Say it under the table, on every run that has such a row**, immediately after
+the rows. On a `none` envelope:
 
 ```
 No contract in this repo — every STATUS above is composed from the agent
 assessment beside it, not from a bound. `/loci:contract` records the limits this
 project actually has — a stack ceiling, a timing or energy budget, a ROM or RAM
 region — and the next run judges these same figures against them.
+```
+
+On a `project` envelope, naming what the contract leaves uncovered:
+
+```
+Not under contract — <fn>[, <signal> of <fn>]: no entry bounds these rows, so
+their STATUS is composed from the agent assessment beside it, not from a bound.
+`/loci:contract` adds one.
 ```
 
 **No marker in the cell.** A `CAUTION` reached this way reads as a `CAUTION`; the
@@ -98,7 +107,7 @@ it.
 
 **The wire does not move.** `loci stats record` still refuses `pass`, `caution`
 and `fail` from you by name: your row assessments go to `--agent-judged` in their
-wire spelling and the run's to `--agent-verdict`, exactly as on a contracted run.
+wire spelling and the run's to `--agent-verdict`, on every envelope.
 Branch history keeps telling a checked run from an argued one by `run["contract"]`,
 which is the field that carries that distinction — not by an emptied column.
 
@@ -142,9 +151,9 @@ no computed status; on a row that computed, a flag moves only `PASS → CAUTION`
 can never talk a `FAIL` down. `contract.compose_row` is the table, so you compose no row by hand —
 but the reader sees both halves, and which one moved the run.
 
-**A row with nothing computed and nothing raised is a `PASS`.** What carries the difference is not a weaker word: it is `run["contract"]`,
-which says whether a bound was behind the `STATUS` cell, and the coverage count
-below.
+**A row with nothing computed and nothing raised is a `PASS`.** What carries the difference is not a weaker word: it is `run["contract"]`
+and the row's key — a `<signal>:<fn>` key with no `entry_key` says no bound stood
+behind the cell — and the coverage count below.
 
 ## The run verdict
 
@@ -189,7 +198,7 @@ stated once, there.
   contract bound or a linker map region supplied the denominator. A run with no
   bound behind any row — a `none` envelope, or a contracted one whose entries all
   went unmeasured — always takes the cause: it is the whole of what the word rests
-  on, whether the column reads `—` or carries your composed word.
+  on.
 - Bolding is each skill's own. The string passed to `loci stats record
   --verdict` is always unbolded, and your assessments go to `--agent-judged` /
   `--agent-verdict`, never to `--verdict`.
@@ -312,13 +321,12 @@ every label.
 told apart by their notes, because a budget and a regression do not read alike —
 *186 ns of the 200 ns ceiling* against *+14.1% vs 163 ns*. A column reading
 `budget` on eight rows out of nine to carry one distinction is width spent badly.
-What this costs is the ability to scan for "show me the regressions"; that was
-judged the right trade.
 
 ### The rules for each column
 
-- **`STATUS` is the CLI's word, your composed word on a `none` envelope, or an
-  em dash.** Never a blank, and never a word you reached by picking a threshold.
+- **`STATUS` is the CLI's word where a bound covers the row, your composed word
+  where none does, or an em dash for As reported.** Never a blank, and never a
+  word you reached by picking a threshold.
 - **`AGENT ASSESSMENT` is the display word.** Needs attention, Looks good, As
   reported — never the wire spelling and never a glyph.
 - **`NOTE` always carries the figure its `STATUS` is about.** Not only on a
@@ -336,7 +344,7 @@ judged the right trade.
   crossed, in words and not only as a percentage over 100 — *1,600 B of a 2,048 B
   bound* against *2,200 B, past the 2,048 B bound*. One is a warning, the other is
   a breach the project chose not to block on, and a reader acts differently on
-  each.
+  each. A word no bound stands behind says so too — *no entry bounds energy*.
 - **An `INCOMPLETE` row is never drawn.** It becomes the coverage count beside
   the run verdict: most entries are untouched by any one edit, so drawn they make
   the table an inventory. A run where **no** row reached a word draws no rows:
@@ -374,11 +382,27 @@ trigger decides rows no entry covers, and never suppresses one an entry does. A
 requirement that was checked and met is the answer the reader asked for. **Without
 one, one row per (signal, function) you reasoned about**, which is the same rule
 arriving at a simpler answer: with no entries there are no two requirements on a
-signal, so there is nothing that could have been merged. On a `none` envelope each row's
-`STATUS` is the word your assessment maps to under [No contract: the agent fills
-`STATUS`](#no-contract), with that section's caption under the rows.
+signal, so there is nothing that could have been merged. A row no entry covers, on
+either envelope, takes the `STATUS` your assessment maps to under [No bound behind
+a row](#no-contract), with that section's caption under the rows.
 Never fall back to a stacked `ENTRY: … / FUNCTION: …` field list — a reader
 compares rows by scanning a column, and a list of fields cannot be scanned.
+
+<a id="uncovered"></a>
+
+### A function the contract does not cover: same table, named in the caption
+
+On a `project` envelope, a function this run measured that **no enabled entry
+covers** — every request, judgement and stub for it has `entry_key: null`, or it
+has none; an entry with no `function` covers every function it fans out to —
+draws its rows in the **same** table, in catalogue order, each `STATUS` your
+composed word. The `Not under contract — …` caption of [No bound behind a
+row](#no-contract) names it, as it names `<signal> of <fn>` for a stray row on a
+covered function. Its rows compose, count and record as the others — one
+`Verdict:` line spans every row — and a skill drawing one table per function
+prints the caption once, under the last. Never a second table: the Note tells a
+judged row, which quotes its requirement, from a composed one, which says what
+no entry bounds. On a `none` envelope the no-contract caption is the whole of it.
 
 ### An entry nothing measured: three states, not one
 
@@ -402,12 +426,6 @@ copies, so a stale one ships as behaviour. Changing a rule therefore means
 changing every example of it in the same edit — and an example that disagrees
 with the prose beside it is a defect in the example until someone decides
 otherwise, never a licence to follow it.
-
-This is written down because the corpus has already failed it twice in one week:
-the 15 September composition change reached nine files of rule text and six of
-examples, and three skills kept printing an em dash beside **Looks good** on runs
-their own verdict lines called uncontracted; and a bounded recursion cycle kept
-its amber in a worked example for a week after D3 decided it carries no status.
 
 There is no separate per-row vocabulary and no `Basis` column. `WARNING` is not
 a LOCI status. A `STATUS` may carry a parenthetical qualifier **in the report
@@ -452,23 +470,3 @@ which escalation the parent's verdict rests on; where the child changed nothing,
 the parent stays silent about it. Naming every child on every run is noise, and
 it makes the one that decided the answer indistinguishable from the ones that
 did not.
-
----
-
-**Why the wire keeps two vocabularies.** One field for both claims either inflates
-an argument into a fact or deflates a fact into an argument. `FAIL` says a
-requirement the user wrote was breached; `agent_flagged` says a case the reader
-can accept or reject on its merits. Bounds are what buy enforcement — which is
-why the reader gets two columns rather than one word: a single word cannot say
-whether a bound or a reading reached it.
-
-## Old patterns
-
-Kept so a reader meeting an older report or an older branch can place it. **None
-of this is current, and none of it is a rule** — the sections above are.
-
-- **One verdict word, no agent column.** Before the two-vocabulary split, a run
-  closed on a single word and there was no way to say whether a bound or a
-  reading had reached it. The two display columns, the composition matrix and the
-  run's worst-of superseded it.
-- **`severity: warn`.** The retired third severity, above.

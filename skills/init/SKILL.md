@@ -95,13 +95,13 @@ everything `loci init` decides from.
   `confirmed_by_user` are claims, not facts: a hand-written or copied-in recipe reads
   exactly like a healthy one, and a forged `confirmed_by_user: true` reaches every
   measurement and silences the warning that sent the user here. Plain `loci init` is the
-  repair — it re-vouches only for what this tree still demonstrates, and never
+  repair — it derives anew from the build files, takes nothing from the file, and never
   re-blesses consent. (`.data.recipe.target` absent from `.data.candidates` is a second
   reason to re-derive.) Otherwise `confirmed_by_user: false` →
   **Step 4**, else **Step 5**.
 - `.data.recipe_untrusted` present → a recipe is here that **cannot be vouched for**;
-  the value names which of `recipe_stale`, `recipe_tampered`, `recipe_invalid`,
-  `compiler_missing` it is. `recipe_stale` on a C/C++ build system means the build
+  the value starts with its code. Relay `recipe_unapproved` as it reads; take nothing
+  from that file. `recipe_stale` on a C/C++ build system means the build
   files moved: **regenerate the compile database first** (Step 2) — initializing over
   a stale one records the stale flags at full tier and clears the staleness signal for
   good. On cargo there is nothing to regenerate; re-derive; on a Python recipe

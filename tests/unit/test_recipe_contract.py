@@ -894,8 +894,9 @@ HOT_FILE_CEILINGS = {
     # 16.8 KB it gained is paid twelve times while post-edit's 24 KB saving is
     # paid once — control-flow now costs 18 KB MORE per run than before.
     "skills/control-flow/SKILL.md": 24_700,                  # 22,518 B
-    # Raised from 26_900 for AAD-8091's clock sentence; the trim is AAD-8030.
-    "skills/exec-trace/SKILL.md": 27_200,                    # 27,084 B
+    # Raised from 26_900 for AAD-8091's clock sentence, from 27_200 for AAD-8145's
+    # stated trip count and todo 143's `previous_run`; the trim is AAD-8030.
+    "skills/exec-trace/SKILL.md": 27_900,                    # 27,791 B
     # +400 B on 2026-09-11: the verdict explainer this skill prints to the user now
     # describes two columns rather than one vocabulary — four `STATUS` values and
     # three assessment words, where there were three and two. The section was trimmed
@@ -1089,7 +1090,9 @@ CEILINGED_FILES = ("skills/loci-post-edit/SKILL.md",
 # Raised from 557_940 for AAD-8084's python_version question; the trim is AAD-8030.
 # Raised from 558_169 for AAD-8091's clock clause and init's clock question; the trim is AAD-8030.
 # Raised from 561_600 for help's `loci frequency models` sentence; the trim is AAD-8030.
-SHIPPED_PROSE_CEILING = 561_800
+# Raised from 561_800 for the `previous_run` path label (todo 143); the trim is AAD-8030.
+# Raised from 562_000 for AAD-8145's `--trips` prose; the trim is AAD-8030.
+SHIPPED_PROSE_CEILING = 563_400
 
 
 def _lf_bytes(p: Path) -> int:

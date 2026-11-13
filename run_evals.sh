@@ -82,6 +82,13 @@
 # manifest, `match-rate.json` — how often the agent confirmed the top-ranked
 # hot-path candidate.
 #
+# `LOCI_EVAL_RESULTS_DIR=<dir>` puts the `<timestamp>/` directories under <dir>
+# in place of this checkout's `eval-results/`. The unit suite sets it: two of
+# its test files start this script for real, and 36 run directories per suite
+# used to be left in `eval-results/` beside the reports people cite — ignored
+# by git, never removed, 7,981 directories and 8.2 GB on the box releases are
+# made from (AAD-8230). A run started by hand is unchanged.
+#
 # ── Three decisions this script makes, and why (2026-09-07) ─────────────────
 #
 # **A plan-mode eval cannot edit — and is FAILED if it does anyway.** Plan mode
@@ -373,8 +380,40 @@ fi
 # MCP config — written to a temp file so claude -p can connect
 # ---------------------------------------------------------------------------
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-RESULTS_DIR="$SCRIPT_DIR/eval-results/$TIMESTAMP"
-mkdir -p "$RESULTS_DIR"
+# Where this run's directory goes: the checkout's `eval-results/`, unless
+# `LOCI_EVAL_RESULTS_DIR` names another root (see the header; a blank value is
+# no value). The named root is made ABSOLUTE, because what follows hands paths
+# under it to processes started in other directories — the host runs from the
+# eval's cwd with `--mcp-config` and the system-prompt file under it, and the
+# staged fixtures run `loci init` from inside themselves; a relative root left
+# every one of those pointing nowhere.
+#   * Under Git Bash / Cygwin, `cygpath -am` gives the one spelling every
+#     reader there opens: `C:/…`, from a backslash path, a relative one, or an
+#     MSYS `/tmp/…` (which no native tool can open as written). NOT
+#     `cd && pwd`, which goes the other way and re-spells a directory below
+#     %TEMP% as `/tmp/…`.
+#   * Elsewhere a relative root is anchored at the current directory and
+#     nothing else is touched — a backslash is a legal character in a name.
+# The default is left exactly as it was.
+RESULTS_ROOT="$SCRIPT_DIR/eval-results"
+_results_named="${LOCI_EVAL_RESULTS_DIR:-}"
+if [[ -n "${_results_named//[[:space:]]/}" ]]; then
+  if command -v cygpath >/dev/null 2>&1; then
+    RESULTS_ROOT=$(cygpath -am "$_results_named" 2>/dev/null) || RESULTS_ROOT="$_results_named"
+  else
+    case "$_results_named" in
+      /*) RESULTS_ROOT="$_results_named" ;;
+      *)  RESULTS_ROOT="$PWD/$_results_named" ;;
+    esac
+  fi
+fi
+RESULTS_DIR="${RESULTS_ROOT%/}/$TIMESTAMP"
+if ! _mkdir_said=$(mkdir -p "$RESULTS_DIR" 2>&1); then
+  echo "ERROR: cannot create the results directory: $RESULTS_DIR"
+  [[ -z "$_mkdir_said" ]] || echo "  $_mkdir_said"
+  [[ -z "$_results_named" ]] || echo "  LOCI_EVAL_RESULTS_DIR is set to: $_results_named"
+  exit 1
+fi
 
 MCP_CONFIG=""
 # The loci plugin ships its MCP server config in .mcp.json at the plugin root.

@@ -27,6 +27,7 @@ this suite reads.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -70,9 +71,23 @@ def _to_bash_path(p: Path) -> str:
     return f"/{m.group(1).lower()}/{m.group(2)}" if m else s
 
 
-def _governed(root: Path) -> Path:
-    (root / ".loci").mkdir(parents=True, exist_ok=True)
-    (root / ".loci" / "build.yaml").write_text("version: 1\n", encoding="utf-8")
+def _governed(root: Path, home: Path) -> Path:
+    """A recipe `loci init` approved on this machine: since loci-tools 0.2.132 a
+    recipe without its escrow governs nothing (a committed one arrives that way)."""
+    recipe = root / ".loci" / "build.yaml"
+    recipe.parent.mkdir(parents=True, exist_ok=True)
+    recipe.write_bytes(b"version: 1\n")
+    state = home / ".loci" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    script = '. "$1/lib/setup-steps.sh" >/dev/null 2>&1; hash_cwd "$2"'
+    key = subprocess.run([_find_bash(), "-c", script, "bash", _to_bash_path(PLUGIN_ROOT),
+                          _to_bash_path(root)], capture_output=True, text=True,
+                         timeout=30).stdout.strip()
+    assert key, f"hash_cwd produced no key for {root}"
+    (state / f"recipe-escrow-{key}.json").write_text(json.dumps({
+        "recipe_hash": "sha256:" + hashlib.sha256(recipe.read_bytes()).hexdigest(),
+        "confirmed_by_user": True, "initialized_at": None, "recipe": recipe.as_posix(),
+    }), encoding="utf-8")
     return root
 
 
@@ -127,7 +142,7 @@ PROMPT = {"prompt": "add a bounds check before the table lookup in parse_frame"}
 
 
 def test_a_plan_prompt_in_a_governed_project_carries_the_reminder(tmp_path):
-    project = _governed(tmp_path / "proj")
+    project = _governed(tmp_path / "proj", tmp_path / "home")
     out = _run(project, tmp_path / "home", _plan(PROMPT))
     ctx = _context(out)
     lines = ctx.split("\n")
@@ -140,7 +155,7 @@ def test_a_plan_prompt_in_a_governed_project_carries_the_reminder(tmp_path):
 
 
 def test_the_same_words_outside_plan_mode_get_the_turn_line_alone(tmp_path):
-    project = _governed(tmp_path / "proj")
+    project = _governed(tmp_path / "proj", tmp_path / "home")
     out = _run(project, tmp_path / "home", PROMPT)
     ctx = _context(out)
     assert ctx.startswith("[loci] turn=") and "\n" not in ctx, ctx

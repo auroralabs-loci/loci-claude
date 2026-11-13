@@ -38,11 +38,10 @@ for the matrix and the display words. A `STATUS` of `PASS` / `CAUTION` / `FAIL`
 needs an enabled contract entry bounding `hot_path_time`, `worst_path_time` or
 `energy`. Everything else, a movement since the last run included, takes its word
 from your assessment: no threshold LOCI chose stands behind that figure, so you
-argue from it instead of comparing against it. On a `none` envelope that
-assessment fills `STATUS` as well — the mapping and the caption are in
-`verdicts.md`'s [No contract: the agent fills
-`STATUS`](../_shared/verdicts.md#no-contract); on a contracted run a signal no
-entry covers keeps its `—`.
+argue from it instead of comparing against it. That assessment fills `STATUS`
+as well — mapping and captions in
+`verdicts.md`'s [No bound behind a row: the agent fills
+`STATUS`](../_shared/verdicts.md#no-contract).
 
 **Tool boundary (reminder):** `loci elf` only — never `objdump`, `readelf`,
 `addr2line`, or `nm`. Nothing below calls `loci elf` directly either; the verbs do.
@@ -160,16 +159,26 @@ branch-probability heuristics; each is `{id, request, fn, rank, scope, blocks, l
 why}`, and `lines` maps each block to a source line range. Read them against the
 source: the proposal (`data.proposed`) stands unless the source says the ranked path
 skips the work the function exists to do, or an error branch is the common case.
-Override with `--select <id>` on `measure`, one per request. `scope: iteration`
+Override with `--select <id>` on `measure`, one per request. A run with a Before may keep
+the path timed last run instead (`chosen_by: previous_run`), which is not an override.
+`scope: iteration`
 means the figure is per iteration of a non-terminating loop — never compare it with
 a per-call one. `worst_path_time` needs no selection; every block is timed. A
 fabricated one needs no attention at all — it is dropped at the report.
+
+**A stated trip count** ("assume the loop runs 5 times", "n=5"): find the loop in
+`data.loops[<fn>]` by its `source` or the user's words and pass
+`--trips <fn>:L<k>=N` on `measure` (`=5,50,500` prices several counts in one metered
+run; the extra ones come back as `what_if`, unjudged). The figure reads
+`N iterations (assumed)`, never `≥`; a Before without that loop leaves the row
+absolutes only (`baseline_reason: trips_assumed_after_only`).
 
 ## Step 3: `loci analyse measure` — metered
 
 ```
 loci analyse measure --prepared "<manifest-id>" --project-root "<project_root>" \
     --energy --context-file "<project-context>" --caller exec-trace; code=$?
+    # only on a stated count (Step 2):  --trips "<fn>:L<k>=N"
 ```
 
 **`--energy` is this skill's flag, like the named `--signals`.** With a contract in place
@@ -218,11 +227,10 @@ first recorded measurement of that signal for that function) and `no_percentage`
 (the last recorded value was 0). The figure is measured and in the envelope; what
 is missing is something to judge it against. Each arrives in `data.unjudged[]`
 **and** as a `data.agent_judged[]` stub carrying `unjudged_reason`, keyed
-`<signal>:<fn>` for a fabricated request, since it has no contract entry to be
-keyed by. Judge each on what you can read in the assembly and the source, and
-record your word against that key: it is the only way your reading of an
-uncomparable figure outlives the turn. The row's `STATUS` stays `—`, so what your
-word composes to **is** the row's verdict — **Looks good** makes it `PASS`,
+`<signal>:<fn>` for a fabricated request. Judge each on what you can read in the
+assembly and the source, and record your word against that key, so your reading
+of an uncomparable figure outlives the turn. No bound computed the row's `STATUS`,
+so what your word composes to **is** the row's verdict and fills the cell — **Looks good** makes it `PASS`,
 **Needs attention** makes it `CAUTION`, and only **As reported** leaves it
 `INCOMPLETE`, undrawn and counted.
 
@@ -282,10 +290,11 @@ of the eleven, this skill only ever reaches the two Performance names and
 reached, from `data.judgements`, `data.paths` and `data.unjudged`, never from
 `data.rows`, whose (function, gate) merge the spec removes. On a `none` envelope
 the verb assembles nothing at all and the table is still drawn.
-`STATUS` is the word the row carries, `—` where nothing computed it, and `AGENT ASSESSMENT` is your
+`STATUS` is the bound's word where one covers the row, else your composed word, and `AGENT ASSESSMENT` is your
 display word for that row (**Needs attention** / **Looks good** / **As
 reported**), never a wire spelling. A row that reached neither is not drawn: it
-becomes the `(<N> of <M> judged)` count on the verdict line. Add one line per function from `data.paths`:
+becomes the `(<N> of <M> judged)` count on the verdict line. Rows no entry
+covers: [the caption](../_shared/verdicts.md#uncovered). Add one line per function from `data.paths`:
 hot path `ns` and `energy_nws` on the confirmed candidate, and worst path `ns_worst`
 **where an entry bounds `worst_path_time` or the user asked for it**; `ties` > 0
 means that many other paths cost the same — say so. Call them **hot path time** and **worst path time**, LOCI's signal vocabulary. The
@@ -326,8 +335,12 @@ names the block that moved them.
 | ENTRY                    | FUNCTION    | BEFORE   | AFTER    | STATUS  | AGENT ASSESSMENT | NOTE |
 |--------------------------|-------------|----------|----------|:-------:|:----------------:|------|
 | Performance (Worst-Path) | aes_encrypt | 172 ns   | 187 ns   | CAUTION | As reported      | 187 ns against the bound "aes_encrypt must answer within 200 ns" |
-| Performance (Hot-Path)   | aes_encrypt | 141 ns   | ≥148 ns  |    —    | Needs attention  | floor only — key-schedule loop (aes.c:88-94) has no derived trip count |
+| Performance (Hot-Path)   | aes_encrypt | 141 ns   | ≥148 ns  | CAUTION | Needs attention  | floor only — key-schedule loop (aes.c:88-94) has no derived trip count; no entry bounds it |
 | Energy                   | aes_encrypt | 310 nWs  | 340 nWs  |  PASS   | Looks good       | 340 nWs against the 500 nWs bound |
+
+Not under contract — hot_path_time of aes_encrypt: no entry bounds these rows, so
+their STATUS is composed from the agent assessment beside it, not from a bound.
+`/loci:contract` adds one.
 
 Verdict: **CAUTION** — worst path of `aes_encrypt` 187 ns against the 200 ns
 bound, and the hot path is a floor: the key-schedule loop at aes.c:88-94 has no
@@ -335,8 +348,8 @@ derived trip count
 ```
 
 The `≥` row is why this run closes on `CAUTION` however much headroom the bounds
-had, and why it records `--agent-verdict flagged`: no contract entry keys that
-reading, so only your assessment carries it.
+had, and why it records `--agent-verdict flagged`: only your assessment carries
+that reading.
 
 **Name the path by its source range, never by the candidate id.** `p1`/`p2` are the
 manifest's counters for `--select`, and the reader cannot resolve one — the shared
@@ -419,8 +432,8 @@ rather than inferring it. The shared contract's
 **The verdict is the worst row verdict, and every row is composed.** Where
 `data.contract` is `project` a row's `STATUS` is `data.verdict`'s vocabulary
 uppercased (`pass → PASS · caution → CAUTION · fail → FAIL`); where it is `none`,
-or `data.verdict` is `null`, your assessment alone carries every row and fills its
-`STATUS` by the mapping in
+or `data.verdict` is `null`, your assessment alone carries every row — as it
+carries any row no entry covers — and fills its `STATUS` by the mapping in
 [verdicts.md](../_shared/verdicts.md#no-contract). Compose each row, take the worst, and leave rows that reached
 no word out of the worst-of — they are the count, not a verdict.
 
@@ -434,7 +447,7 @@ Verdict: **PASS** — 4 functions measured, worst path 1.24 µs; no contract cov
 
 The middle line is the shape a historical regression takes now: the delta is real
 and reported, and what turned it into `CAUTION` is your **Needs attention** on a
-row with an empty `STATUS`, naming the block responsible — not a threshold LOCI
+row no bound covers, naming the block responsible — not a threshold LOCI
 chose. The last is a `PASS` no bound stands behind, which is why the clause
 naming the gap is not optional.
 

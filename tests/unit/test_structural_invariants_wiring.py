@@ -258,6 +258,11 @@ def test_the_contract_decides_a_row_it_covers():
     assert "The two verdict columns are the separation." in rows, (
         "nothing says what separates a row a bound decided from a row you did, "
         "so the split the bullet above forbids has no replacement")
+    # AAD-7874 (returned): not even a split by coverage — a function no entry
+    # names shares its function's table, its STATUS composed, and the caption names it.
+    assert "There is no split by coverage either" in rows
+    assert "A function the contract does not cover" in rows, (
+        "the bullet no longer points at the shared rule that names an uncovered function")
     assert "`ENTRY`, `FUNCTION`, `STATUS`, `AGENT ASSESSMENT`, `NOTE`" in rows, (
         "the five columns every judging skill's table carries are no longer "
         "named in the one place that fixes their order")
@@ -375,7 +380,7 @@ def test_control_flow_judges_the_two_signals_it_sees_and_routes_the_two_it_canno
             f"control-flow does not route {signal} out of Step 3, so a hazard "
             f"visible in the graph stops at the chat boundary")
     assert "stack-depth" in route, "control-flow does not name what does measure them"
-    # And neither gets a row: a `—` beside either reads as measured and clean,
+    # And neither gets a row: a word beside either reads as measured and clean,
     # which is the one claim a per-function graph cannot support.
     assert "`unbounded_recursion` and `unknown_callees` get no row" in body
     assert "A hazard is provable at any scope; a zero is not." in body

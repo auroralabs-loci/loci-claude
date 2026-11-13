@@ -1015,9 +1015,34 @@ loci_host_payload_adapt() {
 # prompt's take happens renames a NEW record into place after the claim, and
 # the done never touches it: carried one prompt late, never lost. (Reading in
 # place and deleting by name, as the first version did, lost a record
-# replaced between the read and the delete.) A record a later Stop would have
-# withdrawn (a draft accepted in between) is taken with the rest, which is
-# the one-turn lag the prompt itself has.
+# replaced between the read and the delete.)
+#
+# A MESSAGE ABOUT A FILE STANDS ONLY WHILE THE FILE DOES (AAD-8202). A record
+# is written at the end of one turn and said at the start of the next, and the
+# user acts in between: told "contract draft not applied … run `! loci contract
+# accept`", they ran it — outside any agent turn, so no hook saw it — and the
+# next prompt replayed the recorded notice over a contract that had just been
+# applied. Under Claude Code the same message is shown at the Stop itself,
+# while it is true; here it is shown later, so it has to be true later. A
+# writer whose message describes one file therefore names it
+# (`loci_host_carry_add`'s fourth argument), the record keeps the path and a
+# checksum of the file on a second header line, and the take WITHDRAWS — drops,
+# unsaid — a record whose file is gone (the draft was accepted or cleared) or
+# is no longer the file the message described (re-drafted by hand or by another
+# session: the count in the notice would be the old one). What a withdrawal
+# costs is one prompt, and only for the changed draft: still pending, it is
+# counted again by the Stop that ends the turn now starting and said at the
+# prompt after that. A record with no such line — every other writer's, whose
+# message is about the turn that ended and stays true — is said as it always
+# was.
+#
+# ONE FILE, AND WHAT THAT LEAVES. The draft notice also says whether the draft
+# can still be applied, which depends on `.loci/contract.yaml` as well; that
+# file is not named (the hook is told the draft's path by the CLI and holds no
+# opinion of its own about any other). So a contract edited or restored BY HAND
+# between the two turns leaves a notice whose advice is a turn old — "run
+# accept" over a draft `accept` will now refuse, explaining why, or the
+# reverse. Nothing the user was just told to do produces it.
 #
 # THE TEXT IS FENCED. Under Claude Code these messages go to `systemMessage`,
 # which no model reads; under Copilot they become model context, and what they
@@ -1030,6 +1055,73 @@ _LOCI_HOST_CARRY_PREFACE='[loci] Between the markers below is what LOCI reported
 _LOCI_HOST_CARRY_OPEN='--- LOCI notice ---'
 _LOCI_HOST_CARRY_CLOSE='--- end of LOCI notice ---'
 LOCI_HOST_CARRY=""
+# What opens a record's second header line, `@file <sum> <path>`: the file the
+# message is about and what it held when the message was written (`-` where no
+# checksum could be taken: the file's presence is then the whole test). The
+# path is absolute, since the writer and the take run in different directories.
+# A record written before the line existed has a message there instead, and a
+# line is the header only in that whole shape (`_loci_host_carry_is_about`), so
+# it reads as it did; no message of LOCI's opens with the shape itself.
+_LOCI_HOST_CARRY_ABOUT='@file '
+
+# Is `$1` a path from the root — POSIX, or a drive's (`C:/…`, as the CLI
+# spells one on Windows)?
+_loci_host_carry_abs() {
+    case "$1" in
+        /*|[A-Za-z]:[\\/]*) return 0 ;;
+    esac
+    return 1
+}
+
+# Is `$1` — a second line, less the marker — a header: `<sum> <path>` with the
+# sum `-` or `<digits>-<digits>` and the path absolute? Anything else is the
+# first line of a message that happens to open with the marker.
+_loci_host_carry_is_about() {
+    local LC_ALL=C sum="${1%% *}"
+    case "$sum" in
+        -) ;;
+        *[!0-9-]*|-*|*-|*-*-*) return 1 ;;
+        *-*) ;;
+        *) return 1 ;;
+    esac
+    _loci_host_carry_abs "${1#* }"
+}
+
+# `<crc>-<size>` of a file, on stdout — `-` when `cksum` is absent or cannot
+# read it. One spawn, and only ever beside a record that names a file. The
+# braces put the redirect of stdin inside the silenced group: a file that
+# vanished after the caller's test is the shell's error, not `cksum`'s.
+_loci_host_carry_sum() {
+    local LC_ALL=C s
+    s=$({ cksum < "$1"; } 2>/dev/null) || s=""
+    s="${s%% *}-${s#* }"
+    case "$s" in
+        [0-9]*-[0-9]*) case "$s" in *[!0-9-]*) s=- ;; esac ;;
+        *) s=- ;;
+    esac
+    printf '%s' "$s"
+}
+
+# Does a record's `<sum> <path>` still describe the file? Non-zero, with the
+# reason in `_LOCI_HOST_CARRY_WHY`, when the file is gone or its content is not
+# what the record's writer saw. A checksum that cannot be taken NOW decides
+# nothing: the record stands, as one without a checksum does.
+_LOCI_HOST_CARRY_WHY=""
+_loci_host_carry_stands() {
+    local sum="${1%% *}" file="${1#* }" now
+    _LOCI_HOST_CARRY_WHY=""
+    if [ ! -f "$file" ]; then
+        _LOCI_HOST_CARRY_WHY="$file is gone"
+        return 1
+    fi
+    [ "$sum" != - ] || return 0
+    now=$(_loci_host_carry_sum "$file")
+    if [ "$now" != - ] && [ "$now" != "$sum" ]; then
+        _LOCI_HOST_CARRY_WHY="$file changed after the message was recorded"
+        return 1
+    fi
+    return 0
+}
 
 # The session id off a payload, into `_LOCI_HOST_SID`. Loads the payload, so a
 # caller that still needs its own loaded document calls this last.
@@ -1044,16 +1136,29 @@ _loci_host_sid_of() {
     [ -n "$_LOCI_HOST_SID" ]
 }
 
-# Public API: loci_host_carry_add <tag> <text> [<payload>]
+# Public API: loci_host_carry_add <tag> <text> [<payload>] [<file>]
 #
 # Record <text> for the session's next prompt. 0 ONLY when recorded; outside
 # Copilot, one environment test. The session is read off <payload>, else off
 # `LOCI_HOOK_PAYLOAD` (a thin hook's captured stdin), else off
 # `LOCI_HOST_PAYLOAD` (what `loci_host_adapt` last saw) — the three places a
 # Stop hook keeps the document it read.
+#
+# <file> is the one file <text> is about, when there is one: the record then
+# stands only while that file is there and unchanged, and the next prompt's
+# take withdraws it otherwise (see the header, AAD-8202). Three answers, by
+# what this process finds at <file>:
+#   * the file — named in the record;
+#   * its directory but no file — the file went between the writer's look and
+#     this call (an `accept` that landed while the Stop hook was still
+#     running), so the message is already untrue and NOTHING is recorded;
+#   * neither, or a path that is relative or not one line — this shell cannot
+#     vouch for the path at all (another shell's spelling of it), and a name
+#     the take cannot find either would withdraw a true message every time:
+#     recorded without the name, and said as before.
 loci_host_carry_add() {
     loci_host_copilot || return 1
-    local LC_ALL=C tag="$1" text="$2" payload="${3:-}" f tmp stamp
+    local LC_ALL=C tag="$1" text="$2" payload="${3:-}" file="${4:-}" f tmp stamp about=""
     case "$tag" in
         ''|*[!a-z-]*)
             loci_log WARN host "carry: tag '$tag' is not [a-z-] — not recorded"
@@ -1076,7 +1181,18 @@ loci_host_carry_add() {
     f="$_LOCI_HOST_FILE.nudge-$tag"
     tmp="$f.tmp-$$"
     stamp=$(_loci_host_mint)
-    if { printf '%s\n%s\n' "$stamp" "$text" > "$tmp" && mv -f "$tmp" "$f"; } 2>/dev/null; then
+    case "$file" in
+        *$'\n'*|*"$_LOCI_HOST_CR"*) file="" ;;
+    esac
+    if [ -n "$file" ] && _loci_host_carry_abs "$file"; then
+        if [ -f "$file" ]; then
+            about="$_LOCI_HOST_CARRY_ABOUT$(_loci_host_carry_sum "$file") $file"$'\n'
+        elif [ -d "${file%[\\/]*}" ]; then
+            loci_log INFO host "carry: $tag message not recorded — $file is gone"
+            return 1
+        fi
+    fi
+    if { printf '%s\n%s%s\n' "$stamp" "$about" "$text" > "$tmp" && mv -f "$tmp" "$f"; } 2>/dev/null; then
         loci_log INFO host "carry: $tag message recorded for session $_LOCI_HOST_SID"
         return 0
     fi
@@ -1115,7 +1231,10 @@ loci_host_carry_relay() {
 # claim keeps the record's first line, so `_loci_host_sweep` ages it as it
 # ages the record. Where the rename is refused (a file an antivirus still
 # holds), the record is read where it is and listed by its own name — the old
-# window, for that one file.
+# window, for that one file. A record that names the file it is about
+# (`@file`, its second line) is checked against that file here, at the moment
+# its text would be said, and deleted unsaid when the file is gone or changed
+# (AAD-8202): the take is the last point before the user reads it.
 #
 # Two passes over one expansion, split by an empty word: first the claims a
 # killed prompt hook left (older than any record, so said first), then the
@@ -1125,7 +1244,7 @@ loci_host_carry_relay() {
 _LOCI_HOST_CARRY_TAKEN=""
 _loci_host_carry_take() {
     LOCI_HOST_CARRY="" _LOCI_HOST_CARRY_TAKEN=""
-    local LC_ALL=C f c line first body text="" n=0 k=0 records=""
+    local LC_ALL=C f c line first body about tag text="" n=0 k=0 records=""
     for f in "$_LOCI_HOST_FILE".nudge-*.taken-* "" "$_LOCI_HOST_FILE".nudge-*; do
         if [ -z "$f" ]; then records=1; continue; fi
         [ -f "$f" ] || continue
@@ -1137,17 +1256,34 @@ _loci_host_carry_take() {
         c="${f%.taken-*}.taken-$$-$k"
         while [ -e "$c" ]; do k=$((k + 1)); c="${f%.taken-*}.taken-$$-$k"; done
         mv -f "$f" "$c" 2>/dev/null && f="$c"
-        first=1 body=""
+        first=1 body="" about=""
         while IFS= read -r line || [ -n "$line" ]; do
             line="${line%"$_LOCI_HOST_CR"}"
             if [ -n "$first" ]; then
-                first=""
                 _loci_host_is_id "$line" || { first=bad; break; }
+                first="" about=next
                 continue
+            fi
+            if [ "$about" = next ]; then
+                about=""
+                case "$line" in
+                    "$_LOCI_HOST_CARRY_ABOUT"?*' '?*)
+                        about="${line#"$_LOCI_HOST_CARRY_ABOUT"}"
+                        _loci_host_carry_is_about "$about" && continue
+                        about=""
+                        ;;
+                esac
             fi
             body="${body:+$body$'\n'}$line"
         done 2>/dev/null < "$f"
+        [ "$about" != next ] || about=""
         if [ "$first" = bad ] || [ -z "$body" ]; then
+            _loci_host_carry_unlink "$f"
+            continue
+        fi
+        if [ -n "$about" ] && ! _loci_host_carry_stands "$about"; then
+            tag="${f##*.nudge-}"
+            loci_log INFO host "carry: ${tag%%.taken-*} message withdrawn, not said — $_LOCI_HOST_CARRY_WHY"
             _loci_host_carry_unlink "$f"
             continue
         fi

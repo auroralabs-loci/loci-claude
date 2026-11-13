@@ -110,10 +110,20 @@ def _records(state: Path) -> list[Path]:
 
 
 def _record(path: Path) -> tuple[str, str]:
-    """(first line, the message after it) of one carry record."""
+    """(first line, the message after it) of one carry record. The `@file`
+    line a record may hold between the two (AAD-8202) is header, not message:
+    `_file_line` reads it."""
     text = path.read_text(encoding="utf-8")
     first, _, rest = text.partition("\n")
+    if rest.startswith("@file "):
+        rest = rest.partition("\n")[2]
     return first, rest.rstrip("\n")
+
+
+def _file_line(path: Path) -> str | None:
+    """A record's `@file <sum> <path>` line, or None when it names no file."""
+    lines = path.read_text(encoding="utf-8").split("\n")
+    return lines[1] if len(lines) > 1 and lines[1].startswith("@file ") else None
 
 
 # ── the shared writer: nested for Claude Code, both for Copilot ─────────────
@@ -697,6 +707,485 @@ def test_a_fast_fail_run_relays_a_stop_verbs_message_under_copilot(tmp_path):
     assert json.loads(proc.stdout) == {"systemMessage": msg}
     (rec,) = _records(state)
     assert _record(rec)[1] == msg
+
+
+# ── a message about a file stands only while the file does (AAD-8202) ────────
+#
+# A record is written at the end of one turn and said at the start of the next,
+# and the user acts in between. Told "contract draft not applied … run
+# `! loci contract accept`", they ran it — in their own shell, where no hook
+# runs — and the next prompt replayed the recorded notice over a contract that
+# had just been applied: three accepts in the reported session, three false
+# "not applied". A writer whose message is about one file now names it, and the
+# take drops the record unsaid when that file is gone or is no longer what the
+# message described.
+
+DRAFT_MSG = ("LOCI: contract draft not applied — 1 bound added. "
+             "Nothing is in force until you run:  ! loci contract accept")
+
+
+def _about(tmp_path: Path, body: str = "version: 1\nops:\n- op: add\n") -> Path:
+    """The file a message is about, spelled as the CLI spells a path."""
+    path = tmp_path / "proj" / ".loci" / "build" / "contract.draft.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body.encode("utf-8"))
+    return path
+
+
+def _add_about(env: dict, about: Path | str, *, tag: str = "draft",
+               msg: str = DRAFT_MSG) -> subprocess.CompletedProcess:
+    spelled = about.as_posix() if isinstance(about, Path) else about
+    return _bash(CARRY_ADD, env=env, args=[tag, msg, _payload("Stop"), spelled])
+
+
+def test_a_record_names_the_file_its_message_is_about(tmp_path):
+    """Second line, between the age stamp and the message: the path, and a
+    checksum of what the file held when the message was written."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    proc = _add_about(env, about)
+    assert proc.stdout.strip() == "rc=0", proc.stderr
+    (rec,) = _records(state)
+    stamp, text = _record(rec)
+    assert _ID_RE.match(stamp), stamp
+    assert text == DRAFT_MSG
+    m = re.fullmatch(r"@file ([0-9]+)-([0-9]+) (.+)", _file_line(rec) or "")
+    assert m, rec.read_text(encoding="utf-8")
+    assert int(m.group(2)) == len(about.read_bytes())
+    assert m.group(3) == about.as_posix()
+
+
+def test_a_message_about_a_file_that_is_gone_is_withdrawn_unsaid(tmp_path):
+    """The ticket: the draft was accepted between the Stop and the prompt, so
+    its file is gone — and "not applied" is no longer true. Nothing is said,
+    the record is deleted (not left to be said later), and the prompt goes out
+    as one with nothing recorded does."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    _add_about(env, about)
+    assert len(_records(state)) == 1
+    about.unlink()   # what `loci contract accept` and `draft clear` both do
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert seen["carry_set"] == "", seen["carry"]
+    assert "not applied" not in proc.stdout
+    assert _records(state) == []
+    # The turn itself is stamped as ever.
+    assert _ID_RE.match(seen["payload"]["prompt_id"])
+
+
+def test_a_message_about_a_file_that_changed_is_withdrawn_unsaid(tmp_path):
+    """Still a draft, but not the one the message counted — re-drafted by hand
+    or by another session. "1 bound added" over a draft that now holds three is
+    a wrong number said confidently; the Stop that ends this turn reports what
+    is pending then."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    _add_about(env, about)
+    # Same length, one byte different: the size alone would not tell.
+    was = about.read_bytes()
+    about.write_bytes(was.replace(b"op: add", b"op: adD"))
+    assert len(about.read_bytes()) == len(was) and about.read_bytes() != was
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert seen["carry_set"] == "", seen["carry"]
+    assert _records(state) == []
+
+
+@pytest.mark.parametrize("folder", ["my project", "проект-é", "a [b] {c} $d"])
+@pytest.mark.parametrize("after", ["untouched", "gone"])
+def test_the_named_path_may_hold_anything_a_directory_name_can(tmp_path, folder, after):
+    """A space splits the header's two fields if the path is cut at the LAST
+    one; letters outside ASCII and glob characters are the other two ways a
+    path stops naming its file. Each must still be found (said) and still be
+    missed when it is gone (withdrawn)."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = tmp_path / folder / ".loci" / "build" / "contract.draft.yaml"
+    about.parent.mkdir(parents=True)
+    about.write_bytes(b"version: 1\nops:\n- op: add\n")
+    proc = _add_about(env, about)
+    assert proc.stdout.strip() == "rc=0", proc.stderr
+    (rec,) = _records(state)
+    assert (_file_line(rec) or "").endswith(" " + about.as_posix()), rec.read_text(encoding="utf-8")
+    if after == "gone":
+        about.unlink()
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert (DRAFT_MSG in seen["carry"]) is (after == "untouched"), seen["carry"]
+    assert _records(state) == []
+
+
+def test_a_message_about_an_untouched_file_is_said_and_its_header_is_not(tmp_path):
+    """The other half, and the one a too-eager fix breaks: a draft the user has
+    NOT applied is still reported at the next prompt — the message exactly, and
+    nothing of the `@file` line, which is the record's and not the user's."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    _add_about(env, about)
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    carry = seen["carry"]
+    assert f"--- LOCI notice ---\n{DRAFT_MSG}\n--- end of LOCI notice ---" in carry
+    assert "@file" not in carry and about.as_posix() not in carry
+    assert _records(state) == []
+
+
+def test_a_withdrawn_record_takes_no_other_writers_message_with_it(tmp_path):
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    manifest = "LOCI: analysis prepared but never measured for 2 function(s)."
+    _add_about(env, about)
+    _bash(CARRY_ADD, env=env, args=["manifest", manifest, _payload("Stop")])
+    about.unlink()
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    carry = seen["carry"]
+    assert carry.count("--- LOCI notice ---") == 1
+    assert f"--- LOCI notice ---\n{manifest}\n--- end of LOCI notice ---" in carry
+    assert "not applied" not in carry
+    assert _records(state) == []
+
+
+def test_a_file_the_writer_cannot_see_is_not_named(tmp_path):
+    """A path this shell cannot open — another shell's spelling of it — would
+    read as "gone" at the take and withdraw a TRUE message, for ever. So it is
+    not written into the record, and the message is said as it always was."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    proc = _add_about(env, (tmp_path / "no" / "such" / "draft.yaml").as_posix())
+    assert proc.stdout.strip() == "rc=0", proc.stderr
+    (rec,) = _records(state)
+    assert _file_line(rec) is None
+    assert _record(rec)[1] == DRAFT_MSG
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert DRAFT_MSG in seen["carry"]
+
+
+def test_a_relative_path_is_not_named(tmp_path):
+    """The writer and the take run in different directories, so a relative
+    path would be looked for somewhere else and found "gone"."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    proc = subprocess.run(
+        [_find_bash(), "-c", CARRY_ADD, "bash", "draft", DRAFT_MSG, _payload("Stop"),
+         about.name],
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin", **env}, cwd=str(about.parent),
+        capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert proc.stdout.strip() == "rc=0", proc.stderr
+    (rec,) = _records(state)
+    assert _file_line(rec) is None, rec.read_text(encoding="utf-8")
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert DRAFT_MSG in seen["carry"]
+
+
+def test_a_file_that_went_while_the_writer_ran_is_not_recorded_at_all(tmp_path):
+    """The directory is there and the file is not: it was there a moment ago,
+    when the writer counted what it holds (an `accept` landing while the Stop
+    hook was still running). The message is untrue before it is written — and
+    recorded WITHOUT the name, as an unseeable path is, it would be said."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    about.unlink()
+    proc = _add_about(env, about)
+    assert proc.stdout.strip() == "rc=1", proc.stdout + proc.stderr
+    assert _records(state) == []
+
+
+def test_a_host_with_no_cksum_names_the_file_without_a_sum(tmp_path):
+    """The writer's own `@file - <path>`: a `cksum` that fails (or is not
+    there) must not cost the name, which alone answers the ticket's case."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    nosum = tmp_path / "nosum"
+    nosum.mkdir()
+    (nosum / "cksum").write_text("#!/usr/bin/env bash\nexit 127\n", encoding="utf-8", newline="\n")
+    (nosum / "cksum").chmod(0o755)
+    env["PATH"] = f"{_to_bash_path(nosum)}:/usr/bin:/bin:/usr/local/bin"
+    proc = _add_about(env, about)
+    assert proc.stdout.strip() == "rc=0", proc.stderr
+    (rec,) = _records(state)
+    assert _file_line(rec) == f"@file - {about.as_posix()}"
+    about.unlink()
+
+    env.pop("PATH")
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert seen["carry_set"] == "", seen["carry"]
+    assert _records(state) == []
+
+
+@pytest.mark.parametrize("after, said", [("untouched", True), ("gone", False)])
+def test_a_record_with_windows_line_endings_is_read_the_same(tmp_path, after, said):
+    """A CR before the newline is no part of the path: left on, the file would
+    never be found and every such record would be withdrawn."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    (state / f"turn-{SESSION}.nudge-draft").write_bytes(
+        f"cp-{2_000_000_000}-abcd\r\n@file - {about.as_posix()}\r\n{DRAFT_MSG}\r\n".encode("utf-8"))
+    if after == "gone":
+        about.unlink()
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert (f"--- LOCI notice ---\n{DRAFT_MSG}\n--- end of LOCI notice ---" in seen["carry"]) is said
+    assert _records(state) == []
+
+
+@pytest.mark.parametrize("after, said", [("changed", True), ("gone", False)])
+def test_without_a_checksum_the_files_presence_is_the_whole_test(tmp_path, after, said):
+    """`@file - <path>` is what a host with no `cksum` writes. A changed file
+    cannot be told from an unchanged one then, so the record stands; a missing
+    one still withdraws it."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    (state / f"turn-{SESSION}.nudge-draft").write_text(
+        f"cp-{2_000_000_000}-abcd\n@file - {about.as_posix()}\n{DRAFT_MSG}\n",
+        encoding="utf-8", newline="\n")
+    if after == "changed":
+        about.write_bytes(b"version: 1\nops: []\n")
+    else:
+        about.unlink()
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert (DRAFT_MSG in seen["carry"]) is said, seen["carry"]
+    assert "@file" not in seen["carry"]
+    assert _records(state) == []
+
+
+def test_a_leftover_claim_is_checked_again_when_it_is_taken_again(tmp_path):
+    """A prompt hook killed between its take and its done leaves a claim, said
+    by the next prompt (above). If the draft was applied before THAT prompt,
+    the claim is as stale as a record would be: the check runs at every take,
+    not once per record."""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    about = _about(tmp_path)
+    script = _lib("loci_host.sh") + (
+        'loci_host_carry_add draft "pending draft" "$1" "$3" || echo add-failed\n'
+        'loci_host_adapt "$2" || echo adapt-failed\n')
+    proc = _bash(script, env=env, args=[_payload("Stop"),
+                                        _payload("UserPromptSubmit", prompt="hi"),
+                                        about.as_posix()])
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    (claim,) = _records(state)
+    assert ".nudge-draft.taken-" in claim.name
+    about.unlink()
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    assert seen["carry_set"] == "", seen["carry"]
+    assert _records(state) == []
+
+
+@pytest.mark.parametrize("msg", [
+    "LOCI: first line.\n@file 1-1 /nowhere/at/all\nlast line.",   # header shape, but not line 2
+    "@file",                                                      # the marker alone
+    "@file see the report\nsecond line",                          # words where the sum goes
+    "@file 12-34 notes.txt\nsecond line",                         # a sum, but no absolute path
+    "@file 1-2-3 /nowhere/at/all\nsecond line",                   # not `<crc>-<size>`
+])
+def test_a_message_that_only_resembles_the_header_is_still_a_message(tmp_path, msg):
+    """Only the line right under the age stamp can be the header, and only in
+    its WHOLE shape — `@file`, a sum that is `-` or `<digits>-<digits>`, an
+    absolute path. Anything short of that is the writer's text: said in full,
+    never dropped as a record about a missing file. (A first line in the whole
+    shape is the one thing a message cannot open with; no LOCI writer does.)"""
+    state, env = _state(tmp_path)
+    env["COPILOT_CLI"] = "1"
+    _bash(CARRY_ADD, env=env, args=["manifest", msg, _payload("Stop")])
+
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert f"--- LOCI notice ---\n{msg}\n--- end of LOCI notice ---" in seen["carry"], seen["carry"]
+    assert _records(state) == []
+
+
+def test_outside_copilot_a_named_file_records_nothing_either(tmp_path):
+    state, env = _state(tmp_path)
+    proc = _add_about(env, _about(tmp_path))
+    assert proc.stdout.strip() == "rc=1"
+    assert list(state.iterdir()) == []
+
+
+def _stop_with_a_draft(tmp_path: Path, env: dict, project: Path, draft: Path,
+                       *, pending: int = 1, then: str = "") -> subprocess.CompletedProcess:
+    """The real Stop hook over a `loci` that answers `contract draft show` as
+    the CLI does: the draft's path first, then the count and the ops — each
+    op's `entry` being MODEL-AUTHORED text the CLI keeps verbatim, here one
+    that names a `draft` of its own. `then` is shell the stub runs after it
+    has answered."""
+    envelope = json.dumps({"ok": True, "data": {
+        "draft": draft.as_posix(), "pending": pending,
+        "ops": [{"op": "add", "index": i,
+                 "entry": {"text": "t", "draft": "/somewhere/else.yaml"}}
+                for i in range(pending)],
+        "base_hash": "0" * 16, "stale": False}})
+    stub = _stub_loci(tmp_path, f"printf '%s\\n' '{envelope}'\n{then}")
+    return subprocess.run(
+        [_find_bash(), _to_bash_path(HOOKS / "draft-pending-nudge.sh")],
+        input=_payload("Stop", cwd=_to_bash_path(project)),
+        env={"PATH": f"{stub}:/usr/bin:/bin", **env, "COPILOT_CLI": "1",
+             "CLAUDE_PROJECT_DIR": _to_bash_path(project)},
+        capture_output=True, text=True, encoding="utf-8", timeout=60)
+
+
+def test_the_draft_nudge_names_the_draft_the_cli_reported(tmp_path):
+    """The hook holds no opinion about which file the draft is (its gate is
+    only a gate): the path in the record is the one `draft show` printed."""
+    state, env = _state(tmp_path)
+    draft = _about(tmp_path)
+    proc = _stop_with_a_draft(tmp_path, env, tmp_path / "proj", draft)
+    assert proc.returncode == 0, proc.stderr
+    assert "1 bound added" in json.loads(proc.stdout)["systemMessage"]
+    (rec,) = _records(state)
+    line = _file_line(rec)
+    assert line and line.endswith(" " + draft.as_posix()), rec.read_text(encoding="utf-8")
+    assert _record(rec)[1] == json.loads(proc.stdout)["systemMessage"]
+
+
+def test_an_accept_that_lands_while_the_stop_hook_runs_leaves_no_record(tmp_path):
+    """The narrow window inside the hook: `draft show` has answered "1 pending"
+    and the draft is applied before the hook records its message. The Stop
+    reply still goes out (it was true when asked); nothing waits for the next
+    prompt to say it again."""
+    state, env = _state(tmp_path)
+    draft = _about(tmp_path)
+    proc = _stop_with_a_draft(tmp_path, env, tmp_path / "proj", draft,
+                              then=f'rm -f "{_to_bash_path(draft)}"')
+    assert proc.returncode == 0, proc.stderr
+    assert "1 bound added" in json.loads(proc.stdout)["systemMessage"]
+    assert not draft.exists()
+    assert _records(state) == []
+
+
+@pytest.mark.parametrize("between", ["accepted", "left alone"])
+def test_an_accepted_draft_is_not_reported_as_unapplied_at_the_next_prompt(tmp_path, between):
+    """Both hooks, in the order a session runs them: the Stop that sees the
+    draft, what the user does before typing again, the prompt. An applied draft
+    is silence; one left alone is still the notice — said once, as before."""
+    state, env = _state(tmp_path)
+    draft = _about(tmp_path)
+    assert _stop_with_a_draft(tmp_path, env, tmp_path / "proj", draft).returncode == 0
+    assert len(_records(state)) == 1
+    if between == "accepted":
+        draft.unlink()
+
+    env["COPILOT_CLI"] = "1"
+    proc, seen = _prompt_under_copilot(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    if between == "accepted":
+        assert seen["carry_set"] == "", seen["carry"]
+    else:
+        assert seen["carry"].count("contract draft not applied — 1 bound added") == 1
+    assert _records(state) == []
+
+
+def _real(tmp_path: Path, env: dict, *argv: str, stdin: str = "",
+          cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(list(argv), input=stdin, cwd=str(cwd), env=env,
+                          capture_output=True, text=True, encoding="utf-8", timeout=120)
+
+
+def _real_loci() -> str | None:
+    """The installed CLI: on PATH, else where the hooks themselves look for it
+    (`$HOME/.local/bin`, which a non-login shell's PATH does not carry)."""
+    found = shutil.which("loci")
+    if found:
+        return found
+    for name in ("loci", "loci.exe"):
+        cand = Path.home() / ".local" / "bin" / name
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
+@pytest.mark.skipif(_real_loci() is None or shutil.which("git") is None,
+                    reason="the installed `loci` CLI and git are required")
+@pytest.mark.parametrize("folder", ["proj", "Влад имир é/proj"], ids=["ascii", "non-ascii"])
+@pytest.mark.parametrize("between", ["accept", "clear", "nothing"])
+def test_with_the_real_cli_the_next_prompt_follows_what_the_user_did(tmp_path, between, folder):
+    """AAD-8202 end to end, nothing stubbed: the installed `loci` drafts a
+    bound, the Stop hook reports it, the user accepts it (or clears it, or does
+    nothing) between the turns, and the prompt hook runs `loci hook
+    prompt-submit`. What the model is handed carries the "not applied" notice
+    only where the draft is still there to apply.
+
+    And once more in a checkout under a path that is not ASCII (AAD-8228). Up
+    to loci-tools 0.2.129 the CLI read git's UTF-8 top level with the Windows
+    code page there and drafted into a mis-spelled twin directory, so the Stop
+    hook — which looks in the project — found no draft and said nothing at all.
+    With the CLI at the pin the draft is in the project, the notice is said,
+    and the record's `@file` path, non-ASCII too, is found and missed as any
+    other."""
+    state, env = _state(tmp_path)
+    project = tmp_path / folder
+    project.mkdir(parents=True)
+    # Two spellings of one state directory. The hooks run under bash and take
+    # `_state`'s `/c/…`; `loci` and `git` are started from HERE, natively, where
+    # that spelling names `C:\c\…` — so they get the native one, and keep the
+    # HOME they have. No `GIT_*` of the developer's reaches either: an exported
+    # `GIT_DIR` would point the CLI at another repository.
+    base = {k: v for k, v in os.environ.items()
+            if k not in ("COPILOT_CLI", "CLAUDE_PROJECT_DIR", "LOCI_FAIL_FAST", "LOCI_ENV")
+            and not k.startswith("GIT_")}
+    base["PYTHONIOENCODING"] = "utf-8"
+    base["PATH"] = str(Path(_real_loci()).parent) + os.pathsep + base.get("PATH", "")
+    run_env = {**base, "LOCI_STATE_DIR": str(state)}
+    hook_env = {**base, **env, "COPILOT_CLI": "1", "CLAUDE_PROJECT_DIR": _to_bash_path(project)}
+
+    def loci(*args: str, stdin: str = "") -> dict:
+        proc = _real(tmp_path, run_env, _real_loci(), *args, stdin=stdin, cwd=project)
+        assert proc.returncode == 0, (args, proc.stdout, proc.stderr)
+        return json.loads(proc.stdout[proc.stdout.index("{"):])["data"]
+
+    def hook(name: str, event: str, **extra) -> subprocess.CompletedProcess:
+        proc = _real(tmp_path, hook_env, _find_bash(), _to_bash_path(HOOKS / name),
+                     stdin=_payload(event, cwd=str(project), **extra), cwd=PLUGIN_ROOT)
+        assert proc.returncode == 0, (name, proc.stdout, proc.stderr)
+        return proc
+
+    assert _real(tmp_path, run_env, "git", "init", "-q", ".", cwd=project).returncode == 0
+    entry = {"text": "main must stay within 512 bytes of stack", "kind": "budget",
+             "function": "main", "signal": "stack_depth",
+             "bound": {"max": 512, "unit": "B"}, "severity": "fail"}
+    assert loci("contract", "draft", "add", stdin=json.dumps(entry))["pending"] == 1
+
+    hook("prompt-submit-turn.sh", "UserPromptSubmit", prompt="draft a bound")
+    stop = hook("draft-pending-nudge.sh", "Stop", stop_hook_active=False)
+    assert "contract draft not applied — 1 bound added" in json.loads(stop.stdout)["systemMessage"]
+    (rec,) = _records(state)
+    assert _file_line(rec), rec.read_text(encoding="utf-8")
+
+    if between == "accept":
+        done = loci("contract", "accept")
+        assert done["applied"] == 1 and done["draft_consumed"] is True
+    elif between == "clear":
+        assert loci("contract", "draft", "clear")["cleared"] is True
+    still_pending = loci("contract", "draft", "show")["pending"]
+    assert still_pending == (1 if between == "nothing" else 0)
+
+    prompt = hook("prompt-submit-turn.sh", "UserPromptSubmit", prompt="next")
+    handed = json.loads(prompt.stdout)["additionalContext"]
+    assert handed.startswith("[loci] turn=cp-"), handed
+    assert ("contract draft not applied" in handed) is (between == "nothing"), handed
+    assert _records(state) == []
 
 
 # ── the records age with the turn files ──────────────────────────────────────

@@ -50,6 +50,9 @@
 _init_flow_failure() {
   local RESPONSE="$1"
   echo "$RESPONSE" | grep -q 'not_initialized' || return 1
+  # Under a committed recipe `set`/`add-file` write into someone else's file too.
+  local _ok='probe|set|add-file|--help|-h'
+  echo "$RESPONSE" | grep -q 'recipe_unapproved' && _ok='probe|--help|-h'
   if [[ -n "${LOCI_EVAL_TOOL_CALLS:-}" ]]; then
     # The harness hands over the transcript's tool calls (`Bash: <command>`, one
     # per line — `tool_calls_of` in run_evals.sh). Init counts only as a CALL,
@@ -57,7 +60,7 @@ _init_flow_failure() {
     # not count, and neither does the CLI's own refusal sentence naming
     # `loci init --auto`, which a model pastes verbatim. So relaying the refusal
     # — the correct flow now — cannot be misread as having run init.
-    printf '%s\n' "$LOCI_EVAL_TOOL_CALLS" | _names_an_init_call || return 1
+    printf '%s\n' "$LOCI_EVAL_TOOL_CALLS" | _names_an_init_call "$_ok" || return 1
   else
     # No tool calls to read (a grader driven on its own): the refusal's recovery
     # sentence is stripped before the text is read for an init — on the text
@@ -68,7 +71,7 @@ _init_flow_failure() {
     printf '%s\n' "$RESPONSE" | tr '\n' ' ' \
       | sed -E 's#Run `?/loci:init`? \(or `?loci init --auto`?\)[^.]*\.##g' \
       | grep -E 'loci(\.exe)? +init([[:space:]]|$)' \
-      | grep -vE 'loci(\.exe)? +init +(probe|set|add-file)([[:space:]]|$)' \
+      | grep -vE "loci(\\.exe)? +init +(${_ok})([[:space:]]|\$)" \
       | grep -q . || return 1
   fi
   echo "FAIL|recipe flow: the CLI answered not_initialized on an uninitialized project and the transcript RAN \`loci init\` — adopting a project is the user's decision, so the flow is to name /loci:init and stop"
@@ -92,9 +95,10 @@ _init_flow_failure() {
 # contract says call `loci` bare, and the plugin never spells it otherwise), and a
 # path containing a space.
 _names_an_init_call() {
+  local ok="${1:-probe|set|add-file|--help|-h}"
   grep -E '^Bash: ' | tr -d "\"'" \
     | grep -E '(^Bash:[[:space:]]*|[;&|(][[:space:]]*)([^[:space:]]*/)?loci(\.exe)?[[:space:]]+init([[:space:]]|$|[;&|>)])' \
-    | grep -vE 'loci(\.exe)?[[:space:]]+init([[:space:]]+[^[:space:];&|>)]+)*[[:space:]]+(probe|set|add-file|--help|-h)([[:space:]]|$|[;&|>)])' \
+    | grep -vE "loci(\\.exe)?[[:space:]]+init([[:space:]]+[^[:space:];&|>)]+)*[[:space:]]+(${ok})([[:space:]]|\$|[;&|>)])" \
     | grep -q .
 }
 

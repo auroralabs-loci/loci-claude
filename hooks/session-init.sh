@@ -487,7 +487,7 @@ _TOOL_POLICY='LOCI tool policy: All analysis runs through the `loci` command on 
 # LOCI deciding to adopt a repo because an edit happened to touch a `.c` file.
 #
 # Scoped to "no recipe governs": a degraded recipe still gets init's repair.
-_INIT_RULE='LOCI init rule: adopting a project is the user'"'"'s decision. When a `loci` call answers `not_initialized` and no LOCI recipe governs the code, say so in one line, name `/loci:init`, and stop: do not invoke the loci:init skill or run `loci init` for it, auto-run rules included.'
+_INIT_RULE='LOCI init rule: adopting a project is the user'"'"'s decision. When a `loci` call answers `not_initialized` with `recipe_on_disk: false`, say so in one line, name `/loci:init`, and stop: do not invoke the loci:init skill or run `loci init` for it, auto-run rules included.'
 # Fast-fail, and it is the ONE rule that governs every skill: a skill halts by
 # instruction, so the instruction has to reach the model, and this line is the
 # only channel every skill and every turn shares. It is EMPTY unless the switch

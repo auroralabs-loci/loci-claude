@@ -82,9 +82,21 @@ _pe_scan="not run"
 trap 'loci_log INFO pre-edit "end: snapshot=$_pe_snap scan=$_pe_scan (hook rc=$?)"' EXIT
 
 # `recipe.discover`'s walk and ceilings (nearest `.git`, `$HOME` exclusive), without a
-# spawn. Its one divergence, a logical `$HOME`, can only send a file on to the CLI.
+# spawn. `$HOME` is met by spelling or by identity (AAD-8026): `pwd -P` names a
+# directory through the MSYS mount table (`/tmp/…` for `%TEMP%`) and through links,
+# while `$HOME` keeps the spelling it was given (`/c/…`, `C:\…`, a link, another
+# case), and resolving `$HOME` the same way does not reconcile the two. The CLI
+# compares resolved paths, case-folded on Windows; `-ef`, the builtin device:inode
+# test, is what a shell has for that without a process.
+# Identity is used only for a `$HOME` that is absolute (`/…`, `C:/…`, `C:\…`,
+# `\\host\…`; a relative one names whatever the hook's cwd makes of it), that is a
+# directory (an unreachable one costs a failed lookup at every level), and that
+# `-ef` tells from its parent and from `~/.loci` (a volume that reports inode 0 for
+# every directory matches them all). Each of those would stop a governed file short
+# of the CLI; without identity a `$HOME` spelled differently is passed, and the
+# file goes on to it.
 _loci_recipe_above() {
-    local d="${1//\\//}" base="${2//\\//}" p i=0
+    local d="${1//\\//}" base="${2//\\//}" p i=0 home="${HOME:-}" ef=""
     case "$d" in /*|[A-Za-z]:/*) ;; *) [ -n "$base" ] && d="$base/$d" ;; esac
     while [ "$i" -lt 64 ]; do
         case "$d" in */*) d="${d%/*}"; d="${d:-/}" ;; *) d=. ;; esac
@@ -93,9 +105,17 @@ _loci_recipe_above() {
     done
     p=$(cd "$d" 2>/dev/null && pwd -P) && d="$p"
     d="${d%/}"
+    case "$home" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*|\\\\*)
+            [ -d "$home" ] && ! [ "$home" -ef "$home/.." ] \
+                && ! [ "$home" -ef "$home/.loci" ] && ef=1 ;;
+    esac
     i=0
     while [ "$i" -lt 64 ]; do
-        [ -n "${HOME:-}" ] && [ "$d" = "${HOME%/}" ] && return 1
+        if [ -n "$home" ] && { [ "$d" = "${home%/}" ] \
+           || { [ -n "$ef" ] && [ "$d" -ef "$home" ]; }; }; then
+            return 1
+        fi
         [ -f "$d/.loci/build.yaml" ] && return 0
         [ -e "$d/.git" ] && return 1
         [ -n "$d" ] || return 1

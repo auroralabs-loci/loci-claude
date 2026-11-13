@@ -168,6 +168,66 @@
           "description": "the absent object is by design, not a symptom"
         }
       ]
+    },
+    {
+      "id": "pe-nocontract-1",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited msg.c and post-edit fired. Step 1's `loci analyse prepare` (run with `--signals hot_path_time,energy`) came back `ok:true`: `data.functions` is `[\"msg_crc\"]`, `data.requests[]` holds two requests for it (`hot_path_time` and `energy`), both `entry_key: null` and `fabricated: true`, and the `data.provenance[]` entry carries a `before` with `freshness: current`. I confirmed p1 in Step 3. Step 4's `loci analyse measure` came back `ok:true`, exit 0: `data.contract` is the string `\"none\"`, `data.judgements` is `[]`, `data.gates` is `{}`, `data.verdict` is `null`, `data.agent_judged` holds two stubs keyed `hot_path_time:msg_crc` and `energy:msg_crc`, `data.paths.msg_crc.hot_path` is `{ns: 760, before_ns: 310, baseline: \"same_path\", lower_bound: false}` with `measure`'s note naming the ranked hot path at msg.c:46-52, and `energy_nws` is 98 against a Before of 41. The diff added a byte-wise CRC loop at msg.c:48, on that path. Show me the conclusion table exactly as the report prints it, what sits under it, and the Verdict line. Session context: Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
+      "expected_output": "Draws the table — a repo with no contract still gets its rows, one per (signal, function) reasoned about: a `Performance (Hot-Path)` row and an `Energy` row for `msg_crc`, each with BEFORE and AFTER figures (310 ns → 760 ns; 41 nWs → 98 nWs). On a `none` envelope the agent's assessment fills `STATUS`: both rows read **Needs attention** (the Note names the new byte-wise loop at msg.c:48 on the ranked hot path msg.c:46-52) and so `CAUTION` in the `STATUS` cell — never `—` beside Needs attention, never a blank, never `CAUTION*` or an `(agent)` marker in the cell. Directly under the rows it prints the shared no-contract caption (\"No contract in this repo — every STATUS above is composed from the agent assessment beside it, not from a bound …\"). The `Verdict:` line is **CAUTION** with a cause naming the loop and saying no bound covers hot_path_time. It prints NO `Not under contract` caption — that caption names what a contract leaves uncovered, and there is no contract here. It invents no threshold (nothing like \"+145% exceeds the 10% band\"): the concern is argued from the named block, and the size of the delta alone is not the reason. The deltas themselves are fine to print — +145% and +139% are arithmetic on the given 310 → 760 ns and 41 → 98 nWs, not invented figures — so long as the named loop, not a band, is what the word rests on. Grade only this reasoning; the agent need not execute any loci command.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Draws a conclusion table with a Performance (Hot-Path) row and an Energy row for msg_crc, carrying the Before and After figures",
+          "description": "AAD-7874: with no contract the report still shows everything that was measured — an empty or withheld table is the defect"
+        },
+        {
+          "text": "Fills STATUS from the agent assessment on this `none` envelope — CAUTION beside Needs attention — rather than an em dash, a blank, or a marked word like CAUTION*",
+          "description": "verdicts.md's `No bound behind a row: the agent fills STATUS` mapping, and the no-marker rule"
+        },
+        {
+          "text": "Prints the shared no-contract caption directly under the rows",
+          "description": "the caption is what says the column is composed from readings, not bounds"
+        },
+        {
+          "text": "Prints no `Not under contract` caption",
+          "description": "that caption names what a contract leaves uncovered; on `none` the no-contract caption is the rule"
+        },
+        {
+          "text": "Names the byte-wise loop at msg.c:48 as the reason for Needs attention and compares the delta against no threshold of its own; printing the +145% / +139% computed from the given figures beside that loop is allowed and is not an invented number",
+          "description": "a flag needs a named block; no skill-owned band"
+        }
+      ]
+    },
+    {
+      "id": "pe-uncovered-1",
+      "prompt": "Decision question, no tools needed — reason it out from the loci-post-edit skill and answer directly. I edited codec.c and post-edit fired; the edit touched two functions. Step 1's `loci analyse prepare` (run with `--signals hot_path_time,energy`) came back `ok:true`: `data.functions` is `[\"codec_decode\", \"msg_crc\"]` and `data.requests[]` holds r1 `hot_path_time` on `codec_decode` with `entry_key: \"7f1a2b3c4d5e\"` and `text` \"codec_decode must answer within 2 µs\", r2 `energy` on `codec_decode` with `entry_key: null`, `fabricated: true`, r3 `hot_path_time` on `msg_crc` with `entry_key: null`, `fabricated: true`, and r4 `energy` on `msg_crc` with `entry_key: null`, `fabricated: true`. The repository's `.loci/contract.yaml` has four enabled entries and none of them names `msg_crc`. Both functions have a `before` with `freshness: current`; I confirmed the proposals in Step 3. Step 4's `loci analyse measure` came back `ok:true`, exit 0: `data.contract` is `\"project\"`; `data.judgements` holds one item — `entry_key: \"7f1a2b3c4d5e\"`, `verdict: \"pass\"`, `observed: 1520`, `bound: {max: 2000, unit: ns}`, `note` \"1.52 µs of the 2.00 µs ceiling — on the ranked hot path (codec.c:88-104)\"; `data.gates` is `{\"Performance\": \"pass\"}`; `data.verdict` is `\"pass\"`; `data.agent_judged` holds stubs for `energy:codec_decode` (200 → 214 nWs), `hot_path_time:msg_crc` (310 → 760 ns, `baseline: same_path`, note naming msg.c:46-52) and `energy:msg_crc` (41 → 98 nWs); `data.unjudged` holds the other three entries as `no_measurement`. The diff added a byte-wise CRC loop at msg.c:48, on msg_crc's ranked path. Show me the report's table(s), what sits under them, and the Verdict line. Session context: Target: armv7e-m, Compiler: arm-none-eabi-gcc, LOCI target: armv7e-m.",
+      "expected_output": "One table per function, as the template draws them, and ONE caption. `codec_decode`'s table: its `Performance (Hot-Path)` row reads `PASS` beside Looks good, quoting the requirement in the entry's own words (\"codec_decode must answer within 2 µs\") with 1.52 µs of the 2.00 µs ceiling in the Note; its `Energy` row reads `PASS` beside Looks good too — composed from the assessment, because no entry bounds energy, which the Note says. `msg_crc`'s table: `Performance (Hot-Path)` 310 ns → 760 ns and `Energy` 41 nWs → 98 nWs, each `CAUTION` in STATUS beside **Needs attention**, the Note naming the new byte-wise loop at msg.c:48 and that no entry bounds msg_crc. No STATUS cell is an em dash and none is blank: on a contracted run a row no entry covers carries the word the agent's assessment composes to, exactly as on a `none` envelope. Under the last table, once, the caption `Not under contract — msg_crc, energy of codec_decode: no entry bounds these rows, so their STATUS is composed from the agent assessment beside it, not from a bound. /loci:contract adds one.` — naming the uncovered function and the uncovered signal on the covered one, in either order (`energy of codec_decode, msg_crc` is the same caption). The run `Verdict:` is **CAUTION** — `msg_crc`'s Needs attention composes to CAUTION and the run is the worst row over every table — with a cause naming the loop at msg.c:48, and a coverage count `(1 of 4 judged)`; it does NOT report OK/PASS merely because `data.verdict` is `pass` and `data.gates` is clean. It does not print the no-contract caption (there is a contract), does not drop `msg_crc` from the report, does not put `msg_crc`'s rows in a separate `Not under contract` table under a heading line, and does not mark a composed word with `*` or `(agent)` in the cell. Grade only this reasoning; the agent need not execute any loci command.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Fills every STATUS cell with a word — codec_decode's hot-path PASS from the bound, its energy PASS and both msg_crc rows' CAUTION from the agent assessment beside them — with no em dash and no blank in the column",
+          "description": "AAD-7874 (returned): QA read `—` in STATUS as an unjudged measurement; on every envelope a row no bound covers carries the composed word"
+        },
+        {
+          "text": "Keeps codec_decode's hot-path row quoting the entry's text with 1.52 µs of the 2.00 µs ceiling in the Note, and says in the Note of every composed row that no entry bounds it",
+          "description": "the Note is what tells a judged PASS from a composed one once both share the vocabulary"
+        },
+        {
+          "text": "Prints one `Not under contract — …` caption under the last table that names both msg_crc and energy of codec_decode (in either order) as the rows no entry bounds, and draws no `Not under contract`-headed table: msg_crc's rows sit in its ordinary per-function table",
+          "description": "verdicts.md's caption rule replaces the second table; the rows share the table and the caption names what the contract does not cover"
+        },
+        {
+          "text": "Reports the run Verdict as CAUTION with a coverage count, composed from msg_crc's Needs attention, not OK/PASS from the CLI's clean gates",
+          "description": "the run verdict is the worst row over every row, and the count says one of four entries was judged"
+        },
+        {
+          "text": "Prints no no-contract caption and puts no marker such as `*` or `(agent)` in a STATUS cell",
+          "description": "the repo has a contract, and the cell is one word wide in every renderer"
+        },
+        {
+          "text": "Names the byte-wise loop at msg.c:48 as the reason for Needs attention",
+          "description": "a flag needs a named block; no skill-owned band"
+        }
+      ]
     }
   ]
 }

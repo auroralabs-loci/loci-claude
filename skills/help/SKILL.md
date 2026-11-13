@@ -130,6 +130,9 @@ Or point LOCI at an existing binary directly:
 Do not list toolchains to install — `/loci:init` reports what is missing on this
 machine, and anything named here is a guess about a project you have not read.
 
+With `error.recipe_unapproved: true`, its `message` replaces the first paragraph and the
+file is not "gitignored".
+
 ### When no project is named
 
 ```
@@ -234,11 +237,12 @@ should know what's possible even if their setup isn't complete yet.
 
   A report closes on one word, composed from two columns on every row.
 
-  STATUS — computed against a bound you set:
+  STATUS — computed against a bound you set, or composed from the assessment
+  where no bound covers the row (the caption under the table says which):
     PASS      every bound held
     CAUTION   tight against a bound, or a regression a bound still allows
     FAIL      a bound is breached
-    —         nothing computed: no bound covers this row
+    —         nothing to judge the row on (As reported only)
 
   AGENT ASSESSMENT — what LOCI made of the row:
     Needs attention   worth raising, with the block or callee named

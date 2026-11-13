@@ -56,6 +56,18 @@ run of the skill evals, `bash run_evals.sh --ble-root <BLE>` (Claude host) and
 `--host copilot`, compared with the latest report under `eval-results/` — the evals are
 model-driven and noisy, so a red is re-run once before it counts.
 
+`eval-results/` holds runs started by hand and nothing else. The unit suite starts the same
+harness too (dry runs and stubbed agents) and sends those runs to pytest's temporary
+directory through `LOCI_EVAL_RESULTS_DIR`, which names the root the `<timestamp>/`
+directories go under (AAD-8230). Until then they were written here, 36 run directories per
+suite, so a checkout that ran the suite before that change carries thousands of them, ignored
+by git and named like any other run. The metrics tell them apart: a real run's
+`*_metrics.json` names a model; a stubbed agent's says `"models": []`; a dry run or a
+`--list` has no metrics file at all. One exception: the metrics file dates from 2026-09-01,
+so an older directory is judged by its `*_response.txt` instead — a stubbed agent's is a few
+hundred bytes, a real transcript runs to kilobytes. Whatever is not a real run is safe to
+delete.
+
 **The mac-mini.** Reached as `ssh mac-mini`, or through the hop when the route has flipped
 (`ssh -J vladimir@10.200.200.1 mac-mini`); try both. `copilot`, `claude`, `loci`, `uv` and the
 Arm toolchain live in `~/.local/bin` (a login shell: `zsh -lc`). Run from a clean clone, not a

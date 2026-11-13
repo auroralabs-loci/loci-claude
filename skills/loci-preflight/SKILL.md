@@ -32,7 +32,7 @@ before any code changes. The output shapes how you write, not just whether.
 
 **Preflight requires compiled artifacts.** It does not fall back to source-level
 reasoning. When `prepare`'s compile is refused it says which coded reason it was and
-stops, except for the one repair `not_initialized` allows — a recipe on disk init can fix.
+stops, except for the one repair `not_initialized` allows — `recipe_on_disk: true`.
 
 ## Tool boundary and shared contract
 
@@ -326,7 +326,8 @@ verdict to render: your assessment is what gives each row its word, and it fills
 the row's `STATUS` by the mapping in
 [verdicts.md](../_shared/verdicts.md#no-contract). The table is still drawn, with
 the rows yours to compose — one per (signal, function) you reasoned about, and
-that section's caption under them.
+that section's caption under them; on `project` the same mapping fills `STATUS`
+on every row no entry covers, under its `Not under contract — …` caption.
 
 - **`data.rows[]`** is **not rendered, on any envelope.** It assembles one row
   per (function, gate), merging a regression and an absolute ceiling on one
@@ -556,6 +557,10 @@ here — a plan touches whichever signals it touches.
 - Skipped gates are omitted.
 - A row that reached neither a `STATUS` nor an assessment is not drawn: it becomes
   the `(<N> of <M> judged)` count on the Execution fit line.
+- Rows no entry covers sit in the same table, each `STATUS` your composed word,
+  and the `Not under contract — …` caption under it names them: [the
+  caption](../_shared/verdicts.md#uncovered). On a `none` envelope the no-contract
+  caption replaces it.
 
 Build rows from `data.paths`, `data.unselectable`, and — when `data.contract` is `project` — the contract judgement and
 gate payloads the CLI returned. A `none` envelope carries none of those. Where a
@@ -570,9 +575,9 @@ and never the user's bound, and one row carries one requirement: apply
 Each row is `{fn, gate, status, before, after, note, entries}`:
 
 - **`STATUS`** — a row an enabled contract entry covers takes it from that
-  comparison. Otherwise Performance and Energy rows take `—`. Use `CAUTION` /
-  `FAIL` without a contract entry only for a soundness caveat, never for a
-  numeric heuristic of your own.
+  comparison. Otherwise Performance and Energy rows take your composed word: a
+  `CAUTION` without a contract entry rests on a soundness caveat or a named block,
+  never on a numeric heuristic of your own, and a `FAIL` needs a bound.
 - **`AGENT ASSESSMENT`** — your display word for the row: **Needs attention**
   where you are raising a concern the Note names, **Looks good** where you are
   not, **As reported** where the run gave you nothing to judge it on.
@@ -605,7 +610,8 @@ Each row is `{fn, gate, status, before, after, note, entries}`:
 Add rows for what this run measured or directly observed:
 
 - **Performance / Energy** — report the measured number. `STATUS` from the
-  contract entry covering it, else `—` with your assessment beside it.
+  contract entry covering it, else your composed word, the Note saying no entry
+  bounds it.
 - **Stack / Memory** — the escalated child's own row, its `ENTRY` cell under a
   `└ `, carrying its one-line summary verbatim: `stack: <N> B [(<usage>% of <bound> B)] — <verdict>`,
   `memory: ROM <X>% / RAM <Y>% — <verdict>`. The child's verdict comes across
@@ -641,6 +647,9 @@ contains an unresolved call target", not "STOP — the Safety row failed".
 | ENTRY              | FUNCTION | STATUS | AGENT ASSESSMENT | NOTE           |
 |--------------------|----------|:------:|:----------------:|----------------|
 | <qualified signal> | <fn>     |   ?    | <display word>   | <cited reason> |
+
+<the no-contract caption on a `none` envelope; on a `project` one the `Not under
+contract — …` caption, when any row has no bound behind it>
 
 Execution fit: **<GOOD|ADJUST PLAN|STOP>** — <one sentence> [(<N> of <M> judged)]
 ```

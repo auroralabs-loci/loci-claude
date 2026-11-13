@@ -106,7 +106,12 @@ a **measured finding**, not a caveat, and it leaves this branch:
 
 | ENTRY                    | FUNCTION | STATUS | AGENT ASSESSMENT | NOTE |
 |--------------------------|----------|:------:|:----------------:|------|
-| `Performance (Hot-Path)` | `<fn>`   |   —    | Needs attention  | no function's instructions changed — the bound is a masked immediate; the loop at <file>:<lines> goes 8 → 16 trips (exact), so every block in it now runs twice |
+| `Performance (Hot-Path)` | `<fn>`   | CAUTION | Needs attention | no function's instructions changed — the bound is a masked immediate; the loop at <file>:<lines> goes 8 → 16 trips (exact), so every block in it now runs twice |
+
+No contract in this repo — every STATUS above is composed from the agent
+assessment beside it, not from a bound. `/loci:contract` records the limits this
+project actually has — a stack ceiling, a timing or energy budget, a ROM or RAM
+region — and the next run judges these same figures against them.
 
 Verdict: **CAUTION** — the cost of that loop's body doubles. No `hot_path_time`
 bound in this repo, so this is an argument rather than a breach.

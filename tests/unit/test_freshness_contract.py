@@ -625,6 +625,32 @@ _NOT_MODEL_PROSE = {"LICENSE.md", "DPA.md", "README.md", "PORTAL.md",
                     "authorization-flow/AuthorizationFlow.md", "RELEASING.md"}
 
 
+def _walk_candidates():
+    """Every file under the plugin root that `_prose_files` could keep.
+
+    The directories its rules exclude are not ENTERED, where `rglob("*")` listed
+    and stat-ed every file inside them first and threw the answer away. That was
+    not a nicety: `eval-results/` is ignored, and until AAD-8230 every run of this
+    suite added some three dozen run directories to it (the eval-harness tests start
+    the real harness, which wrote there). On the box releases are made from it had grown
+    to 7,909 directories and 296,000 files, one walk took 34 s, and
+    `test_deleted_contract_sections_are_referenced_only_where_recorded` — three
+    walks — took 102 s of the 120 s every test here has. Under the full suite it
+    timed out, which pytest-timeout answers by ending the whole run.
+
+    Same files as before, in a stable order: what is pruned here is exactly what
+    the two directory rules in `_prose_files` drop, which stay there as the
+    statement of the rule.
+    """
+    for dirpath, dirnames, filenames in os.walk(PLUGIN_ROOT):
+        top = Path(dirpath) == PLUGIN_ROOT
+        dirnames[:] = sorted(d for d in dirnames
+                             if d not in _NEVER_PROSE_DIRS
+                             and not (top and d in _NOT_PROSE_TOP_DIRS))
+        for name in sorted(filenames):
+            yield Path(dirpath) / name
+
+
 def _prose_files():
     """Every shipped text file a model or a user can be pointed at.
 
@@ -633,7 +659,7 @@ def _prose_files():
     matters.
     """
     out, unclassified = [], []
-    for p in PLUGIN_ROOT.rglob("*"):
+    for p in _walk_candidates():
         if not p.is_file():
             continue
         rel = p.relative_to(PLUGIN_ROOT)
@@ -1238,6 +1264,10 @@ ALLOWED_GUARDED_MENTIONS = {
         # instructs nothing.
         "42183bda43",  # .loci/contract.yaml .loci/build.yaml .loci/build/flags.json
     },
+    # S-CLI-1: the nudge tells the user the committed file runs nothing; no write.
+    "hooks/post-edit-hook.sh": {
+        "30abfffc06",  # LOCI is not initialized for ${_uroot} on this machine: its .loci
+    },
     "hooks/draft-pending-nudge.sh": {
         "659f1cad77",  # LOCI: contract draft — $summary — but .loci/contract.yaml change
     },
@@ -1254,7 +1284,9 @@ ALLOWED_GUARDED_MENTIONS = {
         # pre-escalation source. Still describes the recipe; instructs no write.
         # Re-hashed by AAD-8054 (2026-10-22): the no_edit_this_turn branch leads with
         # the ask and says a request to rebuild is the yes. Still describes; no write.
-        "8d848359d7",  # ## When a `loci` call refuses: the eleven coded errors **A proje
+        # Re-hashed by S-CLI-1/2: `recipe_unapproved` joins the no-recipe half and forbids
+        # editing, deleting or restoring the file; a forbidden mount is never re-proposed.
+        "01012ee26f",  # ## When a `loci` call refuses: the eleven coded errors **A proje
         # Re-hashed 7 Oct: `confirmed_by_user: false` no longer renders as
         # "(written by --auto)" -- the recipe does not record that. Describes; no write.
         # Re-hashed by AAD-7615: the block's path is named per verb (prepare carries it
@@ -1276,7 +1308,10 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed 22 Sep by todo [086]: --signals is accepted with a contract as
         # well as without one, because naming a signal asks for a measurement and
         # never for a bound. Still describes and forbids; instructs no write.
-        "a3e6be6869",  # ## A measurement inherits a verdict from a bound, never from a b
+        # Re-hashed by AAD-7874 (returned): a `project` run's uncovered rows now take the
+        # agent's composed word in STATUS too. Same sentence about `.loci/contract.yaml`;
+        # describes the envelope, instructs no write.
+        "e9c7c74a11",  # ## A measurement inherits a verdict from a bound, never from a b
         # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
         # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
         # describes a guarded file, forbids a write to it, or reads it back —
@@ -1290,7 +1325,9 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed 7 Oct by `client_too_old`: one more coded error to relay; 8 Oct its
         # fix is updating the plugin, and the auth line keeps only its instruction. Still
         # describes and relays; instructs no write.
-        "63a55ca03f",  # ## Output: the JSON envelope Every `loci` command prints **one J
+        # Re-hashed by AAD-8145: the `invalid_trips` row. Still describes and relays;
+        # instructs no write.
+        "68aa4d7476",  # ## Output: the JSON envelope Every `loci` command prints **one J
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044: the four values are read out of a printed
         # `<project-context>`, not out of a `jq`.
@@ -1363,7 +1400,8 @@ ALLOWED_GUARDED_MENTIONS = {
         # `<project-context>` instead of a `jq @tsv`.
     },
     "skills/help/SKILL.md": {
-        "34f60adc00",  # ### When the project is not initialized When `loci project` answ
+        # Re-hashed by S-CLI-1: the committed-recipe variant describes the file; no write.
+        "e7fbfaa8a3",  # ### When the project is not initialized When `loci project` answ
         # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
         # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
         # describes a guarded file, forbids a write to it, or reads it back —
@@ -1373,7 +1411,9 @@ ALLOWED_GUARDED_MENTIONS = {
         # and /loci:contract write; it instructs no write.
         # Re-hashed 2026-09-29 by the checkpoint words (GOOD / ADJUST PLAN / STOP,
         # OK / CAUTION / FLAG) added under the verdict legend. Read: no write.
-        "bd89c31353",  # ## Step 2: Show Available Skills Always show the full skill list
+        # Re-hashed by AAD-7874 (returned): the STATUS legend now says a row no bound
+        # covers carries the composed word. Describes the legend; instructs no write.
+        "8c1a7b5a75",  # ## Step 2: Show Available Skills Always show the full skill list
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed: the listing gained a `## Live view` entry for `loci cockpit`,
         # then the note that it needs a separate terminal.
@@ -1421,7 +1461,10 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed 2026-10-20: the `--signals` block is passed contract or not, so a
         # stack-only contract still times the edit. It names `.loci/contract.yaml`
         # only as absent; it instructs no write.
-        "2db317118b",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
+        # Re-hashed by AAD-8234: two sentences the house rules already carry
+        # (the shell-variable reason, `prepare`'s `--turn` refusal) are cut for the
+        # prose budget. Text removed only; it instructs no write.
+        "9b5c4f7daa",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
         # Re-hashed 22 Sep: `loci-runtime-contract.md` -> `runtime-contract.md`. The
         # section text carries the path, so the digest moved with it; nothing else did.
         # Re-hashed for #347 (AAD-7618), which added the worst path's `recomputed`
@@ -1434,7 +1477,13 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed 2026-10-20: `energy_nws` and `worst_path` are present where a
         # request named the function, an entry's or `--signals`', not only an
         # entry's. Read: names the contract as input only; no write.
-        "064dd9c5d8",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
+        # Re-hashed by AAD-7874 (returned): the row-inclusion bullets now give a row no
+        # entry covers the composed word in STATUS, under the `Not under contract` caption.
+        # Still describes the envelope; instructs no write.
+        # Re-hashed by AAD-8234: the baseline bullet names `same_route`, the worst
+        # path's sentence stops listing the hot-path bases, and `before_untimed` points
+        # at its row below. Still describes the envelope; instructs no write.
+        "38661fa7f8",  # ## Step 4: `loci analyse measure` — the metered half ``` loci an
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044 (the target is read out of the context file, not
         # by "the contract's own `jq`") and by F06 round 2, which made this step
@@ -1478,7 +1527,10 @@ ALLOWED_GUARDED_MENTIONS = {
         # Re-hashed 2026-09-29: a `≥` figure the change did not cause is carried.
         # Read: names the contract as input only; no write.
         # Re-hashed 2026-10-07, on the same change as post-edit's.
-        "d022a998d7",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
+        # Re-hashed by AAD-7874 (returned): the row-inclusion bullets now give a row no
+        # entry covers the composed word in STATUS, under the `Not under contract` caption.
+        # Still describes the envelope; instructs no write.
+        "2d5026f178",  # ## Step 3: `loci analyse measure` — the metered half ``` loci an
         # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
         # Re-hashed by todo 044, on the same change as post-edit's.
         # Re-hashed by todo 048 (the `prepare` invocation dropped `--context`,
@@ -1517,7 +1569,9 @@ ALLOWED_GUARDED_MENTIONS = {
         # trimmed to a Step 2 cross-reference, paying for the worked no-contract line
         # there. The `artifacts.map` offer is unchanged: ask first, then it is yours
         # to run. Still describes and relays; instructs no write.
-        "d5eafd71fe",  # ## Step 1: one call ``` loci analyse memory --turn "<turn-id>" -
+        # Re-hashed by AAD-7874 (returned): the no-contract section it points at was
+        # renamed. Still describes and relays; instructs no write.
+        "7eb97fe5e4",  # ## Step 1: one call ``` loci analyse memory --turn "<turn-id>" -
         # The skills rewrite (2026-09-21): re-hashed by the P4/S10 heading form
         # (em dash to colon) and the stage 0-8 lifts. Each was read: every one
         # describes a guarded file, forbids a write to it, or reads it back —
@@ -1613,7 +1667,10 @@ ALLOWED_GUARDED_MENTIONS = {
     "skills/_shared/verdicts.md": {
         # Re-hashed by AAD-7756: one sentence on the never-drawn `INCOMPLETE` row
         # tightened. Read: describes the table; instructs no write.
-        "b7e992f1e8",  # ### No contract: the agent fills `STATUS` `data.contract` is `no
+        # Re-hashed by AAD-7874 (returned): renamed to "No bound behind a row" and widened
+        # to a `project` run's uncovered rows, which take the composed word too; the
+        # `Not under contract` caption lives here now. Describes the table; instructs no write.
+        "4182200900",  # ### No bound behind a row: the agent fills `STATUS` A row no ena
     },
     # AAD-7641 (2026-09-17): re-hashed by the container-toolchain plugin change, or registered late for a release that bumped the stamp without re-hashing. Read: each describes, forbids, or relays — none instructs a write or a compiler hunt.
     # Empty since the skills rewrite (2026-09-21): D39 moved the two container
@@ -1672,7 +1729,8 @@ ALLOWED_GUARDED_MENTIONS = {
 # 43 -> 42 (AAD-7531): exec-trace's Step 0 stopped naming the recipe once `prepare`
 # selected the binary itself.
 # 42 -> 43 (AAD-8091): the clock clause's example `Recipe:` line names the recipe.
-_REVIEWED_SECTIONS = 43
+# 43 -> 44 (S-CLI-1): the post-edit hook's nudge for a committed recipe.
+_REVIEWED_SECTIONS = 44
 
 
 def test_every_mention_of_a_guarded_file_is_registered():
@@ -1901,7 +1959,9 @@ COMPILER_DISCOVERY_SECTIONS = {
         # find.
         # Re-hashed 2026-10-20: the `--signals` block is passed contract or not.
         # Read: it names no compiler to find.
-        "2db317118b",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
+        # Re-hashed by AAD-8234: two sentences the house rules already carry are
+        # cut for the prose budget. Text removed only; it names no compiler to find.
+        "9b5c4f7daa",  # ## Step 1: `loci analyse prepare` — compile, and get the stateme
         # Re-hashed by the skills rewrite (2026-09-21): stage 4 pulled the field
         # catalogue out and the fold-back put it back, and the preamble collapsed to
         # the shared contract's own index. Read: the step still relays a coded refusal

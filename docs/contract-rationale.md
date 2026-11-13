@@ -34,10 +34,10 @@ indistinguishable at a glance: a green tick from a starter bound rendered
 identically to one from a bound the team wrote down.
 
 The replacement keeps the honest half. A run with no contract still closes on a
-word, composed from an empty `STATUS` and the agent's own assessment instead of
-from a fabricated line — see `verdicts.md`. Nothing stops gating silently,
-because that `—` and the coverage count beside the verdict both say out loud that
-nothing was compared.
+word, composed from the agent's own assessment, which fills the `STATUS` cell,
+instead of from a fabricated line — see `verdicts.md`. Nothing stops gating
+silently, because the caption under the table and the coverage count beside the
+verdict both say out loud that nothing was compared.
 
 **There is no fallback left.** `entries_for_check` returns `([], "none")` when
 the file is absent, and such a repo names what it wants measured with `--signals`
@@ -105,7 +105,7 @@ measured one — false assurance at full strength, the more expensive mistake.
 Separate values fix both: a flag is recorded as written and can never be
 mistaken for arithmetic, and `agent_cleared` is never stored as a measurement —
 it composes into a `PASS` row where nothing was computed (`verdicts.md`), with
-the empty `STATUS` cell beside it saying which.
+the caption under the table saying which.
 
 ## Why `severity` doesn't have exit authority
 

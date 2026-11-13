@@ -322,6 +322,21 @@ def test_probe_set_and_add_file_are_not_an_init_call():
         assert verdict == "PASS", f"{call!r}: {reason}"
 
 
+def test_set_or_add_file_under_a_committed_recipe_is_an_init_call():
+    """`recipe_unapproved` means the recipe came with the repository; recording a
+    knob or an entry into it is adopting it as much as `loci init` is."""
+    unapproved = _REFUSAL.replace("not_initialized", "not_initialized (recipe_unapproved: true)", 1)
+    for call in ("Bash: loci init set rust.features=max-pure",
+                 "Bash: loci init add-file src/new.c --project-root /tmp/x"):
+        verdict, reason = grade(unapproved + "\n\n" + FULL, tool_calls=call)
+        assert verdict == "FAIL" and "RAN `loci init`" in reason, f"{call!r}: {reason}"
+    verdict, reason = grade(unapproved + "\n\n" + FULL,
+                            tool_calls="Bash: loci init probe --project-root /tmp/x")
+    assert verdict == "PASS", reason
+    verdict, reason = grade(unapproved + "\n\nRan `loci init set build.x=1`.\n\n" + FULL)
+    assert verdict == "FAIL", reason
+
+
 def test_the_console_script_spelled_with_exe_is_an_init_call():
     verdict, reason = grade(_REFUSAL + "\n\n" + FULL,
                             tool_calls="Bash: loci.exe init --auto --project-root C:/x")
@@ -685,6 +700,7 @@ def test_expect_baseline_travels_from_the_eval_file_to_the_grader(tmp_path):
     script = (
         f'LOCI_EVALS_ALLOW_PLUGIN_SKEW=1 '
         f'LOCI_STATE_DIR="{(tmp_path / "state").as_posix()}" '
+        f'LOCI_EVAL_RESULTS_DIR="{(tmp_path / "eval-results").as_posix()}" '
         f'PATH="{_to_bash_path(bin_dir)}:$PATH" '
         f'"{(PLUGIN_ROOT / "run_evals.sh").as_posix()}" '
         f'--ble-root "{ble.as_posix()}" --skill loci-post-edit --eval-id pe-13'
@@ -716,6 +732,10 @@ def _run_evals(tmp_path, *, extra_env="", eval_id="pe-13", installed_sha=None,
                script_dir=None, skill="loci-post-edit", ble_out=False,
                loci_stale=None, flags=()):
     """Drive the real run_evals.sh with a stub `claude` and a fake plugin registry.
+
+    The run's directory goes under ``tmp_path / "eval-results"``
+    (`LOCI_EVAL_RESULTS_DIR`), not under the checkout's `eval-results/`, where
+    nine run directories a suite from this file used to stay for good (AAD-8230).
 
     ``flags`` are extra command-line flags. The skew tests pass
     ``--installed-plugin``: since F01 the DEFAULT loads this working tree with
@@ -779,6 +799,7 @@ def _run_evals(tmp_path, *, extra_env="", eval_id="pe-13", installed_sha=None,
     # `loci init` (when the host has the cross-compiler and a real `loci`), and
     # its escrow and context records belong to the test, not to `~/.loci/state`.
     script = (
+        f'export LOCI_EVAL_RESULTS_DIR="{(tmp_path / "eval-results").as_posix()}"; '
         f'{extra_env} HOME="{home.as_posix()}" '
         f'LOCI_STATE_DIR="{(tmp_path / "state").as_posix()}" '
         f'PATH="{_to_bash_path(bin_dir)}:$PATH" '
@@ -862,42 +883,67 @@ def test_an_edit_flow_eval_is_skipped_when_the_installed_plugin_is_not_this_tree
 def test_the_skip_reaches_the_report_not_only_the_console(tmp_path):
     """`report.md` is the artifact that gets cited. It used to say 'fixture
     unavailable on this host' for every skip and name none of them."""
-    import time as _time
-    results = PLUGIN_ROOT / "eval-results"
-    t0 = _time.time()
+    results = tmp_path / "eval-results"
     proc = _run_evals(tmp_path, installed_sha="0" * 40,
                       flags=("--installed-plugin",))
-    fresh = ({p for p in results.glob("*/report.md") if p.stat().st_mtime >= t0}
-             if results.is_dir() else set())
-    # Not "the newest on disk". `_run_evals` runs the real run_evals.sh with
-    # cwd=PLUGIN_ROOT, so the reports of every other caller land in this same
-    # directory. Taking the newest gave two wrong answers: under a concurrent
-    # writer it graded a stranger's report, and — the reason this is a
-    # correctness fix rather than hygiene — if run_evals.sh stopped writing
-    # report.md ALTOGETHER, the newest left on disk could be the one the skip
-    # test above wrote, same `installed_sha`, so it carries `pe-13` and
-    # `installed plugin` and lacks `fixture unavailable` too. Measured on a
-    # developer machine: 4 of 8 accumulated reports satisfied all three
-    # assertions, so the old guard was reliable only on a fresh CI checkout,
-    # where `eval-results/` is empty. A report that was not written during
-    # THIS call is not evidence about this call.
-    #
-    # "Written during", by mtime — not "a path that did not exist before".
-    # run_evals.sh keys its results directory on a one-second timestamp, so
-    # when the skip test above finishes within the same second this run lands
-    # in the SAME directory and overwrites a report.md that was already on the
-    # before-list; the path-difference test then found nothing new and failed
-    # on any machine fast enough (every WSL run; the Mac, as a race). The
-    # report is this run's either way — the harness rewrote it — and its
-    # mtime says so.
+    fresh = set(results.glob("*/report.md")) if results.is_dir() else set()
+    # This run's report and nobody else's: the harness writes under a root that
+    # is this test's own (`LOCI_EVAL_RESULTS_DIR`, AAD-8230). Until then it
+    # wrote into the checkout's `eval-results/`, shared with every other caller
+    # and with every earlier run of the suite, and telling this run's report
+    # from theirs took an mtime filter and thirty lines on why "the newest on
+    # disk" graded a stranger's report — 4 of 8 accumulated reports satisfied
+    # all three assertions below on a developer machine. A report that was not
+    # written during THIS call is not evidence about this call; now no other
+    # report is in reach.
     assert fresh, (
-        "this run wrote no report.md of its own; the ones already on disk belong "
-        "to other runs and cannot stand in for it\n" + proc.stdout[-2000:])
+        "this run wrote no report.md under its own results root\n" + proc.stdout[-2000:])
     body = max(fresh, key=lambda p: p.stat().st_mtime).read_text(encoding="utf-8")
     assert "pe-13" in body, body
     assert "installed plugin" in body, body
     assert "fixture unavailable" not in body, (
         "the report still attributes every skip to a missing fixture:\n" + body)
+
+
+@pytest.mark.parametrize("variable", ["unset LOCI_EVAL_RESULTS_DIR; ",
+                                      'export LOCI_EVAL_RESULTS_DIR="  "; '],
+                         ids=["unset", "blank"])
+def test_without_the_variable_a_run_lands_in_the_scripts_own_eval_results(tmp_path, variable):
+    """The default did not move (AAD-8230): a harness started by hand, with no
+    `LOCI_EVAL_RESULTS_DIR` — or a blank one, which is no value — still writes
+    `<its own directory>/eval-results/<timestamp>/`. Run against a throwaway
+    copy of the script and what it reads: the one way to exercise the default
+    without writing into this checkout, which is the thing the variable exists
+    to stop.
+
+    A `claude` stub is on PATH for the reason `_run_harness` gives: the harness
+    checks `command -v claude` before it does anything else, so on a host
+    without one this would stop at "'claude' CLI not found" and never reach the
+    directory it is about. `--list` starts no agent."""
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    for rel in ("run_evals.sh", "lib", "hooks", "skills", "evals", ".claude-plugin"):
+        src = PLUGIN_ROOT / rel
+        if src.is_dir():
+            shutil.copytree(src, copy / rel)
+        elif src.is_file():
+            shutil.copy2(src, copy / rel)
+    (copy / "run_evals.sh").chmod(0o755)
+    ble = tmp_path / "ble"
+    ble.mkdir()
+    binp = tmp_path / "hbin"
+    binp.mkdir()
+    claude = binp / "claude"
+    claude.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8", newline="\n")
+    claude.chmod(0o755)
+    script = (f'{variable}PATH="{_to_bash_path(binp)}:$PATH" '
+              f'"{_to_bash_path(copy / "run_evals.sh")}" '
+              f'--ble-root "{ble.as_posix()}" --list')
+    proc = subprocess.run([_find_bash(), "-c", script], capture_output=True, timeout=300,
+                          cwd=str(copy))
+    assert proc.returncode == 0, proc.stdout.decode("utf-8", "replace")[-1500:]
+    runs = [p.name for p in (copy / "eval-results").iterdir()]
+    assert len(runs) == 1 and re.fullmatch(r"\d{8}-\d{6}", runs[0]), runs
 
 
 def test_the_guard_lets_the_eval_run_when_the_installed_plugin_is_this_tree(

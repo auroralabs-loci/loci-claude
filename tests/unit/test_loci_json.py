@@ -1238,11 +1238,14 @@ def test_the_envelope_nesting_is_why_the_first_key_wins(tmp_path):
             "pending": 1,
             "ops": [{"op": "add", "index": 0,
                      "entry": {"text": "t", "kind": "budget",
-                               "ok": "HIJACK", "pending": "HIJACK"}}],
+                               "ok": "HIJACK", "pending": "HIJACK",
+                               "draft": "HIJACK"}}],
             "stale": False,
         },
     })
-    for key, want in (("ok", b"true"), ("pending", b"1")):
+    # `draft` since AAD-8202: the path the hook names in its carry record.
+    for key, want in (("ok", b"true"), ("pending", b"1"),
+                      ("draft", b"/c/p/.loci/contract.draft.yaml")):
         rc, got = _read(envelope, key, tmp_path)
         assert rc == 0 and got == want, (
             f"`{key}` answered {got!r}: a nested, model-authored field is "

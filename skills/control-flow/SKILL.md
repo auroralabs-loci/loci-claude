@@ -47,10 +47,10 @@ inherits a verdict from a bound, never from a band**, **[Your verdicts are
 **Structural invariants: which measurement answers which signal**.
 
 **This verb computes no verdict, and `data.contract` says whose bounds apply.**
-On `none`, every row's `STATUS` is the word your assessment composes to —
+Every row no entry covers takes the `STATUS` your assessment composes to —
 **Needs attention** → `CAUTION`, **Looks good** → `PASS`, **As reported** → `—` —
-per [No contract: the agent fills `STATUS`](../_shared/verdicts.md#no-contract).
-On `project`, an entry on these two signals is judged by **stack-depth** (Step 3
+per [No bound behind a row: the agent fills `STATUS`](../_shared/verdicts.md#no-contract),
+which on `none` is every row. On `project`, an entry on these two signals is judged by **stack-depth** (Step 3
 says why), and what comes to you is `data.agent_judged`: the text-only entries on
 the functions this run drew.
 
@@ -293,7 +293,7 @@ Verdict: **<PASS|CAUTION|FAIL>** — <one sentence cause> [(<N> of <M> judged)]
 ```
 
 `ENTRY` is the qualified signal name. `STATUS` is `PASS` / `CAUTION` / `FAIL` for
-a compared bound or an observed hazard, and `—` where nothing was computed.
+a compared bound or an observed hazard, else your composed word.
 `AGENT ASSESSMENT` is **Needs attention**, **Looks good** or **As reported**. A row that reached neither — no `STATUS` and no
 assessment — is not drawn; it is counted beside the verdict.
 
@@ -303,17 +303,17 @@ assessment — is not drawn; it is counted beside the verdict.
    on the whole scope. Always, when the graph answered it. The Note carries the
    count and the functions the cycles are in, or `unmeasured` with its reason in place of a zero this scope cannot prove.
    `STATUS` is `PASS`/`CAUTION`/`FAIL` against an enabled entry bounding
-   `recursion_cycles`, and otherwise `—` on a contracted run or your assessment's
-   word on a `none` one. **Spend no caution on a cycle**: whether anything bounds it
+   `recursion_cycles`, and otherwise your assessment's word. **Spend no caution on a cycle**: whether anything bounds it
    is `stack-depth`'s reading, so report the count and hand it over.
 2. **Indirect calls** — `Safety (Indirect Calls)`, same rules against
    `indirect_calls`, with the Note naming the call sites by source range.
 
 3. **Rules** — `<Gate> (Rule)` per text-only entry you judged, on its function:
-   `STATUS` `—`, your assessment beside it, the Note quoting its `text` then the
+   `STATUS` your composed word (`FAIL` where its author wrote `severity: fail` and
+   you flag it), your assessment beside it, the Note quoting its `text` then the
    cause with its source range.
 
-`unbounded_recursion` and `unknown_callees` get no row. A `—` beside either reads
+`unbounded_recursion` and `unknown_callees` get no row. A word beside either reads
 as measured and clean, which is the one claim this skill cannot support.
 
 Table footer, by what the run had to judge against:
@@ -339,11 +339,13 @@ reached no word left out of the worst-of and counted beside it
 (`(2 of 5 judged)`). It is never one row inside the table.
 
 **Under the table**, by `data.contract`: on `none`, the shared caption from [No
-contract](../_shared/verdicts.md#no-contract); on `project`:
+contract](../_shared/verdicts.md#no-contract); on `project`, this footer in place
+of the shared `Not under contract` caption:
 
 ```
-No bound was computed here — an entry on recursion_cycles or indirect_calls is
-judged by `/loci:stack-depth`, and a Rule row's word is the agent's reading.
+No bound was computed here — every STATUS above is composed from the agent
+assessment beside it: an entry on recursion_cycles or indirect_calls is judged by
+`/loci:stack-depth`, and a Rule row's word is the agent's reading.
 ```
 
 ### Example
@@ -353,21 +355,24 @@ Artifact: build/app.elf (linked <build time>, sources current)
 
 | ENTRY                   | FUNCTION         | STATUS  | AGENT ASSESSMENT | NOTE |
 |-------------------------|------------------|:-------:|:----------------:|------|
-| Safety (Recursion)      | app.elf (elf)    |    —    | Looks good       | 0 cycles across the 12 functions this run read — not a zero over the binary |
-| Safety (Indirect Calls) | dispatch         | CAUTION | Needs attention  | 3 call sites (sched.c:118, sched.c:121, sched.c:140), targets not in the graph |
-| Safety (Rule)           | sched_tick       |    —    | Looks good       | "every loop in sched_tick stays bounded by n_tasks": the loop at sched.c:94-99 exits on i < n_tasks |
+| Safety (Recursion)      | app.elf (elf)    |  PASS   | Looks good       | 0 cycles across the 12 functions this run read — not a zero over the binary |
+| Safety (Indirect Calls) | dispatch         | CAUTION | Needs attention  | 3 call sites (sched.c:118, sched.c:121, sched.c:140), targets not in the graph; no entry bounds dispatch |
+| Safety (Rule)           | sched_tick       |  PASS   | Looks good       | "every loop in sched_tick stays bounded by n_tasks": the loop at sched.c:94-99 exits on i < n_tasks |
 
-No bound was computed here — an entry on recursion_cycles or indirect_calls is
-judged by `/loci:stack-depth`, and a Rule row's word is the agent's reading.
+No bound was computed here — every STATUS above is composed from the agent
+assessment beside it: an entry on recursion_cycles or indirect_calls is judged by
+`/loci:stack-depth`, and a Rule row's word is the agent's reading.
 
 Verdict: **CAUTION** — 3 indirect call sites in `dispatch`, targets not in the
 graph; no bound judged indirect_calls here, so the word is this run's reading
 ```
 
-The first row's `—` is a contracted run's: no bound was computed, and your
-**Looks good** composes it to `PASS` — a reading of twelve functions, not a claim
-about the binary. A repo that bounds `recursion_cycles` gets that answer from
-stack-depth.
+The first row's `PASS` is your **Looks good** composed, no bound having computed
+anything — a reading of twelve functions, not a claim about the binary. A repo
+that bounds `recursion_cycles` gets that answer from stack-depth. `dispatch` is
+covered by no entry, so its row stays in the same table with your word — [the
+caption rule](../_shared/verdicts.md#uncovered) — and its **Needs attention** is
+what composes the `CAUTION`.
 
 ## Step 5: record it
 

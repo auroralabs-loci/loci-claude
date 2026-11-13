@@ -34,11 +34,10 @@ row verdict is the two composed; see `<plugin-dir>/skills/_shared/verdicts.md`
 for the matrix and the display words. A `STATUS` of `PASS` / `CAUTION` / `FAIL`
 needs an enabled contract entry bounding `rom_size` or `ram_size`. A figure with
 no such entry behind it takes its word from your assessment, a map-computed
-region occupancy included (Step 2). On a `none` envelope — no contract file at all — that
-assessment fills `STATUS` too: **Needs attention** → `CAUTION`, **Looks good** →
-`PASS`, **As reported** → `—`, with the caption from `verdicts.md`'s [No
-contract: the agent fills `STATUS`](../_shared/verdicts.md#no-contract) under the
-table. On a contracted run a signal no entry covers keeps its `—`.
+region occupancy included (Step 2). That assessment fills `STATUS` too, on either
+envelope: **Needs attention** → `CAUTION`, **Looks good** → `PASS`, **As
+reported** → `—`, with the caption from `verdicts.md`'s [No bound behind a row:
+the agent fills `STATUS`](../_shared/verdicts.md#no-contract) under the table.
 
 Apply the house rules' **The Contract Envelope is input only**, **A measurement
 inherits a verdict from a bound, never from a band** and **Your verdicts are
@@ -146,7 +145,7 @@ The envelope carries:
   entries judged this run and their verdicts are the report's; `none` means the
   repo has no contract file, so no judgement, gate, row or machine verdict is
   assembled and every row's `STATUS` is the one your assessment maps to; you
-  still draw the conclusion table as `verdicts.md`'s [No contract
+  still draw the conclusion table as `verdicts.md`'s [No bound behind a row
   section](../_shared/verdicts.md#no-contract) says. An envelope carrying none
   of them is never a reason to go and read the contract yourself.
 - `data.rows` — **not rendered, on any envelope** ([The conclusion
@@ -382,7 +381,7 @@ skill draws the **absolute** shape, or the **delta** shape in delta mode.
 Print `17,248 / 2,097,152` and the 0.8% it implies: the linker's own numbers.
 The cut-off at which a percentage becomes a concern is invented, so it never
 produces a `STATUS` or an assessment by itself (Step 2): it sits in the Note
-beside a **Looks good** — `PASS` on a `none` envelope, `—` on a contracted one.
+beside a **Looks good** — a composed `PASS`, on either envelope.
 Where a bound *is* there, the CLI bands the ratio and this skill states no
 threshold of its own.
 
@@ -395,23 +394,21 @@ requirement checked and met is the answer the reader asked for.
 1. **ROM usage** — `Memory (ROM)`. Always, when ROM total is
   computable. Report the measured total, and the region size and percentage
   whenever a map was parsed. `STATUS` is `PASS`/`CAUTION`/`FAIL` against an enabled
-  contract entry bounding `rom_size`; with no such entry it is `—` on a
-  contracted run and your assessment's word on a `none` one. A map-derived
+  contract entry bounding `rom_size`; with no such entry it is your assessment's
+  word. A map-derived
   percentage on its own sets neither the `STATUS` nor the assessment, however high.
 2. **RAM static total** — `Memory (RAM)`, same rules as ROM, against `ram_size`.
 3. **Largest single symbol** — the region's own `ENTRY`, with the symbol in
   `FUNCTION`. Only when one symbol is ≥ 25% of its region total — visibility, not a
-  bound. `STATUS` is `—` on a contracted
-  run, and your assessment's word on a `none` one.
+  bound. `STATUS` is your assessment's word.
 4. **Region delta** (delta mode only) — one row per `memory_regions_delta` region
   that grew, under that
-  region's `ENTRY`. `STATUS` is `—` on a contracted run; **Needs attention** with
-  the region and its growth named where it is worth raising, which is what fills
-  the cell on a `none` one.
+  region's `ENTRY`. `STATUS` is your composed word: **Needs attention** with
+  the region and its growth named where it is worth raising.
 5. **Section growth concerns** (delta mode only) — one row per
   `data.detail.delta.section_deltas` entry with `delta_pct` > 20 — visibility, not a bound — under the
   `ENTRY` of the region it lands in, with the section named in the Note. `STATUS`
-  is `—` on a contracted run, your assessment's word on a `none` one.
+  is your assessment's word.
 
 Omit a "ROM usage is clean" row that only restates the Summary block above.
 

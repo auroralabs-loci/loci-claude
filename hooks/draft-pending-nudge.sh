@@ -75,8 +75,9 @@ fi
 # and migrates a pre-move draft up to it on first contact — a draft a pre-move
 # CLI left under `.loci-build/` is not pending until a verb has copied it, and
 # nudging over it first would tell the user about a draft `draft show` cannot
-# yet see. The gate is a gate and nothing below it names a path: which file's
-# CONTENT is reported stays the CLI's answer.
+# yet see. The gate is a gate and nothing below it spells a path of its own:
+# which file is reported — its content and, for the carry at the foot, its
+# name — stays the CLI's answer.
 #
 # ⚠ AND THE DIRECTORY MATTERS AS MUCH AS THE FILENAME — see the gate below.
 # ⚠ THE GATE IS A GATE. It answers "could there be a draft for this session"
@@ -163,6 +164,11 @@ pending=$(loci_json_get pending)
 stale=$(loci_json_get stale)
 _dn_state="pending=${pending:-0} stale=$stale"
 [ "${pending:-0}" -gt 0 ] 2>/dev/null || exit 0
+# Which file that draft is — the CLI's word, as everything below the gate is.
+# The message built here is about that file and nothing else, and where it is
+# said a turn late (the carry at the foot) it is said only while the file still
+# holds what was just counted (AAD-8202).
+_dn_file=$(loci_json_get draft)
 
 # "2 bounds added, 1 retired" out of the draft's `ops`, counted rather than
 # walked: each op names its verb once, so the tally is one pass per verb over the
@@ -210,6 +216,12 @@ fi
 loci_json_system_message Stop "$msg"
 # Copilot's Stop reply shows the user nothing; under it the host adapter carries
 # the message to the next prompt (lib/loci_host.sh, AAD-7783). Nothing elsewhere.
-loci_host_carry_add draft "$msg" "$payload" || :
+#
+# The draft's file rides with it. The user's `! loci contract accept` happens
+# BETWEEN this Stop and that prompt, where no hook runs: the carried "not
+# applied" was then said over a contract that had just been applied, every
+# time (AAD-8202). Naming the file lets the adapter drop the message unsaid
+# when the draft is gone or is no longer this one.
+loci_host_carry_add draft "$msg" "$payload" "$_dn_file" || :
 _dn_state="nudged (pending=$pending stale=$stale)"
 exit 0

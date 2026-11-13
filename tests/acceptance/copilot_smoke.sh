@@ -237,7 +237,10 @@ EOF
     git add -A
     git -c user.name=smoke -c user.email=smoke@loci -c commit.gpgsign=false commit -q -m fixture
     make >/dev/null 2>&1 || { echo "FAIL: the fixture does not build (arm-none-eabi-gcc)"; FAILS=1; exit 1; }
-    loci init --auto >"$WORK/init.json" 2>&1
+    # --clock=trained answers the board-clock question (loci-tools >= 0.2.128, AAD-8091)
+    # that a headless init would otherwise stop at with `init_needs_user` whenever the
+    # backend holds no clock for this fresh fixture; the trained clock is the default.
+    loci init --auto --clock=trained >"$WORK/init.json" 2>&1
     skip() { echo "SKIP: $1"; [ "$KEEP" = 1 ] || rm -rf "$WORK"; trap - EXIT; exit 3; }
     if grep -q '"code": "auth_required"' "$WORK/init.json"; then
         skip "loci is not signed in on this host (loci init needs a session) — run: loci login"

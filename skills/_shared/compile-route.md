@@ -41,7 +41,9 @@ can pass on a `≥` figure — so **record it with `--agent-verdict`**, per the 
 recorded `pass` is the same run described two ways. **Never substitute a number of your own** for a trip
 count the evaluator could not derive — not from the source, not from a plausible
 buffer size, not from "typically". A fabricated count is wrong in the same direction
-every time, and it is wrong *silently*, which a `≥` is not. If a loop's bound is
+every time, and it is wrong *silently*, which a `≥` is not. A count the **user**
+states goes to `loci analyse measure --trips <fn>:L<k>=N` (or `<file>:<line>=N`),
+where it enters the same arithmetic — still never a figure of your own. If a loop's bound is
 knowable but not from the instruction stream — a `#define`, a caller-supplied length
 the project fixes elsewhere — that is a fact for the repository's Contract Envelope
 to declare, not for you to assume. A recursive cycle is not a loop with a big trip

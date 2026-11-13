@@ -308,11 +308,16 @@ class Host:
         """The message a Stop hook recorded for the session's next prompt under
         Copilot — `turn-<session_id>.nudge-<tag>`, first line an age stamp
         (AAD-7783, `loci_host_carry_add`) — or None when it recorded nothing.
-        Always None under Claude Code, which records nothing."""
+        Always None under Claude Code, which records nothing. The `@file` line
+        a record about one file holds under the stamp (AAD-8202) is header,
+        not message, and is stepped over."""
         rec = state_dir / f"turn-{_file_sid(session)}.nudge-{tag}"
         if not rec.is_file():
             return None
-        return rec.read_text(encoding="utf-8").partition("\n")[2].rstrip("\n")
+        text = rec.read_text(encoding="utf-8").partition("\n")[2]
+        if text.startswith("@file "):
+            text = text.partition("\n")[2]
+        return text.rstrip("\n")
 
     # -- the process ---------------------------------------------------------
 

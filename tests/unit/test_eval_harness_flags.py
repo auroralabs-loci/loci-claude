@@ -536,23 +536,32 @@ def tripwire(tmp_path):
     return bindir, ble, log
 
 
-def _run(tripwire, *flags, host=None):
+def _run(tripwire, *flags, host=None, results_root=None, cwd=None):
     """`host` goes in as LOCI_EVAL_HOST, the way a CI job would set it; the
     `--host` flag is tested on its own. Whatever the host, neither fake may be
-    called."""
+    called.
+
+    The run's directory goes under the test's own temporary directory
+    (`LOCI_EVAL_RESULTS_DIR`), not under this checkout's `eval-results/`, where
+    27 run directories a suite from this file used to stay for good (AAD-8230).
+    `results_root` names another root, spelled as the caller wants it, and
+    `cwd` another directory to start the harness from."""
     bindir, ble, log = tripwire
     # A dry run still stages the stale fixture, and since T14 that runs a real
     # `loci init` — whose escrow and context belong to the test, not to the
     # developer's `~/.loci/state` (where twelve of them were found).
     env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
            "HOME": os.environ.get("HOME", ""),
-           "LOCI_STATE_DIR": str(Path(ble).parent / "loci-state")}
+           "LOCI_STATE_DIR": str(Path(ble).parent / "loci-state"),
+           "LOCI_EVAL_RESULTS_DIR": (results_root if results_root is not None
+                                     else (Path(ble).parent / "eval-results").as_posix())}
     env.pop("LOCI_EVAL_HOST", None)
     if host is not None:
         env["LOCI_EVAL_HOST"] = host
     proc = subprocess.run(
         [BASH, str(RUNNER), "--ble-root", str(ble), *flags],
-        capture_output=True, text=True, encoding="utf-8", env=env, cwd=str(PLUGIN_ROOT))
+        capture_output=True, text=True, encoding="utf-8", env=env,
+        cwd=str(cwd if cwd is not None else PLUGIN_ROOT))
     # pytest shows these only for a failing test; the staging reasons are on stderr.
     print(proc.stdout)
     print(proc.stderr, file=sys.stderr)
@@ -1629,3 +1638,87 @@ def test_the_claude_plan_mode_eval_carries_the_plan_notice(tripwire):
     proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", host="copilot")
     sent = (_results_dir(proc) / "loci-preflight_evalpf-critical-1_prompt_sent.txt").read_text(encoding="utf-8")
     assert "PLAN MODE" not in sent
+
+
+# -- where a run's directory goes (AAD-8230) ----------------------------------
+#
+# The harness wrote every run to `<checkout>/eval-results/<timestamp>/`, and the
+# tests in this file start it for real: 27 run directories a suite from here,
+# nine more from test_eval_graders.py. The directory is ignored by git, so nothing showed and
+# nothing was ever removed: 7,981 run directories and 8.2 GB on the box releases
+# are made from, with the reports people cite lost among them. A run now goes
+# under `LOCI_EVAL_RESULTS_DIR` when that is set, and the suite sets it.
+
+def test_a_run_goes_under_the_root_the_environment_names(tripwire):
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1")
+    assert proc.returncode == 0, proc.stdout[-1500:]
+    root = Path(tripwire[1]).parent / "eval-results"
+    results = _results_dir(proc)
+    assert results.parent.resolve() == root.resolve(), proc.stdout[-600:]
+    assert re.fullmatch(r"\d{8}-\d{6}", results.name), results
+    assert (results / "loci-preflight_evalpf-critical-1_dryrun.txt").is_file()
+
+
+def test_the_checkout_gains_no_run_directory(tripwire):
+    """The point of it. (A harness someone runs BY HAND in this checkout while
+    the suite is going would show up here too; that is not this test's subject.)"""
+    theirs = PLUGIN_ROOT / "eval-results"
+    before = set(os.listdir(theirs)) if theirs.is_dir() else set()
+    _run(tripwire, "--list")
+    _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1")
+    after = set(os.listdir(theirs)) if theirs.is_dir() else set()
+    # Appeared, not "changed": somebody clearing old runs out of the checkout
+    # while the suite goes — which RELEASING.md now invites — is not a failure.
+    assert not (after - before), f"run directories appeared in the checkout: {sorted(after - before)}"
+
+
+def test_the_whole_suite_inherits_a_root_outside_the_checkout():
+    """`tests/conftest.py` puts the variable in the environment for the session,
+    so a harness run a future test starts is covered without that test knowing."""
+    root = os.environ.get("LOCI_EVAL_RESULTS_DIR")
+    assert root, "the session fixture did not set LOCI_EVAL_RESULTS_DIR"
+    assert PLUGIN_ROOT.resolve() not in Path(root).resolve().parents, root
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a backslash is a separator on Windows only")
+def test_a_root_spelled_with_backslashes_is_taken(tripwire):
+    root = Path(tripwire[1]).parent / "win spelled" / "eval-results"
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1", results_root=str(root))
+    assert "\\" in str(root)
+    assert proc.returncode == 0, proc.stdout[-1500:]
+    assert _results_dir(proc).parent.resolve() == root.resolve()
+    assert any(root.iterdir())
+    # One spelling from there on: what the harness prints, and so what it hands
+    # the host and the model, has no backslash left in it. (Git Bash's `mkdir`
+    # takes a backslash path as it is, so the directory existing proves nothing.)
+    said = next(ln for ln in proc.stdout.splitlines() if ln.startswith("Results →"))
+    assert "\\" not in said, said
+
+
+def test_a_relative_root_is_made_absolute(tripwire):
+    """The harness hands paths under the root to processes it starts in OTHER
+    directories — the host runs from the eval's cwd with `--mcp-config` and the
+    system-prompt file under it. A relative root left those pointing nowhere."""
+    start = Path(tripwire[1]).parent / "started-here"
+    start.mkdir()
+    proc = _run(tripwire, "--dry-run", "--eval-id", "pf-critical-1",
+                results_root="rel/eval-results", cwd=start)
+    assert proc.returncode == 0, proc.stdout[-1500:]
+    results = _results_dir(proc)
+    assert results.is_absolute(), results
+    assert results.parent.resolve() == (start / "rel" / "eval-results").resolve()
+    dry = (results / "loci-preflight_evalpf-critical-1_dryrun.txt").read_text(encoding="utf-8")
+    assert "rel/eval-results" in dry and " rel/eval-results" not in dry, (
+        "a path under the root is still relative in what the host is started with:\n" + dry)
+
+
+def test_a_root_that_cannot_be_created_is_refused_by_name(tripwire):
+    """Not a run that carries on and fails forty lines later on its first write:
+    the variable is named, with the value it holds."""
+    blocker = Path(tripwire[1]).parent / "a-file"
+    blocker.write_text("x", encoding="utf-8")
+    root = (blocker / "eval-results").as_posix()
+    proc = _run(tripwire, "--list", results_root=root)
+    assert proc.returncode == 1, proc.stdout[-1500:]
+    assert "cannot create the results directory" in proc.stdout
+    assert f"LOCI_EVAL_RESULTS_DIR is set to: {root}" in proc.stdout

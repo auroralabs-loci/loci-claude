@@ -82,6 +82,7 @@ pytestmark = pytest.mark.skipif(
 # when the payload carries none, and the reply both hosts read. `_run` and
 # `_run_plugin` read the active host, so a test that does not opt in runs
 # exactly as it did.
+from tests.fixtures import home_spellings
 from tests.fixtures.copilot_payloads import current as _host
 
 _BOTH_HOSTS = pytest.mark.usefixtures("host")
@@ -180,8 +181,12 @@ def _run(home: Path, payload: dict, *, stub: str,
          drop_home: bool = False, expect_zero: bool = True,
          recipe: bool = True, init_status=_UNSET,
          project: Path | None = None, state_dir: Path | None = None,
-         hook: Path = HOOK) -> Result:
+         hook: Path = HOOK,
+         home_as: home_spellings.Spelled | None = None) -> Result:
     """Run the hook against a stubbed `loci`.
+
+    `home_as` hands the hook another spelling of `home` as its `$HOME`
+    (tests/fixtures/home_spellings.py).
 
     The hook prepends `$HOME/.local/bin` to PATH (where `uv tool install` puts the
     real CLI), so the stub goes there — pointing HOME at a tmp dir also keeps the
@@ -237,8 +242,10 @@ def _run(home: Path, payload: dict, *, stub: str,
     payload = host.respell(payload)
     env.update(host.env(project=_to_bash_path(root)))
     host.seed(sdir)
+    if home_as is not None:
+        env["HOME"] = home_as.env
     proc = subprocess.run(
-        [_find_bash(), _to_bash_path(hook)],
+        home_spellings.argv(_find_bash(), _to_bash_path(hook), home_as),
         input=json.dumps(payload), capture_output=True, text=True, timeout=30,
         env=env, cwd=host.cwd(None),
     )
@@ -2444,6 +2451,36 @@ def test_a_py_the_c_recipe_does_not_map_is_silent(tmp_path):
     assert _markers(tmp_path / "state") == []
 
 
+@pytest.mark.parametrize("shape", home_spellings.SHAPES)
+def test_a_py_below_a_recipe_at_home_never_reaches_the_cli(tmp_path, shape):
+    """`$HOME` is exclusive however it is spelled (AAD-8026): the walk climbs the
+    name `pwd -P` gives the directory, which is not the text of `$HOME` under a
+    Git Bash mount, a linked home or a case variant. `pre-edit-hook.sh` carries
+    the same walk and the same cases (test_pre_edit_hook.py)."""
+    home = tmp_path / "home"
+    path = _py_file(home / "repo" / "x.py")
+    r = _run(home, _edit(path, patch=_ONE_LINE_PATCH), stub=_MEASURABLE,
+             init_status="uninitialized",
+             home_as=home_spellings.spell(shape, home))
+
+    assert r.calls == [], f"$HOME spelled {shape}: got {r.calls!r}"
+    assert r.out == ""
+
+
+@pytest.mark.parametrize("shape", home_spellings.SHAPES)
+def test_a_py_project_below_home_is_still_asked_about(tmp_path, shape):
+    """The stop matches `$HOME` and nothing under it."""
+    home = tmp_path / "home"
+    lab = home / "lab"
+    path = _py_file(lab / "lab" / "dsp.py")
+    r = _run(home, _edit(path, patch=_ONE_LINE_PATCH),
+             stub=_py_stub(True, lab), project=lab,
+             home_as=home_spellings.spell(shape, home))
+
+    assert len(r.calls) == 1, f"$HOME spelled {shape}: got {r.calls!r}"
+    assert r.context is not None and "[loci] dsp.py was modified" in r.context
+
+
 @pytest.mark.parametrize("governed", [True, False, None],
                          ids=["governed", "ungoverned", "governance-unknown"])
 @pytest.mark.parametrize("name", ["x.py", "x.pyx", "x.c"])
@@ -2494,3 +2531,54 @@ def test_an_extension_added_to_the_filter_does_not_nudge_until_allow_listed(tmp_
     assert r.calls == ["hook edit-scan"], "the new arm did not reach the CLI"
     assert not _nudged(r), r.out
     assert _markers(tmp_path / "state") == []
+
+
+# ── S-CLI-1: a .loci/build.yaml `loci init` never wrote on this machine ──────
+
+def _unapproved_stub(recipe_path: str) -> str:
+    data = {"measurable": True, "artifact_only": False, "governed": False,
+            "project_root": "", "checkout_root": "",
+            "recipe_unapproved": recipe_path}
+    return "echo '" + json.dumps({"ok": True, "data": data}) + "'"
+
+
+@_BOTH_HOSTS
+def test_a_committed_recipe_is_nudged_once_and_never_reminded(tmp_path):
+    """The file test reads a committed recipe as initialization, so without the
+    CLI's word the user was told nothing about why LOCI stayed silent."""
+    stub = _unapproved_stub(f"{tmp_path.as_posix()}/.loci/build.yaml")
+    first = _run(tmp_path, _C_EDIT, stub=stub, recipe=True)
+    second = _run(tmp_path, _C_EDIT, stub=stub, recipe=True)
+
+    assert first.context is not None and "You MUST invoke" not in first.context
+    assert "was not written by loci init here" in first.context
+    assert f"/loci:init {tmp_path.as_posix()}" in first.context
+    assert first.system_message is not None and \
+        "was not written by loci init here" in first.system_message, (
+            "the user, not only the model, is told why")
+    assert second.context is None, "the unapproved nudge repeated"
+
+
+def test_a_python_edit_under_a_committed_recipe_is_nudged_too(tmp_path):
+    lab = tmp_path / "lab"
+    path = _py_file(lab / "lab" / "dsp.py")
+    stub = _unapproved_stub(f"{lab.as_posix()}/.loci/build.yaml")
+    r = _run(tmp_path, _edit(path, patch=_ONE_LINE_PATCH), stub=stub,
+             recipe=True, project=lab)
+
+    assert r.context is not None and "was not written by loci init here" in r.context
+
+
+def test_a_committed_recipe_under_a_state_directory_that_denies_writes_is_not_nudged_every_edit(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    if not _deny_writes(state):
+        pytest.skip("could not make the state directory refuse writes")
+    stub = _unapproved_stub(f"{tmp_path.as_posix()}/.loci/build.yaml")
+    try:
+        outs = [_run(tmp_path, _C_EDIT, stub=stub, recipe=True, state_dir=state)
+                for _ in range(3)]
+    finally:
+        _allow_writes(state)
+    assert all(r.context is None for r in outs), (
+        "the marker could not be claimed and the hook nudged anyway")

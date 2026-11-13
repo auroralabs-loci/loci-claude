@@ -29,6 +29,7 @@ Two invariants:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -54,6 +55,7 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
+from tests.fixtures import home_spellings
 from tests.fixtures.copilot_payloads import current as _host
 
 # Every test runs under both hosts (AAD-7790). Under Copilot the payload
@@ -115,7 +117,11 @@ class Result:
 
 
 def _run(home: Path, payload: dict, *, stub: str, expect_zero: bool = True,
-         env_extra: dict | None = None) -> Result:
+         env_extra: dict | None = None,
+         home_as: home_spellings.Spelled | None = None) -> Result:
+    """`home_as` hands the hook another spelling of `home` as its `$HOME`
+    (tests/fixtures/home_spellings.py); everything the test reads back stays
+    under `home` itself."""
     bin_dir = home / ".local" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     # Always present, so the hook's state-directory resolution lands inside the
@@ -155,12 +161,14 @@ def _run(home: Path, payload: dict, *, stub: str, expect_zero: bool = True,
     env.update(host.env(project=_to_bash_path(home)))
     if env_extra:
         env.update(env_extra)
+    if home_as is not None:
+        env["HOME"] = home_as.env
     payload = host.respell(payload)
     # No `LOCI_STATE_DIR` here, so the record the hook resolves a Copilot turn
     # from goes where the hook's ladder lands: `$HOME/.loci/state`.
     host.seed(home / ".loci" / "state")
     proc = subprocess.run(
-        [_find_bash(), _to_bash_path(HOOK)],
+        home_spellings.argv(_find_bash(), _to_bash_path(HOOK), home_as),
         input=json.dumps(payload), capture_output=True, text=True, timeout=30,
         # Claude Code starts the hook where this process runs (as before);
         # Copilot starts it in the plugin root.
@@ -412,13 +420,101 @@ def test_the_python_walk_stops_where_the_clis_does(tmp_path, shape):
     assert r.calls == [], f"{shape}: got {r.calls!r}"
 
 
+@pytest.mark.parametrize("shape", home_spellings.SHAPES)
+def test_the_python_walk_stops_at_home_however_home_is_spelled(tmp_path, shape):
+    """`$HOME` is one directory under several names (AAD-8026), and the walk
+    climbs the one `pwd -P` gives it: `/tmp/…` under Git Bash for a directory
+    below `%TEMP%`, the target of a linked home, the true case of a case
+    variant. Compared as text, none of those is `$HOME`, the ceiling is never
+    met, and a recipe AT `$HOME` sends every `.py` below it to the CLI."""
+    home = tmp_path / "home"
+    _recipe_at(home)
+    path = _py_at(home / "repo" / "x.py")
+    r = _run(home, _edit(path), stub=_OK,
+             home_as=home_spellings.spell(shape, home))
+    assert r.calls == [], f"$HOME spelled {shape}: got {r.calls!r}"
+
+
+@pytest.mark.parametrize("shape", home_spellings.SHAPES)
+def test_a_py_project_below_home_reaches_the_cli_however_home_is_spelled(
+        tmp_path, shape):
+    """The other side of the stop: it must match `$HOME` and nothing else. A
+    stop that also matched a directory under `$HOME` would end the walk before
+    the project's recipe, and a governed `.py` would never be measured."""
+    home = tmp_path / "home"
+    project = _recipe_at(home / "lab")
+    path = _py_at(project / "lab" / "dsp.py")
+    r = _run(home, _edit(path), stub=_OK,
+             home_as=home_spellings.spell(shape, home))
+    assert r.scans and r.snapshots, f"$HOME spelled {shape}: calls={r.calls!r}"
+
+
+def _home_identity_tells_nothing(home: Path) -> None:
+    """Make `~/.loci` the same directory as `~`, which is how a volume that
+    reports inode 0 for every directory looks to `-ef`: the hook's own check
+    (`$HOME -ef $HOME/.loci`) answers yes, and it must then stop trusting
+    identity. The recipe `~/.loci/build.yaml` is `~/build.yaml` through the link."""
+    home.mkdir(parents=True, exist_ok=True)
+    if not home_spellings.link_dir(home / ".loci", home):
+        pytest.skip("this platform will not create a directory link unprivileged")
+    (home / "build.yaml").write_text("version: 1\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("slash", [False, True], ids=["bare", "trailing-slash"])
+def test_without_a_usable_identity_the_walk_still_stops_at_a_home_spelled_alike(
+        tmp_path, slash):
+    """The text compare is the whole ceiling where `-ef` cannot be trusted."""
+    home = tmp_path / "home"
+    _home_identity_tells_nothing(home)
+    r = _run(home, _edit(_py_at(home / "repo" / "x.py")), stub=_OK,
+             home_as=home_spellings.textual(home, slash=slash))
+    assert r.calls == [], f"got {r.calls!r}"
+
+
+def test_without_a_usable_identity_a_differing_spelling_sends_the_file_on(tmp_path):
+    """Where `-ef` would call every directory `$HOME`, believing it stops the
+    walk at its first level for every project on the volume, and a governed
+    `.py` is never measured, in silence. The hook refuses the test there, and a
+    `$HOME` it cannot recognise by text is passed: the recipe above is found
+    and the CLI, which decides, is asked."""
+    home = tmp_path / "home"
+    _home_identity_tells_nothing(home)
+    spelled = home_spellings.spell("linked", home)
+    r = _run(home, _edit(_py_at(home / "repo" / "x.py")), stub=_OK, home_as=spelled)
+    assert r.scans, f"calls={r.calls!r}"
+
+
+def test_a_relative_home_is_never_met_by_identity(tmp_path):
+    """`-ef` reads a relative `$HOME` against the hook's own working directory,
+    so it names whatever that makes of it — here the project itself. Taking its
+    word would stop a governed `.py` at its own recipe; the text compare, which
+    a relative path never satisfies, sends the file on to the CLI."""
+    project = _recipe_at(tmp_path / "proj")
+    path = _py_at(project / "src" / "x.py")
+    spelled = home_spellings.relative(project, _host().cwd(None) or os.getcwd())
+    r = _run(project, _edit(path), stub=_OK, home_as=spelled)
+    assert r.scans, f"$HOME={spelled.env!r}: calls={r.calls!r}"
+
+
+def _recipe_walk(hook: Path) -> str:
+    text = hook.read_text(encoding="utf-8")
+    start = text.index("_loci_recipe_above() {")
+    return text[start:text.index("\n}\n", start)]
+
+
+def test_both_edit_hooks_carry_the_same_recipe_walk():
+    """The walk is inline in each edit hook (neither sources a library before
+    its extension gate), so a fix made in one is a fix the other still lacks —
+    the pre-edit side would capture a baseline for a file the post-edit side
+    then never measures, or the reverse."""
+    assert _recipe_walk(HOOK) == _recipe_walk(HOOK.with_name("post-edit-hook.sh"))
+
+
 def test_the_python_walk_follows_a_linked_directory(tmp_path):
     project = _recipe_at(tmp_path / "real" / "proj")
     (project / "src").mkdir()
     link = tmp_path / "link"
-    try:
-        link.symlink_to(project / "src", target_is_directory=True)
-    except OSError:
+    if not home_spellings.link_dir(link, project / "src"):
         pytest.skip("cannot create a directory link here")
     r = _run(tmp_path, _edit(_py_at(link / "x.py")), stub=_OK)
     assert r.scans, f"calls={r.calls!r}"

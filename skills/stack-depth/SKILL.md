@@ -37,11 +37,10 @@ says when to offer.
 row verdict is the two composed; see `<plugin-dir>/skills/_shared/verdicts.md`
 for the matrix and the display words. A `STATUS` of `PASS` / `CAUTION` / `FAIL`
 needs an enabled contract entry bounding `stack_depth` or `stack_frame_size`, a
-bound the request stated, or a directly observed structural hazard. A depth with neither behind it has
-`STATUS` `—` on a contracted run and takes its word from your assessment, which
-on a `none` envelope fills the `STATUS` column itself — the mapping and the
-caption are in `verdicts.md`'s [No contract: the agent fills
-`STATUS`](../_shared/verdicts.md#no-contract). There is no default budget
+bound the request stated, or a directly observed structural hazard. A depth with neither behind it
+takes its word from your assessment, which fills the `STATUS` column itself on
+either envelope — the mapping and the captions are in `verdicts.md`'s [No bound
+behind a row: the agent fills `STATUS`](../_shared/verdicts.md#no-contract). There is no default budget
 and no percentage band here: the measurement is a number of bytes until someone's
 bound gives it a denominator, and where one does, the CLI bands the ratio in one
 place and this skill states no threshold of its own.
@@ -341,14 +340,14 @@ bound**, not a worst case, and the real depth can only be larger. So:
   the depth `≥<N> B` and a passing word `PASS (lower bound)`. The judgement says so
   too — `lower_bound: true` on the `stack_depth` judgement and its measured value,
   `prev_lower_bound: true` when the Before was a minimum as well.
-- **`STATUS` stays the verb's word on the number it computed**; never write
-  `CAUTION` into it for a floor. An entry nothing compared (a regression with no
-  Before) comes first: `STATUS` `—`, the floor in its Note, `no_opinion` unless
-  the code gives you one, which the floor is not. Otherwise, by what bounds the
-  depth: under a bound that compared a number, or with no contract at all, the
-  assessment is **Needs attention**, never **Looks good**, and the composition
-  lifts a `PASS` row to `CAUTION`; on a contracted repo with no entry on this
-  function it is a Note, never a flag. Name the cause in the Note either way.
+- **`STATUS` stays the verb's word where a bound computed it**; never write
+  `CAUTION` into a measured cell for a floor. An entry nothing compared (a
+  regression with no Before) comes first: `STATUS` `—`, the floor in its Note,
+  `no_opinion` unless the code gives you one, which the floor is not. Otherwise
+  the assessment is **Needs attention**, never **Looks good** — under a bound that
+  compared a number it lifts the `PASS` row to `CAUTION`; with no entry behind the
+  row, on either envelope, it is the `CAUTION` the cell composes to. Name the
+  cause in the Note either way.
 - **At a checkpoint, a minimum the change did not cause is a Note only.** Invoked
   with `--parent-run` from preflight, every floor is today's code, not the plan's;
   from post-edit, one whose Before was a minimum from the same cycle, call site or
@@ -400,29 +399,22 @@ this skill draws the **absolute** shape.
 triggers below say — they decide visibility for rows no entry covers. A
 requirement checked and met is the answer the reader asked for.
 
-1. **Worst-case depth** — `Stack (Depth)`, on the deepest function reported and on
-  every function an entry bounds — the user's roots where they named them. Always,
+1. **Worst-case depth** — `Stack (Depth)`, on the deepest function reported and on every function an entry bounds. Always,
   when at least one function was analyzed. Report the measured byte count. `STATUS` is
   `PASS`/`CAUTION`/`FAIL` against an enabled contract entry bounding `stack_depth`
   for that function, or the request's bound, with the percentage that bound
   supplies. With neither your assessment carries the row — **Needs attention** where the depth
   is worth raising on the evidence the house rules' reasoning rule allows — and the
-  `STATUS` cell is `—` on a contracted run, or that assessment's word on a `none`
-  one. Never a percentage of a denominator you chose.
+  `STATUS` cell is that assessment's word.
 2. **Largest frame** — `Stack (Frame)`, on the function that owns it. Only when a
   single frame is ≥ 25% of the total worst-case depth — visibility, not a bound.
-  Note cites the frame size; `STATUS` is `—` on a contracted run, your assessment's
-  word on a `none` one.
+  Note cites the frame size; `STATUS` is your assessment's word.
 3. **Recursion** — `Safety (Recursion)`, on the recursing function. Only when
-  `data.detail.cycles` is non-empty. An entry on `recursion_cycles` is held at 0, so
-  any cycle breaches it — a project asking to see bounded ones too — and `STATUS` is
-  its word. With no such entry, a cycle Step 2 bound carries no status of its own:
-  the Note says what bounds it, and `STATUS` is `—` on a contracted run or your
-  assessment's word on a `none` one.
+  `data.detail.cycles` is non-empty. An entry on `recursion_cycles` is held at 0, so any cycle breaches it, and `STATUS` is its word. With no such entry, a cycle Step 2 bound carries no status of its own:
+  the Note says what bounds it, and `STATUS` is your assessment's word.
 4. **Indirect calls** — `Safety (Indirect Calls)`, on the calling function. Only
   when `indirect_call_sites` is non-empty. `STATUS` is the entry's word where one
-  covers `indirect_calls`, and otherwise `—` on a contracted run or your
-  assessment's word on a `none` one. Unresolved dispatch makes the depth a lower
+  covers `indirect_calls`, and otherwise your assessment's word. Unresolved dispatch makes the depth a lower
   bound: a caveat for your assessment, not a status the count earns. Note cites
   the call site.
 5. **Unknown callees** — `Safety (Unknown Callees)`, same trigger and same rules,
@@ -430,15 +422,12 @@ requirement checked and met is the answer the reader asked for.
 6. **Unbounded recursion** — `Safety (Unbounded Recursion)`, on the recursing
   function. Only when Step 2 left a cycle unbounded, or answered
   `--recursion-unjudged`. `STATUS` is the entry's word where one covers
-  `unbounded_recursion`, and otherwise `—` on a contracted run or your assessment's
-  word on a `none` one. Note names the cycle and **where a bound would have had to
+  `unbounded_recursion`, and otherwise your assessment's word. Note names the cycle and **where a bound would have had to
   come from**, so the reader can check your reading. Never write it as "may not
-  terminate": that is a different claim.
+terminate": that is a different claim.
 
 **The worst-case path is not a row.** It is the chain the depth was summed along —
-evidence for the depth row, printed in the per-function report above the table. Every
-row here answers a signal a bound can cover; a path answers none, so a row for it can
-only ever carry `—`, and a word in that cell claims a judgement nothing made.
+evidence for the depth row, printed in the per-function report above the table.
 
 Table footer, by what the run had to judge against:
 
@@ -505,7 +494,11 @@ compared and the closing word is measured:
 | ENTRY         | FUNCTION | STATUS | AGENT ASSESSMENT | NOTE              |
 |---------------|----------|:------:|:----------------:|-------------------|
 | Stack (Depth) | TaskMain |  PASS  | Looks good       | 312 B of 2048 B bound (15.2%) |
-| Stack (Frame) | decode   |   —    | Looks good       | 128 B (41% of total) |
+| Stack (Frame) | decode   |  PASS  | Looks good       | 128 B (41% of total); no entry bounds decode |
+
+Not under contract — decode: no entry bounds these rows, so their STATUS is
+composed from the agent assessment beside it, not from a bound. `/loci:contract`
+adds one.
 
 Verdict: **PASS** 15.2% — worst-case 312 B against the 2048 B bound
 ```

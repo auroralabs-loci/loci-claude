@@ -392,6 +392,7 @@ exit code is the verdict:
 | `1` | The analysis itself failed | Emit `error.message` verbatim and stop; nothing was judged |
 | `6` | `error.code: manifest_stale` — the tree changed since `prepare` | Re-run `prepare`; **nothing was spent** |
 | `7` | `error.code: invalid_selection` / `invalid_manifest` | The message names the valid candidate ids; correct the reference |
+| `7` | `error.code: invalid_trips` | Pick the loop from `error.valid_loops` and re-run; nothing was spent |
 | `3` / `4` | `error.code: auth_required` / `quota_exceeded` / `client_too_old` | As above; stop, nothing was billed |
 
 **Never conflate 2 with 1.** Both `0` and `2` carry usable measurements; `1`
@@ -465,8 +466,8 @@ says what authority the run had. **`data.contract` is a string**, never an
 object: `project`
 (the repo has `.loci/contract.yaml` and its entries judged this run) or `none`
 (the file is absent, nothing was judged against a bound, and every row's `STATUS`
-is the word your own assessment maps to — `verdicts.md`'s **No contract: the agent
-fills `STATUS`**). The test is `data.contract == "project"` and never
+is the word your own assessment maps to — `verdicts.md`'s **No bound behind a row:
+the agent fills `STATUS`**, which a `project` run's uncovered rows follow too). The test is `data.contract == "project"` and never
 `data.contract.source` — `jq` cannot index a string, and a branch that errors is
 a branch that does not discard. (The nested `{path, exists, source}` object is
 `loci contract check`'s, a verb no skill calls.)
@@ -475,10 +476,8 @@ a branch that does not discard. (The nested `{path, exists, source}` object is
 judges against nothing at all: `entries_for_check` returns no entries, there are
 no judgements, gates, rows or machine verdict to render, and an envelope carrying
 none of them is telling you that — never a reason to go and read the contract
-yourself. A band LOCI chose matched no requirement any team holds, so a breach of
-it asserted a breach of nothing while rendering identically to a bound the team
-wrote down. What the run has instead is your assessment, composed with an empty
-`STATUS` — see `verdicts.md`.
+yourself. What the run has instead is your assessment, composed into the
+`STATUS` column — see `verdicts.md`.
 
 **You name what gets measured; the contract decides what carries a bound.** `loci
 analyse prepare --signals <sig>[,<sig>]` takes `hot_path_time`, `worst_path_time` and
@@ -523,14 +522,13 @@ status an entry just decided.
 2. **An entry LOCI cannot compute** — a prose bound, or a signal it does not
    recognise — comes back under `data.agent_judged` with no `STATUS`, and judging
    it is yours.
-3. **No contract covers the signal at all**, which is every row on a repo with no
-   contract file. The row's word comes from you alone, and on a `none` envelope it
-   fills the `STATUS` column too: **Needs attention** → `CAUTION`, **Looks good** →
-   `PASS`, **As reported** → `—`, with the caption under the table saying no bound
-   judged the run. `verdicts.md`'s **No contract: the agent fills `STATUS`** is the
-   rule; on a **contracted** run a signal
-   no entry covers keeps its `—`, and you never write a `STATUS` you reached by
-   picking a threshold.
+3. **No entry covers the row** — every row on a repo with no contract file, and
+   on a contracted one a signal no entry bounds. The row's word comes from you
+   alone, and it fills the `STATUS` column too, on either envelope: **Needs
+   attention** → `CAUTION`, **Looks good** → `PASS`, **As reported** → `—`, with
+   the caption under the table saying which rows no bound judged. `verdicts.md`'s
+   **No bound behind a row: the agent fills `STATUS`** is the rule, and you never
+   write a `STATUS` you reached by picking a threshold.
 
 Your three words, and what the reader sees instead of each:
 
@@ -540,22 +538,18 @@ Your three words, and what the reader sees instead of each:
   --agent-judged` refuses it.
 - **`cleared`** → **Looks good**. You looked at the row and raised nothing. Where
   nothing was computed it composes to `PASS` — what says the word rests on a
-  reading rather than a bound is the run's `contract` field, the caption under an
-  uncontracted table and the coverage count, not a weaker word.
+  reading rather than a bound is the run's `contract` field, the caption under the
+  table and the coverage count, not a weaker word.
 - **`no_opinion`** → **As reported**. You read the row and the run gave you
   nothing to judge it on. Not a blank, and not `cleared`.
 
-**The wire spellings and their old glyphs never reach the reader.** `○`, `·`,
-`flagged`, `cleared` and `no_opinion` appear in nothing a user reads, and `⚑`
-only as preflight's ADJUST PLAN; the
-display words above are `contract.AGENT_DISPLAY` and the column is
-`contract.AGENT_COLUMN`, the same two the cockpit's panel renders from.
+**The wire spellings and their old glyphs never reach the reader** — the display
+words are `verdicts.md`'s, from `contract.AGENT_DISPLAY`.
 
 `pass`, `caution` and `fail` are **measured** verdicts and are not yours to send
 on the wire — the CLI rejects all three by name, on a contracted run and an
-uncontracted one alike, however the rendered `STATUS` column reads. There is nothing to cap and nothing to downgrade: your
-word is recorded at full strength, it escalates and never de-escalates, and
-`contract.compose_row` is what turns the two columns into the row's verdict.
+uncontracted one alike, however the rendered `STATUS` column reads. Your word is
+recorded at full strength; it escalates and never de-escalates.
 
 **What you may reason from, and nothing else:** the figures this run measured,
 the function's history on this branch (`loci stats trend-line`, the trends
@@ -567,17 +561,14 @@ verdict, and you do not invent a threshold to compare against.
 prior measurement and no stated intent, the row composes to `PASS` and the line
 names the gap: `Verdict: **PASS** — 312 B measured; no contract covers
 stack_depth and this is the first recorded measurement for sensor_task on this
-branch.` A bare `PASS` on such a run is not acceptable output — the clause is the
-only thing telling the reader what the word rests on. Do not turn the gap into
+branch.` Do not turn the gap into
 setup guidance: absent bounds are not a prompt, and `/loci:contract` is not
 offered here.
 
 In a report table your word goes in the `AGENT ASSESSMENT` column and its
 reasoning in the Note, on the row the entry names. An entry's `severity` is **not
-rendered at all** — not in a column, not in the Note. It is the entry's declared
-prominence, deciding how loudly a breach is surfaced, and `STATUS` is already the
-word that carries that: a post-edit FLAG also reaches the user in the turn-end
-check; everything else is reported once, here.
+rendered at all** — not in a column, not in the Note; `STATUS` already carries how
+loudly a breach surfaces.
 
 ### Why a regression entry was not judged
 
@@ -624,10 +615,8 @@ the composition matrix and the run's worst-of; what is specific here:
 - **Do not add a second table, a heading or a blank-line group** to separate rows
   a bound decided from rows you did. Rows are ordered by gate and the run verdict
   is the worst of them; a split makes that read as two verdicts. The two verdict
-  columns are the separation. (The cockpit's contract panel reached the same conclusion
-  and dropped its gate groupings for it: with rows already named by their gate,
-  the headings restated the first column and cost more lines than the table had
-  rows.)
+  columns are the separation. **There is no split by coverage either**: a function
+  no entry covers draws its rows where its function's table puts them, each `STATUS` your composed word, and `verdicts.md`'s **A function the contract does not cover** says how the caption under the table names it.
 - **A row that reached neither a `STATUS` nor an assessment is not drawn** — it
   is the coverage count beside the verdict. The run verdict is stated as the run's
   answer, prominently, never as one row inside the table.
@@ -668,11 +657,10 @@ Three rules make the mapping usable:
 
 - **Report the zero.** A clean run measures `0` and must say so — against the
   entry where one covers the signal, and as a fact where none does. **No entry, no
-  `STATUS`**: these four are measured on every run whether or not anyone asked, and
-  a count LOCI took is not a requirement LOCI may enforce. With an entry the verb
-  judges it; without one the count goes in the Note, `STATUS` is `—` on a contracted
-  run or your assessment's word on a `none` one, and the assessment is where a
-  hazard gets raised. A bound nothing measured is filed as unjudged, and unjudged is
+  measured `STATUS`**: these four are measured on every run whether or not anyone
+  asked, and a count LOCI took is not a requirement LOCI may enforce. With an entry
+  the verb judges it; without one the count goes in the Note, `STATUS` is your
+  assessment's word, and the assessment is where a hazard gets raised. A bound nothing measured is filed as unjudged, and unjudged is
   invisible — which is why a zero that was actually measured has to be said out loud.
 - **They are whole-binary, always.** The contract rejects a `function` on a
   structural signal (`scope_unexpected`), so there is no per-function structural
@@ -707,7 +695,8 @@ Name the thing by where it is in the source instead:
 
 **The trip count is not an identifier, and it is always reported.** Every time a loop
 reaches the report, its `trips` goes with it — `12 iterations (exact)` when
-`trips_known` is true, and `iterations not derivable (?)` when it is false, which is
+`trips_known` is true, `5 iterations (assumed)` when the count was stated for the run
+(`--trips`), and `iterations not derivable (?)` otherwise, which is
 a lower bound on the cost and not a claim that the loop is unbounded. That count is
 the assumption the timing figure rests on, so a loop named without it is a figure the
 reader cannot check. Never fill in a `?` with a number of your own: path cost is
@@ -1109,8 +1098,8 @@ one of exactly **eleven** `error.code`s, each carrying one recovery. Branch on
 
 | `error.code` | Recovery |
 |---|---|
-| `not_initialized` | **two halves, opposite actions — branch on whether a recipe exists.** (1) **No recipe** (`error.recipe_on_disk` is `false`): adopting a project is the **user's** decision. Name `/loci:init` in one line and **stop** — do not invoke the init skill or run `loci init`, which writes files into their tree; no auto-run rule makes that a side effect of an edit. (2) **A recipe IS on disk** (`error.recipe_on_disk` is `true`) and the call still refuses: already adopted, so the repair stands — invoke the **loci:init** skill once this session, then retry the call once. Never preemptively, never a second retry. |
-| `recipe_invalid` | it does not parse or does not validate — `loci init --refresh`, through the init skill. If that answers `init_unsupported`, stop: that outcome is permanent and re-running cannot change it. |
+| `not_initialized` | **two halves, opposite actions — branch on whether a recipe exists.** (1) **No recipe** (`error.recipe_on_disk` is `false`): adopting a project is the **user's** decision. Name `/loci:init` in one line and **stop** — do not invoke the init skill or run `loci init`, which writes files into their tree; no auto-run rule makes that a side effect of an edit. **`error.recipe_unapproved: true` is this half too** (a committed `.loci/build.yaml`, which runs nothing): relay `error.message`; never run, set, edit or restore that file. (2) **A recipe IS on disk** (`error.recipe_on_disk` is `true`) and the call still refuses: already adopted, so the repair stands — invoke the **loci:init** skill once this session, then retry the call once. Never preemptively, never a second retry. |
+| `recipe_invalid` | it does not parse or does not validate — `loci init --refresh`, through the init skill. If that answers `init_unsupported`, stop: that outcome is permanent and re-running cannot change it. Never answer a refused `build.exec.mounts` with another such mount. |
 | `recipe_tampered` | it no longer matches its integrity record — `loci init --refresh`. Say it was changed outside `loci init`; never re-establish the user's consent for them. |
 | `recipe_stale` | a watched build file changed, so the recorded flags may not be this project's — regenerate the compile database as the recipe records, then `loci init --refresh`. **A cargo or Go recipe has no compile database to regenerate**; for those the recorded regeneration command is empty and `loci init --refresh` (with the user's answer) is the whole recovery. **Neither mid-turn**, and `--refresh` is a consented verb (see below). |
 | `compiler_missing` | the recorded compiler is not on this machine — `loci init --refresh`. Never hunt for another, and never substitute a host compiler for a cross target. |

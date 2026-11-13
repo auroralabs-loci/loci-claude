@@ -78,9 +78,11 @@ _po_state="skipped"
 trap 'loci_log INFO post-edit "end: $_po_state (hook rc=$?)"' EXIT
 
 # `recipe.discover`'s walk and ceilings (nearest `.git`, `$HOME` exclusive), without a
-# spawn. Its one divergence, a logical `$HOME`, can only send a file on to the CLI.
+# spawn. `$HOME` is met by spelling or by identity (`-ef`); the reasons, and the three
+# conditions identity is used under, are beside the same function in
+# `pre-edit-hook.sh` (AAD-8026).
 _loci_recipe_above() {
-    local d="${1//\\//}" base="${2//\\//}" p i=0
+    local d="${1//\\//}" base="${2//\\//}" p i=0 home="${HOME:-}" ef=""
     case "$d" in /*|[A-Za-z]:/*) ;; *) [ -n "$base" ] && d="$base/$d" ;; esac
     while [ "$i" -lt 64 ]; do
         case "$d" in */*) d="${d%/*}"; d="${d:-/}" ;; *) d=. ;; esac
@@ -89,9 +91,17 @@ _loci_recipe_above() {
     done
     p=$(cd "$d" 2>/dev/null && pwd -P) && d="$p"
     d="${d%/}"
+    case "$home" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*|\\\\*)
+            [ -d "$home" ] && ! [ "$home" -ef "$home/.." ] \
+                && ! [ "$home" -ef "$home/.loci" ] && ef=1 ;;
+    esac
     i=0
     while [ "$i" -lt 64 ]; do
-        [ -n "${HOME:-}" ] && [ "$d" = "${HOME%/}" ] && return 1
+        if [ -n "$home" ] && { [ "$d" = "${home%/}" ] \
+           || { [ -n "$ef" ] && [ "$d" -ef "$home" ]; }; }; then
+            return 1
+        fi
         [ -f "$d/.loci/build.yaml" ] && return 0
         [ -e "$d/.git" ] && return 1
         [ -n "$d" ] || return 1
@@ -104,7 +114,8 @@ _loci_recipe_above() {
 # CLI's `_SNAPSHOT_SOURCE_EXTS` — see the longer note there for why narrowing this
 # list is a correctness bug and not a scoping choice.
 # Only an arm that sets `_po_nudge` may nudge /loci:init: the nudge's premise is a
-# C/C++/Rust/Go project, and a new arm must opt in rather than inherit it.
+# C/C++/Rust/Go project, and a new arm must opt in rather than inherit it. The
+# unapproved-recipe nudge is exempt: its premise is the recipe file the CLI found.
 _po_nudge=""
 case "$_po_gate" in
     *.c|*.cc|*.cpp|*.cxx|*.c++|*.rs|*.go) _po_nudge=1 ;;
@@ -191,6 +202,7 @@ route=""
 _po_module=""
 _po_secs=""
 _po_governed=""
+_po_unapproved=""
 envelope=$(printf '%s' "$payload" | loci hook edit-scan 2>&1)
 rc=$?
 # Fast-fail: neither branch below runs. Exit 2 is reported as measurable without
@@ -226,6 +238,7 @@ else
     # `= false`, not `!= true`: absent (older CLI) and null (no path) fail open.
     _po_governed=$(loci_json_get governed)
     [ "$_po_governed" = false ] && remind=0
+    _po_unapproved=$(loci_json_get recipe_unapproved)
     if [ "$remind" = "1" ]; then
         # HOW to measure it, carried through to the skill. `measurable` says the edit can
         # change compiled code; `measure_via` says whether this file can be compiled at
@@ -387,7 +400,17 @@ fi
 # `hash_cwd`'s `realpath` fallback keys a path that does not exist just as
 # happily as one that does, so a rung that is not a directory must never reach
 # it: the same project would be nudged twice, once under each key.
-if [ -n "$_po_nudge" ] && [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
+# A recipe `loci init` never wrote on this machine (S-CLI-1) governs nothing, and
+# the file test below would read it as initialization and stay silent.
+if [ -n "$_po_unapproved" ]; then
+    STATE_DIR="${LOCI_STATE_DIR:-${HOME:-}/.loci/state}"
+    _uroot="${_po_unapproved%/*/*}"
+    _umark="${STATE_DIR}/init-nudge-unapproved-$(printf '%s' "$_uroot" | cksum | cut -d' ' -f1)"
+    if mkdir -p "$STATE_DIR" 2>/dev/null && ( set -C; : > "$_umark" ) 2>/dev/null; then
+        _nudge_msg="LOCI is not initialized for ${_uroot} on this machine: its .loci/build.yaml was not written by loci init here (it came with the repository or was copied in), so LOCI runs nothing it names. Run /loci:init ${_uroot} to set it up, only for a repository you trust."
+        nudge="$_nudge_msg"
+    fi
+elif [ -n "$_po_nudge" ] && [ -d "$_nroot" ] && [ ! -f "$_nroot/.loci/build.yaml" ]; then
     PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
     # The same ladder as session-init.sh, pre-edit-hook.sh and the CLI's
     # `stats._resolve_state_dir`: the fallback is taken when the directory cannot

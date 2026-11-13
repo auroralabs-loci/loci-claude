@@ -1176,7 +1176,7 @@ def test_step_1_routes_an_unconfirmed_recipe_and_distrusts_an_unvouched_one():
 
     A recipe nobody confirmed could never be confirmed (Step 5 has no confirm action).
     And a hand-written or copied-in `.loci/build.yaml` reads exactly like a healthy one
-    — a missing escrow is deliberately not a refusal, so `recipe_untrusted` is null —
+    — before S-CLI-1 a missing escrow was not a refusal, so `recipe_untrusted` was null —
     so the skill reported "initialized for armv6-m, replay-compare, confirmed by user"
     about a file that invented every word, defeating the consent invariant the whole
     skill rests on.
